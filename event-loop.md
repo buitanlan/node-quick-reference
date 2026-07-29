@@ -1,73 +1,81 @@
 # Event loop & concurrency model
 
-*(Call stack, microtasks, `nextTick`, timers, I/O, `setImmediate`, libuv)*
+*(Call stack, microtasks, `nextTick`, timers, I/O, `setImmediate`, libuv threadpool)*
 
-Baseline: **Node.js 26**. Mô hình cốt lõi ổn định qua các major; hiểu event loop quan trọng hơn thuộc lòng từng phase edge-case.
+Baseline: **Node.js 26**. Mô hình cốt lõi ổn định qua các major; hiểu **call stack + queues + phases** quan trọng hơn thuộc lòng từng edge-case. Promise/`async`: [async.md](async.md). Song song JS: [threading.md](threading.md).
 
 ---
 
 ## Mục lục
 
-- [Event loop \& concurrency model](#event-loop--concurrency-model)
-  - [Mục lục](#mục-lục)
-  - [1. Node “single-threaded” nghĩa là gì?](#1-node-single-threaded-nghĩa-là-gì)
-  - [2. Call stack \& task queues](#2-call-stack--task-queues)
-  - [3. Microtasks](#3-microtasks)
-    - [3.1 Promise / `queueMicrotask`](#31-promise--queuemicrotask)
-    - [3.2 `process.nextTick`](#32-processnexttick)
-  - [4. Macrotasks / phases của event loop](#4-macrotasks--phases-của-event-loop)
-    - [4.1 Tổng quan phases](#41-tổng-quan-phases)
-    - [4.2 Timers — `setTimeout` / `setInterval`](#42-timers--settimeout--setinterval)
-    - [4.3 Poll (I/O)](#43-poll-io)
-    - [4.4 Check — `setImmediate`](#44-check--setimmediate)
-    - [4.5 Close callbacks](#45-close-callbacks)
-  - [5. Thứ tự thực tế (ví dụ)](#5-thứ-tự-thực-tế-ví-dụ)
-  - [6. libuv threadpool](#6-libuv-threadpool)
-  - [7. Blocking pitfalls](#7-blocking-pitfalls)
-    - [7.1 Sync fs \& CPU nặng](#71-sync-fs--cpu-nặng)
-    - [7.2 Microtask starvation](#72-microtask-starvation)
-  - [8. So sánh nhanh API lên lịch](#8-so-sánh-nhanh-api-lên-lịch)
-  - [9. Best practices](#9-best-practices)
+1. [Node “single-threaded” nghĩa là gì?](#1-node-single-threaded-nghĩa-là-gì)
+2. [Call stack & task queues](#2-call-stack--task-queues)
+3. [Microtasks](#3-microtasks)
+4. [`process.nextTick` vs Promise microtasks](#4-processnexttick-vs-promise-microtasks)
+5. [Phases của event loop](#5-phases-của-event-loop)
+6. [`setTimeout(0)` vs `setImmediate`](#6-settimeout0-vs-setimmediate)
+7. [Thứ tự thực tế (ví dụ)](#7-thứ-tự-thực-tế-ví-dụ)
+8. [libuv threadpool](#8-libuv-threadpool)
+9. [Blocking pitfalls & đo lag](#9-blocking-pitfalls--đo-lag)
+10. [CPU offload: sync vs async I/O vs worker](#10-cpu-offload-sync-vs-async-io-vs-worker)
+11. [So sánh nhanh API lên lịch](#11-so-sánh-nhanh-api-lên-lịch)
+12. [Best practices](#12-best-practices)
+13. [Checklist](#13-checklist)
+14. [Cheat sheet](#14-cheat-sheet)
+15. [Version notes](#15-version-notes)
+16. [Tài liệu liên quan](#16-tài-liệu-liên-quan)
 
 ---
 
 ## 1. Node “single-threaded” nghĩa là gì?
 
-- **JavaScript của bạn** (callback, Promise then, async function resume) chạy trên **một main thread** — một call stack tại một thời điểm.
-- **libuv** + OS xử lý I/O bất đồng bộ; một số thao tác (DNS, fs, crypto, zlib… tùy API) chạy trên **threadpool** rồi đưa callback về event loop.
-- **Worker threads** / **child processes** là cách chạy JS song song thật — xem [threading.md](threading.md).
+“Single-threaded” chỉ **JavaScript của bạn** trên **một main thread** — một call stack tại một thời điểm. Nó **không** nghĩa toàn process chỉ có một thread.
 
-Khác C#: không có “mỗi request một thread” mặc định; concurrency I/O dựa trên **không block** main thread.
+| Thành phần | Thread / cơ chế | Việc làm |
+|---|---|---|
+| JS call stack | Main thread | Callback, `then`, resume `async`, sync code |
+| Event loop | Main thread (libuv) | Chọn phase, schedule macrotask |
+| Network I/O (TCP/HTTP…) | Non-blocking OS | Không chiếm threadpool kiểu fs/crypto |
+| Một số fs / DNS / crypto / zlib | **libuv threadpool** | Worker C++ rồi trả callback về loop |
+| `worker_threads` | Thread + isolate V8 | JS song song thật |
+| `child_process` / cluster | Process riêng | Cô lập / scale đa nhân |
+
+Khác mô hình “mỗi request một thread”: concurrency I/O dựa trên **không block main thread**.
 
 ```
-┌──────────────────────────────┐
-│  JS call stack (main thread) │
-└──────────────┬───────────────┘
-               │
-     event loop schedules tasks
-               │
-┌──────────────▼───────────────┐
-│  libuv: I/O, timers, pool    │
-└──────────────────────────────┘
+┌─────────────────────────────────────┐
+│  JS call stack (main thread)        │
+└──────────────────┬──────────────────┘
+                   │ event loop
+┌──────────────────▼──────────────────┐
+│  nextTick → microtask → phases      │
+│  (timers / pending / poll / check / │
+│   close)                            │
+└──────────────────┬──────────────────┘
+┌──────────────────▼──────────────────┐
+│  libuv: I/O, timers, threadpool     │
+└─────────────────────────────────────┘
 ```
+
+> **Myth:** “Node chậm vì single-thread.” Thực tế: I/O-bound scale tốt nếu không block; **CPU-bound sync** trên main thread mới giết latency.
 
 ---
 
 ## 2. Call stack & task queues
 
-1. Thực thi synchronous code trên **call stack**.
-2. Khi stack trống, runtime hút việc từ hàng đợi:
-   - **microtask queue** (ưu tiên cao),
-   - rồi **macrotask** theo phase (timers, poll, …).
-3. Mỗi callback lại có thể enqueue thêm việc.
+1. Chạy **sync** trên call stack đến khi trống.
+2. Xả **`process.nextTick`** đến khi trống.
+3. Xả **microtask** (`Promise.then`, `queueMicrotask`, …) đến khi trống.
+4. Chạy macrotask thuộc **phase** hiện tại.
+5. Lặp từ bước 2 sau mỗi macrotask / giữa phases.
 
-Nếu một hàm sync chạy 2 giây → **không** có callback/timer/HTTP handler nào chạy trong khoảng đó.
+Nếu một hàm sync chạy 2 giây → **không** timer / I/O / HTTP handler nào chạy trong khoảng đó. Loop bị **block**, không phải “chậm một chút”.
+
+Mỗi callback có thể enqueue thêm nextTick / microtask / timer / I/O — đó là concurrency “đan xen” trên một thread.
 
 ---
 
 ## 3. Microtasks
-
-### 3.1 Promise / `queueMicrotask`
 
 ```js
 queueMicrotask(() => console.log("microtask"));
@@ -76,124 +84,152 @@ console.log("sync");
 // sync → microtask → promise then
 ```
 
-Sau mỗi “turn” (xong sync hoặc xong một macrotask), engine **xả hết** microtasks trước khi sang macrotask tiếp theo.
+Sau mỗi turn (xong sync hoặc xong một macrotask), engine **xả hết** microtasks trước macrotask / phase tiếp theo.
 
-### 3.2 `process.nextTick`
+`async/await`: đoạn sau `await` = continuation Promise → **microtask**:
+
+```js
+async function f() {
+  console.log("1");
+  await 0;
+  console.log("3");
+}
+f();
+console.log("2");
+// 1 → 2 → 3
+```
+
+Dùng microtask để chuỗi hóa ngay sau stack hiện tại. **Không** dùng để thay busy-loop chia CPU — dễ starve (mục 4).
+
+---
+
+## 4. `process.nextTick` vs Promise microtasks
+
+### 4.1 Thứ tự ưu tiên (Node)
 
 ```js
 process.nextTick(() => console.log("nextTick"));
 Promise.resolve().then(() => console.log("promise"));
+queueMicrotask(() => console.log("queueMicrotask"));
 console.log("sync");
-// sync → nextTick → promise
+// sync → nextTick → promise / queueMicrotask (theo thứ tự enqueue trong microtask queue)
 ```
 
-- `nextTick` thuộc **nextTick queue** của Node, ưu tiên **trước** Promise microtasks (trong hầu hết trường hợp Node hiện tại).
-- Dùng để “chạy sau khi hàm hiện tại return, trước I/O”.
-- **Nguy hiểm:** `nextTick` đệ quy có thể **starve** event loop (I/O/timer không kịp chạy).
+- `nextTick` = queue **Node riêng**, trước Promise microtasks.
+- API hiện đại: `queueMicrotask` / Promise; `nextTick` khi cần semantics legacy.
+
+### 4.2 Starvation — worked examples
+
+**`nextTick` đệ quy** — I/O/timer không chạy:
 
 ```js
-// ❌ starve
-function f() {
-  process.nextTick(f);
+import fs from "node:fs";
+
+fs.readFile(new URL(import.meta.url), () => console.log("I/O"));
+
+function flood() {
+  process.nextTick(flood);
 }
-f();
+flood(); // I/O không bao giờ in
 ```
 
-Ưu tiên hiện đại: Promise / `queueMicrotask`; `nextTick` chỉ khi cần tương thích / API legacy.
+**Promise đệ quy** — tương tự starve macrotask:
+
+```js
+function flood() {
+  Promise.resolve().then(flood);
+}
+flood();
+setTimeout(() => console.log("timeout"), 0); // khó / không chạy
+```
+
+**Lối thoát** — nhường macrotask:
+
+```js
+async function processChunked(items) {
+  for (let i = 0; i < items.length; i++) {
+    work(items[i]);
+    if (i % 1000 === 0) {
+      await new Promise((r) => setImmediate(r));
+    }
+  }
+}
+```
+
+> Vòng chỉ enqueue `nextTick` / `then` = busy-loop tinh vi. Yield bằng `setImmediate` hoặc offload worker.
+
+### 4.3 Khi `nextTick` còn hợp lý
+
+```js
+import { EventEmitter } from "node:events";
+
+class S extends EventEmitter {
+  start() {
+    process.nextTick(() => this.emit("ready")); // sau constructor/return, trước I/O
+  }
+}
+```
+
+Không dùng `nextTick` làm “delay thông thường” → `setImmediate` / `setTimeout`.
 
 ---
 
-## 4. Macrotasks / phases của event loop
+## 5. Phases của event loop
 
-### 4.1 Tổng quan phases
+| # | Phase | Callback điển hình | Ghi chú |
+|---|---|---|---|
+| 1 | **timers** | `setTimeout` / `setInterval` hết hạn | Delay = tối thiểu |
+| 2 | **pending callbacks** | Một số I/O deferred | Ít đụng trực tiếp |
+| 3 | **idle, prepare** | Nội bộ | Không dùng từ JS |
+| 4 | **poll** | Hầu hết I/O; có thể **chờ** | Nhận sự kiện |
+| 5 | **check** | `setImmediate` | Sau poll |
+| 6 | **close callbacks** | `socket.on('close')` | Cleanup |
 
-Mỗi vòng lặp (đơn giản hóa):
+Giữa / quanh phases: **nextTick** rồi **microtasks**.
 
-1. **timers** — `setTimeout` / `setInterval` hết hạn  
-2. **pending callbacks** — I/O callbacks bị trì hoãn  
-3. **idle, prepare** (nội bộ)  
-4. **poll** — nhận I/O mới; có thể chờ  
-5. **check** — `setImmediate`  
-6. **close callbacks** — ví dụ `socket.on('close')`
+> Mô hình **tham khảo**. Đừng phụ thuộc thứ tự siêu tinh tế trừ khi đã đo đúng ngữ cảnh (trong/ngoài I/O).
 
-Giữa / quanh các phase, Node xử lý **nextTick** rồi **microtasks**.
-
-> Đây là mô hình tham khảo; đừng viết code phụ thuộc thứ tự siêu tinh tế giữa `setImmediate` và `setTimeout(0)` trong mọi ngữ cảnh (khác nhau giữa trong/ngoài I/O callback).
-
-### 4.2 Timers — `setTimeout` / `setInterval`
+### 5.1 Timers
 
 ```js
 setTimeout(() => console.log("t"), 0);
 ```
 
-- Delay là **tối thiểu**, không phải chính xác tuyệt đối.
-- Không dùng cho nhịp real-time cứng; drift với `setInterval`.
-
-Cùng họ Promise:
+- Delay tối thiểu; trễ thêm nếu loop bận.
+- `setInterval` drift — không nhịp realtime cứng.
 
 ```js
 import { setTimeout as sleep } from "node:timers/promises";
 await sleep(100);
+await sleep(100, undefined, { signal: AbortSignal.timeout(50) });
 ```
 
-### 4.3 Poll (I/O)
-
-Đa số callback mạng / file async được xếp vào đây khi sẵn sàng:
+### 5.2 Poll / check / close
 
 ```js
 import fs from "node:fs";
+fs.readFile("a.txt", () => console.log("I/O")); // poll khi sẵn sàng
 
-fs.readFile("a.txt", () => {
-  console.log("I/O done");
-});
+setImmediate(() => console.log("immediate")); // check — sau poll
+
+socket.on("close", () => {}); // close phase
 ```
 
-Nếu không còn I/O và timer sắp đến, poll có thể block chờ hoặc chuyển phase.
-
-### 4.4 Check — `setImmediate`
-
-```js
-setImmediate(() => console.log("immediate"));
-```
-
-Chạy trong phase **check**, sau poll. Trong I/O callback, `setImmediate` thường chạy trước `setTimeout(0)` — nhưng **ngoài** I/O, thứ tự với `setTimeout(0)` không đáng tin để dựa vào.
-
-### 4.5 Close callbacks
-
-```js
-socket.on("close", () => {
-  // close phase
-});
-```
+Poll trống + không timer gần → có thể **block chờ** I/O. **Đừng** CPU nặng / `*Sync` trong I/O callback.
 
 ---
 
-## 5. Thứ tự thực tế (ví dụ)
+## 6. `setTimeout(0)` vs `setImmediate`
+
+### 6.1 Ngoài I/O — không đáng tin
 
 ```js
-console.log("A");
-
 setTimeout(() => console.log("timeout"), 0);
 setImmediate(() => console.log("immediate"));
-
-process.nextTick(() => console.log("nextTick"));
-Promise.resolve().then(() => console.log("promise"));
-
-console.log("B");
+// thứ tự: phụ thuộc load / khi vào poll — đừng branch logic
 ```
 
-Kỳ vọng điển hình:
-
-```
-A
-B
-nextTick
-promise
-```
-
-rồi `timeout` / `immediate` (thứ tự hai cái này **không** ổn định nếu không nằm trong I/O context).
-
-Trong I/O:
+### 6.2 Trong I/O callback — immediate thường trước
 
 ```js
 import fs from "node:fs";
@@ -202,92 +238,253 @@ fs.readFile(new URL(import.meta.url), () => {
   setTimeout(() => console.log("timeout"), 0);
   setImmediate(() => console.log("immediate"));
 });
-// thường: immediate → timeout
+// thường: immediate → timeout (đang poll → check trước timers vòng sau)
+```
+
+| Ngữ cảnh | Dựa vào thứ tự? | Gợi ý |
+|---|---|---|
+| Top-level / ngoài I/O | **Không** | Tránh race |
+| Trong I/O callback | Tương đối ổn (immediate trước) | Vẫn đo nếu critical |
+| “Sau I/O hiện tại” | `setImmediate` | Rõ intent |
+| Delay ms thật | `setTimeout` / `timers/promises` | |
+| Yield chia CPU | `setImmediate` giữa batch | Tránh nextTick flood |
+
+> Chọn API đúng mục đích; **không** dựa race `timeout(0)` vs `immediate` ở top-level.
+
+---
+
+## 7. Thứ tự thực tế (ví dụ)
+
+```js
+console.log("A");
+setTimeout(() => console.log("timeout"), 0);
+setImmediate(() => console.log("immediate"));
+process.nextTick(() => console.log("nextTick"));
+Promise.resolve().then(() => console.log("promise"));
+console.log("B");
+```
+
+```
+A
+B
+nextTick
+promise
+```
+
+rồi `timeout` / `immediate` (**không** ổn định ngoài I/O).
+
+```js
+console.log("sync");
+setTimeout(() => console.log("macrotask"), 0);
+Promise.resolve().then(() => console.log("micro"));
+process.nextTick(() => {
+  console.log("tick");
+  Promise.resolve().then(() => console.log("micro-after-tick"));
+});
+// sync → tick → micro → micro-after-tick → (timeout|immediate)
 ```
 
 ---
 
-## 6. libuv threadpool
+## 8. libuv threadpool
 
-Một số API **trông** async với JS nhưng thực thi trên pool (mặc định **4** threads, đổi bằng `UV_THREADPOOL_SIZE`):
+Một số API **trông** async nhưng chạy trên pool (mặc định **4** threads):
 
-- Nhiều thao tác `fs` (không phải tất cả; tùy OS/API),
-- `dns.lookup` (khác `dns.resolve*`),
-- `crypto.pbkdf2`, `crypto.scrypt`, một số `zlib`, …
+| API / nhóm | Threadpool? | Ghi chú |
+|---|---|---|
+| Nhiều `fs.*` async | Thường **có** | Tùy OS/API |
+| `dns.lookup` | **Có** (getaddrinfo) | Khác `dns.resolve*` |
+| `crypto.pbkdf2` / `scrypt`, một số zlib | **Có** | CPU trên pool |
+| TCP / HTTP / `fetch` | **Không** (kiểu pool này) | Non-blocking OS |
+| JS thuần (`JSON.parse` lớn) | **Không** | **Main thread** |
 
 ```bash
 # Windows PowerShell
 $env:UV_THREADPOOL_SIZE = "16"
 node app.js
+
+# Unix
+UV_THREADPOOL_SIZE=16 node app.js
 ```
 
-Hệ quả:
+**Contention:** 100 `pbkdf2` song song vẫn queue trên 4 worker; fs + crypto + zlib **dùng chung** pool. Tăng size giúp throughput pool — **không** thay `worker_threads` cho JS CPU. Set env **trước** khi start process.
 
-- 100 `pbkdf2` song song vẫn có thể bị **queue** trên 4 worker.
-- Pool **dùng chung** — fs nặng + crypto nặng tranh nhau.
-- Tăng pool giúp throughput CPU-bound libuv; **không** thay worker_threads cho JS thuần nặng.
+```js
+import dns from "node:dns/promises";
+await dns.lookup("example.com");   // pool + OS hosts
+await dns.resolve4("example.com"); // DNS protocol — khác đường
+```
 
-I/O mạng (TCP/HTTP) chủ yếu **không** chiếm threadpool theo kiểu đó — non-blocking trên event loop / OS.
+Nhiều `lookup` đồng thời có thể làm đầy pool → triệu chứng “fs chậm bí ẩn”.
 
 ---
 
-## 7. Blocking pitfalls
+## 9. Blocking pitfalls & đo lag
 
-### 7.1 Sync fs & CPU nặng
+### 9.1 Sync & CPU nặng
 
 ```js
 import fs from "node:fs";
-
-// ❌ chặn toàn bộ server
-const data = fs.readFileSync("/huge/file");
+const data = fs.readFileSync("/huge/file"); // ❌
 JSON.parse(hugeString);
-while (Date.now() < end) {} // busy loop
+crypto.pbkdf2Sync(password, salt, 100000, 64, "sha512");
 ```
 
-Hậu quả: latency tăng đồng loạt, health check fail, timeout cascade.
-
-Thay bằng:
+Hậu quả: p99 tăng đồng loạt, health fail, timeout cascade.
 
 ```js
 import fs from "node:fs/promises";
+import { pbkdf2 } from "node:crypto";
+import { promisify } from "node:util";
+
 const data = await fs.readFile("/huge/file");
+const hash = await promisify(pbkdf2)(password, salt, 100000, 64, "sha512");
 ```
 
-CPU nặng (hash lớn, image, parse khổng lồ) → **`worker_threads`** hoặc process tách, không chạy trên request path sync.
-
-### 7.2 Microtask starvation
+### 9.2 Đo bằng `perf_hooks`
 
 ```js
-function flood() {
-  Promise.resolve().then(flood);
-}
-flood(); // macrotask / I/O khó xen vào
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
+
+const h = monitorEventLoopDelay({ resolution: 20 });
+h.enable();
+setInterval(() => {
+  console.log({ meanMs: h.mean / 1e6, p99Ms: h.percentile(99) / 1e6 });
+  h.reset();
+}, 5000);
+
+const start = performance.eventLoopUtilization();
+// ... sau một khoảng ...
+const end = performance.eventLoopUtilization(start);
+console.log(end.utilization); // 0..1 — gần 1 = loop rất bận
 ```
 
-Tương tự `nextTick` đệ quy. Luôn để “lối thoát” ra macrotask (`setImmediate` / `setTimeout`) nếu cần chia nhỏ công việc trên main thread — hoặc chuyển worker.
-
----
-
-## 8. So sánh nhanh API lên lịch
-
-| API | Khi chạy (ý tưởng) | Ghi chú |
+| Metric | Ý nghĩa | Khi xấu |
 |---|---|---|
-| Sync code | ngay | chặn loop |
-| `process.nextTick` | trước microtasks | dễ starve |
-| `queueMicrotask` / `Promise.then` | microtask | chuẩn JS |
-| `setTimeout(fn, 0)` | timers phase | delay tối thiểu |
-| `setImmediate` | check phase | hữu ích sau I/O |
-| I/O callback | poll (+ pending) | đừng block bên trong |
+| Delay histogram p99 cao | Main bị block / quá tải callback | Tìm sync CPU, giảm work/request |
+| ELU cao kéo dài | Loop ít idle | Scale / offload / cắt fan-out |
+| Pool gián tiếp (fs/crypto chậm, CPU JS thấp) | Hàng đợi threadpool | Giới hạn concurrency ± tăng pool **có đo** |
 
 ---
 
-## 9. Best practices
+## 10. CPU offload: sync vs async I/O vs worker
 
-- Giữ main thread **mỏng**: I/O async, CPU offload.
-- Tránh `*Sync` trên server path (CLI one-shot có thể chấp nhận được).
-- Đừng dựa vào thứ tự `setTimeout(0)` vs `setImmediate` trừ khi trong cùng I/O callback và đã đo.
-- Ưu tiên Promise/`async await` hơn callback hell; vẫn hiểu chúng schedule microtask.
-- Theo dõi event loop lag (`perf_hooks.monitorEventLoopDelay`, APM) khi production.
-- Tăng `UV_THREADPOOL_SIZE` có chủ đích; đo trước/sau.
+| Tình huống | Chọn | Lý do |
+|---|---|---|
+| File / HTTP / DB network | **Async I/O** | Callback ngắn trên main |
+| Hash/compress vừa | Async libuv + giới hạn concurrency | Pool; đo `UV_THREADPOOL_SIZE` |
+| Parse/transform CPU lớn | **`worker_threads`** | JS song song thật |
+| Cô lập crash / dual runtime | `child_process` | Nặng hơn; mạnh isolation |
+| CLI one-shot | `*Sync` đôi khi OK | Không server concurrent |
+| Yield giữa batch nhỏ | `setImmediate` | Không thay worker nếu CPU nặng thật |
 
-**Tài liệu liên quan:** [async.md](async.md) · [threading.md](threading.md) · [nodejs-apis.md](nodejs-apis.md)
+```js
+import { Worker } from "node:worker_threads";
+
+function runInWorker(data) {
+  return new Promise((resolve, reject) => {
+    const w = new Worker(new URL("./cpu-job.js", import.meta.url), {
+      workerData: data,
+    });
+    w.on("message", resolve);
+    w.on("error", reject);
+  });
+}
+```
+
+Chi tiết: [threading.md](threading.md).
+
+---
+
+## 11. So sánh nhanh API lên lịch
+
+| API | Khi chạy | Starve risk | Ghi chú |
+|---|---|---|---|
+| Sync | ngay | block loop | giữ ngắn |
+| `process.nextTick` | trước microtasks | **cao** nếu đệ quy | emit-after-construct |
+| `queueMicrotask` / `then` | microtask | **cao** nếu đệ quy | chuẩn JS |
+| `setTimeout(fn, 0)` | timers | thấp | delay tối thiểu |
+| `setImmediate` | check | thấp | sau poll; yield tốt |
+| I/O callback | poll | — | đừng block bên trong |
+| `worker_threads` | thread khác | — | CPU song song |
+
+---
+
+## 12. Best practices
+
+1. Main thread **mỏng**: I/O async, CPU offload, callback ngắn.
+2. Tránh `*Sync` trên server path (CLI one-shot có thể OK).
+3. Đừng dựa `setTimeout(0)` vs `setImmediate` ngoài I/O đã hiểu và đo.
+4. Ưu tiên Promise/`async await`; nhớ continuation = microtask.
+5. Cấm `nextTick`/`then` đệ quy không bound; chia batch bằng `setImmediate`.
+6. Theo dõi `monitorEventLoopDelay` + ELU (hoặc APM) ở production.
+7. Tăng `UV_THREADPOOL_SIZE` có chủ đích; đo trước/sau; nhớ pool dùng chung.
+8. Phân biệt `dns.lookup` (pool) vs `resolve*` khi debug latency DNS.
+9. Health check fail khi loop lag vượt ngưỡng — không chỉ “process alive”.
+10. Document quyết định offload (bảng mục 10) nếu service latency-critical.
+
+---
+
+## 13. Checklist
+
+```text
+□ Không *Sync / busy-loop trên request path
+□ Không nextTick/Promise đệ quy không lối thoát macrotask
+□ Không phụ thuộc race timeout(0) vs immediate ở top-level
+□ CPU nặng: worker hoặc giới hạn concurrency + đo pool
+□ UV_THREADPOOL_SIZE chỉ đổi sau benchmark
+□ Có metric event loop delay và/hoặc ELU
+□ I/O callback không JSON.parse/hash khổng lồ sync
+□ Yield (setImmediate) nếu xử lý mảng lớn trên main
+□ Load test quan sát p99 khi fan-out fs/crypto
+```
+
+---
+
+## 14. Cheat sheet
+
+```js
+// sync → nextTick → microtasks → phase macrotask
+process.nextTick(fn);
+queueMicrotask(fn);
+setTimeout(fn, 0);
+setImmediate(fn); // yield / sau I/O
+
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
+monitorEventLoopDelay({ resolution: 20 }).enable();
+performance.eventLoopUtilization();
+```
+
+| Cần | Dùng |
+|---|---|
+| Sau construct, trước I/O | `nextTick` (cẩn thận) |
+| Chuỗi micro | `queueMicrotask` / `then` |
+| Yield loop | `setImmediate` |
+| Delay ms | `setTimeout` / `timers/promises` |
+| CPU JS lớn | `worker_threads` |
+| fs/crypto bão hòa | Giới hạn concurrency ± `UV_THREADPOOL_SIZE` |
+
+---
+
+## 15. Version notes
+
+| Dòng | Ghi chú |
+|---|---|
+| **Node 26** (baseline) | Phases / nextTick / microtask ổn định; đo bằng `perf_hooks` |
+| Node 24 LTS | Cùng mô hình cốt lõi — [node26-ts7.md](node26-ts7.md) |
+| `monitorEventLoopDelay` | Histogram delay (ns) |
+| `eventLoopUtilization` | ELU 0..1 |
+| `timers/promises` + `AbortSignal` | Sleep/timer hủy được |
+| Pool mặc định **4** | `UV_THREADPOOL_SIZE` lúc start |
+
+Semantics phases ít breaking giữa major; chỗ hay sai là giả định timer/immediate và quên đo lag.
+
+---
+
+## 16. Tài liệu liên quan
+
+- [Lập trình bất đồng bộ](async.md)
+- [Worker Threads & Child Process](threading.md)
+- [Node.js built-ins](nodejs-apis.md)
+- [Exception / Error](exceptions.md)
+- [Node 26 & TypeScript 7 highlights](node26-ts7.md)

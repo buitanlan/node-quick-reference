@@ -1,16 +1,16 @@
 # Tài liệu tham khảo Node.js & TypeScript
 
-Bộ tài liệu này được thiết kế như một dạng tài liệu tham khảo, giúp các bạn nắm được các khái niệm và thành phần cốt lõi của **Node.js 26** (Current; dự kiến LTS tháng 10/2026) cùng **TypeScript 7** khi viết ứng dụng phía server / tooling. Vì ở dạng tham khảo nên sẽ có một số khó khăn và không phù hợp với người học từ đầu; nếu chưa biết gì về JavaScript/TypeScript, bạn nên tìm một giáo trình đơn giản hơn (xem bên dưới) và dùng tài liệu này để tham khảo kỹ hơn trong quá trình học.
+Bộ tài liệu tham chiếu **in-depth / advanced** cho **Node.js 26** (Current; dự kiến LTS tháng 10/2026) cùng **TypeScript 7** (compiler Go) khi viết ứng dụng phía server / tooling. Không phải giáo trình nhập môn: các khái niệm được trình bày dạng tham khảo kèm semantics, bảng quyết định, pitfalls và version gates. Nếu chưa biết JavaScript/TypeScript, bắt đầu bằng tài liệu chính thức bên dưới, rồi dùng bộ này khi cần tra cứu sâu hơn.
 
-**Baseline:** Node.js **26** + TypeScript **7** (compiler Go). Node **24** vẫn Maintenance LTS trong giai đoạn chuyển — xem [Node 26 & TypeScript 7 highlights](node26-ts7.md).
-
----
-
-Tham khảo nếu bạn chưa biết về JS/TS/Node: [MDN JavaScript](https://developer.mozilla.org/en-US/docs/Web/JavaScript) · [TypeScript Handbook](https://www.typescriptlang.org/docs/handbook/intro.html) · [Node.js Docs](https://nodejs.org/docs/latest/api/)
+**Baseline:** Node.js **26** + TypeScript **7**. Node **24** vẫn Maintenance LTS trong giai đoạn chuyển — xem [Node 26 & TypeScript 7 highlights](node26-ts7.md).
 
 ---
 
-## Nội dung  
+Tham khảo chính thức: [MDN JavaScript](https://developer.mozilla.org/en-US/docs/Web/JavaScript) · [TypeScript Handbook](https://www.typescriptlang.org/docs/handbook/intro.html) · [Node.js Docs](https://nodejs.org/docs/latest/api/) · [Node.js 26 release](https://nodejs.org/en/blog/release/v26.0.0/)
+
+---
+
+## Nội dung
 
 ### TypeScript / ngôn ngữ
 
@@ -34,6 +34,7 @@ Tham khảo nếu bạn chưa biết về JS/TS/Node: [MDN JavaScript](https://d
 - [Node 26 & TypeScript 7 highlights](node26-ts7.md)
 - [Event loop & concurrency model](event-loop.md)
 - [Lập trình bất đồng bộ](async.md)
+- [AbortSignal & request context](abort-context.md)
 - [Worker Threads & Child Process](threading.md)
 - [Node.js built-ins (fs, path, http, …)](nodejs-apis.md)
 - [npm / pnpm / yarn & tooling](tooling.md)

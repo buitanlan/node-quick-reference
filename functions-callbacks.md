@@ -1,8 +1,8 @@
 # Function type, Callback & Lambda
 
-Trong JavaScript/TypeScript, hàm là **giá trị first-class**: gán biến, truyền đối số, trả về từ hàm khác. Phần này tập trung kiểu hàm (TS), callback (Node-style vs Promise), higher-order function, closure, và gợi ý `EventEmitter`.
+Trong JavaScript/TypeScript, hàm là **giá trị first-class**: gán biến, truyền đối số, trả về từ hàm khác. Chương này tập trung **kiểu hàm (TS)**, callback (Node err-first vs Promise), higher-order, predicate, variance (`strictFunctionTypes`), và overload vs union params.
 
-> Đọc kèm: [Hàm & Method](functions-methods.md), [Lập trình bất đồng bộ](async.md), [Exception / Error](exceptions.md).
+> Đọc kèm (cú pháp khai báo / `this` / overload runtime): [Hàm & Method](functions-methods.md). Async sâu: [async.md](async.md). Lỗi: [exceptions.md](exceptions.md).
 
 ---
 
@@ -12,12 +12,19 @@ Trong JavaScript/TypeScript, hàm là **giá trị first-class**: gán biến, t
 2. [Callback Node-style (err-first) vs Promises](#2-callback-node-style-err-first-vs-promises)
 3. [Kiểu hàm trong TypeScript](#3-kiểu-hàm-trong-typescript)
 4. [Callable interface & construct signature](#4-callable-interface--construct-signature)
-5. [Generic functions](#5-generic-functions)
-6. [Higher-order functions](#6-higher-order-functions)
-7. [Closure & capturing](#7-closure--capturing)
-8. [Lambda / arrow như callback](#8-lambda--arrow-như-callback)
-9. [EventEmitter — pointer](#9-eventemitter--pointer)
-10. [Best practices](#10-best-practices)
+5. [Predicates & type guards](#5-predicates--type-guards)
+6. [Generic functions](#6-generic-functions)
+7. [Higher-order, curry nhẹ](#7-higher-order-curry-nhẹ)
+8. [Variance & `strictFunctionTypes`](#8-variance--strictfunctiontypes)
+9. [Overloads vs union params](#9-overloads-vs-union-params)
+10. [Closure & capturing](#10-closure--capturing)
+11. [Lambda / arrow như callback](#11-lambda--arrow-như-callback)
+12. [EventEmitter — pointer](#12-eventemitter--pointer)
+13. [Best practices](#13-best-practices)
+14. [Checklist](#14-checklist)
+15. [Cheat sheet](#15-cheat-sheet)
+16. [Version notes](#16-version-notes)
+17. [Tài liệu liên quan](#17-tài-liệu-liên-quan)
 
 ---
 
@@ -28,16 +35,16 @@ function greet(name: string) {
   return `Hello, ${name}`;
 }
 
-const g = greet;                 // gán
-const fns = [greet, (n: string) => n.toUpperCase()]; // lưu trong collection
-const once = (f: typeof greet) => f; // truyền / trả về
+const g = greet;
+const fns = [greet, (n: string) => n.toUpperCase()];
+const once = (f: typeof greet) => f;
 
 console.log(g("Node"));
 ```
 
 Hệ quả thực tế:
 
-- Middleware, plugin, strategy, pipeline đều là “truyền hàm”.
+- Middleware, plugin, strategy, pipeline = “truyền hàm”.
 - `Array.map/filter/reduce`, `Promise.then`, `EventEmitter.on` đều nhận callback.
 
 ```ts
@@ -78,7 +85,7 @@ fs.readFile("config.json", "utf8", (err, data) => {
 - Phải nhớ `return` sau khi xử lý `err`.
 - Không kết hợp tốt với `try/catch` đồng bộ.
 
-### 2.2 Promise / async-await (khuyến nghị hiện đại)
+### 2.2 Promise / async-await (khuyến nghị)
 
 ```ts
 import fs from "node:fs/promises";
@@ -105,18 +112,21 @@ const text = await readFile("a.txt", "utf8");
 
 Nhiều API Node đã có bản Promise (`node:fs/promises`, `fetch`, …). Prefer **Promise + async/await** cho code mới.
 
-### 2.3 So sánh nhanh
+### 2.3 So sánh
 
 | | Err-first callback | Promise / async |
 |---|---|---|
 | Lỗi | `err` đối số đầu | reject / throw |
 | Chuỗi thao tác | lồng nhau | `then` / `await` |
 | Song song | thủ công | `Promise.all` / `allSettled` |
-| TypeScript | `(err, data) => void` | `Promise<T>` rõ ràng hơn |
+| Hủy | tùy API (thường kém) | `AbortSignal` phổ biến hơn |
+| TypeScript | `(err, data) => void` | `Promise<T>` rõ hơn |
 
 ### 2.4 Typed err-first (khi bắt buộc)
 
 ```ts
+import fs from "node:fs";
+
 type NodeCb<T> = (err: NodeJS.ErrnoException | null, result?: T) => void;
 
 function readJson(path: string, cb: NodeCb<unknown>) {
@@ -130,6 +140,8 @@ function readJson(path: string, cb: NodeCb<unknown>) {
   });
 }
 ```
+
+> API **mới** của bạn: đừng invent err-first. Nếu phải giữ callback surface (C++ addon / legacy), cung cấp thêm bản Promise.
 
 ---
 
@@ -145,30 +157,29 @@ type Thunk = () => void;
 const double: Mapper = (n) => n * 2;
 ```
 
-### 3.2 Optional / rest trong kiểu hàm
+### 3.2 Optional / rest
 
 ```ts
 type Log = (message: string, ...details: unknown[]) => void;
 type Handler = (req: Request, res?: Response) => void | Promise<void>;
 ```
 
-### 3.3 `void` vs `undefined` vs không trả về
+### 3.3 `void` vs `undefined`
 
 ```ts
 type Effect = () => void;
 
-const ok: Effect = () => 1; // cho phép — TS bỏ qua return value khi target là void
-// hữu ích với forEach: callback có thể return gì cũng được
+const ok: Effect = () => 1; // cho phép — caller kiểu void bỏ qua return
 ```
 
-- `void` ở vị trí return của callback: “caller không dùng giá trị trả về”.
-- Public API đồng bộ nên dùng `undefined` rõ hoặc kiểu cụ thể nếu caller cần giá trị.
+- `void` ở return của callback: “caller không dùng giá trị trả về”.
+- Public API đồng bộ nên dùng kiểu cụ thể / `undefined` nếu caller cần giá trị.
 
 ### 3.4 Union của function types
 
 ```ts
 type StringOrNumFn = ((x: string) => string) | ((x: number) => number);
-// Gọi trực tiếp khó — thường thu hẹp bằng overload / generic
+// Gọi trực tiếp khó — thu hẹp bằng overload / generic
 ```
 
 ---
@@ -180,7 +191,7 @@ type StringOrNumFn = ((x: string) => string) | ((x: number) => number);
 ```ts
 interface Formatter {
   (value: number): string;
-  pattern: string; // property kèm theo — giống callable object
+  pattern: string;
 }
 
 const fmt: Formatter = Object.assign(
@@ -192,11 +203,7 @@ fmt(3.14159); // "3.14"
 fmt.pattern;
 ```
 
-Tương đương gần:
-
-```ts
-type FormatterFn = ((value: number) => string) & { pattern: string };
-```
+Tương đương gần: `type FormatterFn = ((value: number) => string) & { pattern: string }`.
 
 ### 4.2 Construct signature
 
@@ -210,41 +217,80 @@ function create(Ctor: RepoConstructor, uri: string) {
 }
 ```
 
-### 4.3 Phân biệt call vs construct
+### 4.3 Call vs construct
 
 ```ts
 type DateCtor = {
-  new (value: number): Date; // new Date(0)
-  (value: number): string;   // Date(0) — không khuyến khích
+  new (value: number): Date;
+  (value: number): string; // Date(0) — di sản, không khuyến khích
 };
 ```
 
-Trong lib DOM/Node, nhiều built-in vừa callable vừa constructable (di sản).
+---
+
+## 5. Predicates & type guards
+
+```ts
+type Predicate<T> = (value: T) => boolean;
+
+const isEven: Predicate<number> = (n) => n % 2 === 0;
+[1, 2, 3, 4].filter(isEven);
+```
+
+**Type predicate** thu hẹp union:
+
+```ts
+function isString(x: unknown): x is string {
+  return typeof x === "string";
+}
+
+function handle(x: string | number) {
+  if (isString(x)) {
+    x.toUpperCase(); // string
+  }
+}
+```
+
+`asserts` predicate (TS):
+
+```ts
+function assertDefined<T>(x: T | null | undefined): asserts x is T {
+  if (x == null) throw new Error("undefined");
+}
+```
+
+Dùng predicate có tên thay anonymous trong hot filter khi tái sử dụng / test.
 
 ---
 
-## 5. Generic functions
+## 6. Generic functions
 
 ```ts
 function first<T>(items: readonly T[]): T | undefined {
   return items[0];
 }
 
-first([1, 2, 3]);        // number | undefined
-first(["a", "b"]);       // string | undefined
+first([1, 2, 3]); // number | undefined
 ```
 
-### 5.1 Constraints
+### 6.1 Constraints
 
 ```ts
 function prop<T, K extends keyof T>(obj: T, key: K): T[K] {
   return obj[key];
 }
-
-const name = prop({ id: 1, name: "a" }, "name"); // string
 ```
 
-### 5.2 Multiple type params & inference
+### 6.2 Generic function type
+
+```ts
+type Identity = <T>(value: T) => T;
+const id: Identity = (value) => value;
+```
+
+Khác `type Identity<T> = (value: T) => T` — generic trên alias cố định `T` khi dùng alias.
+
+### 6.3 Inference
 
 ```ts
 function map<T, U>(arr: readonly T[], fn: (item: T, index: number) => U): U[] {
@@ -256,41 +302,16 @@ function map<T, U>(arr: readonly T[], fn: (item: T, index: number) => U): U[] {
 map(["a", "bb"], (s) => s.length); // number[]
 ```
 
-TS suy luận `T`/`U` từ đối số; chỉ annotate khi inference sai / cần thu hẹp.
-
-### 5.3 Generic function type
-
-```ts
-type Identity = <T>(value: T) => T;
-
-const id: Identity = (value) => value;
-```
-
-Khác `type Identity<T> = (value: T) => T` (generic trên type alias — cố định `T` khi dùng alias).
-
-### 5.4 Constraints với conditional (overview)
-
-```ts
-type AwaitedLike<T> = T extends Promise<infer U> ? U : T;
-
-async function unwrap<T>(value: T): Promise<AwaitedLike<T>> {
-  return await value as AwaitedLike<T>;
-}
-```
-
-Chi tiết utility types: xem [Tập hợp & Generics](collections-generics.md).
+Chỉ annotate khi inference sai / cần thu hẹp. Utility sâu: [collections-generics.md](collections-generics.md).
 
 ---
 
-## 6. Higher-order functions
+## 7. Higher-order, curry nhẹ
 
 Higher-order function (HOF): nhận và/hoặc trả về hàm.
 
 ```ts
-function withRetry<T>(
-  fn: () => Promise<T>,
-  attempts = 3,
-): () => Promise<T> {
+function withRetry<T>(fn: () => Promise<T>, attempts = 3): () => Promise<T> {
   return async () => {
     let last: unknown;
     for (let i = 0; i < attempts; i++) {
@@ -303,11 +324,9 @@ function withRetry<T>(
     throw last;
   };
 }
-
-const load = withRetry(() => fetch("https://example.com").then((r) => r.text()));
 ```
 
-### 6.1 Decorator-style wrapper
+### 7.1 Wrapper timed
 
 ```ts
 function timed<A extends unknown[], R>(
@@ -323,29 +342,111 @@ function timed<A extends unknown[], R>(
     }
   };
 }
-
-const work = timed("sum", (n: number) => {
-  let s = 0;
-  for (let i = 0; i < n; i++) s += i;
-  return s;
-});
 ```
 
-### 6.2 Partial application / curry (thực dụng)
+### 7.2 Partial application / curry nhẹ
 
 ```ts
 const bindHost = (host: string) => (path: string) => `https://${host}${path}`;
 const api = bindHost("api.example.com");
-api("/users"); // https://api.example.com/users
+api("/users");
 ```
 
-Không cần thư viện curry nặng — arrow lồng nhau thường đủ.
+```ts
+function partialRight<A, B, R>(fn: (a: A, b: B) => R, b: B) {
+  return (a: A) => fn(a, b);
+}
+```
+
+> Không cần thư viện curry nặng cho app Node điển hình — arrow lồng 1–2 tầng thường đủ. Curry sâu + placeholder dễ hại readability.
 
 ---
 
-## 7. Closure & capturing
+## 8. Variance & `strictFunctionTypes`
 
-Closure: hàm **nhớ** biến lexical từ scope ngoài dù scope đó đã kết thúc.
+Dưới `strict` (mặc định **TS 7**), **`strictFunctionTypes`** bật: tham số callback kiểm tra **contravariant** (an toàn hơn).
+
+### 8.1 Ý tưởng
+
+- **Return type:** covariant — hàm trả `Dog` dùng được nơi cần `Animal` (nếu `Dog extends Animal`).
+- **Parameter type:** contravariant — nơi cần `(animal: Animal) => void` **không** nhận `(dog: Dog) => void` một cách không an toàn (vì caller có thể truyền `Cat`).
+
+```ts
+type Animal = { tag: "animal" };
+type Dog = Animal & { bark(): void };
+
+let acceptAnimal: (a: Animal) => void;
+let acceptDog: (d: Dog) => void;
+
+// acceptAnimal = acceptDog; // lỗi với strictFunctionTypes — không an toàn
+acceptDog = acceptAnimal; // OK — chấp nhận Animal thì chấp nhận Dog
+```
+
+### 8.2 Method syntax vs function syntax trong object type
+
+Theo lịch sử TS, **method** trong object type có thể vẫn bivariant (tương thích DOM/legacy); **function property** tuân `strictFunctionTypes` chặt hơn:
+
+```ts
+type HandlerMethod = { handle(x: Animal): void };
+type HandlerProp = { handle: (x: Animal) => void };
+```
+
+Khi thiết kế API callback: prefer **function property** / type alias hàm rõ ràng.
+
+### 8.3 Thực dụng
+
+- Đừng tắt `strictFunctionTypes` để “cho qua” — sửa chữ ký (generic, overload, union đúng).
+- Event listener typed: tham số event phải đủ rộng cho mọi emit thực tế.
+
+---
+
+## 9. Overloads vs union params
+
+### 9.1 Union params — đơn giản khi behavior cùng shape
+
+```ts
+function len(x: string | unknown[]): number {
+  return x.length;
+}
+```
+
+### 9.2 Overload — khi return/type phụ thuộc đối số
+
+```ts
+function parse(input: string): object;
+function parse(input: Buffer): object;
+function parse(input: string | Buffer): object {
+  const text = typeof input === "string" ? input : input.toString("utf8");
+  return JSON.parse(text) as object;
+}
+```
+
+Implementation signature phải bao hết overload; caller chỉ thấy overload công khai.
+
+### 9.3 Khi nào chọn gì
+
+| Tình huống | Chọn |
+|---|---|
+| Cùng return, xử lý gần giống | union param |
+| Return type khác theo input | overload hoặc generic có điều kiện |
+| Nhiều overload (>3–4) khó đọc | options object / discriminated union |
+| Callback library C-style | overload + xem [functions-methods.md](functions-methods.md) |
+
+```ts
+type Result =
+  | { kind: "text"; value: string }
+  | { kind: "bin"; value: Buffer };
+
+function encode(r: Result): string {
+  return r.kind === "text" ? r.value : r.value.toString("base64");
+}
+```
+
+Discriminated union thường **rõ hơn** overload dài cho domain app.
+
+---
+
+## 10. Closure & capturing
 
 ```ts
 function makeCounter(start = 0) {
@@ -355,30 +456,21 @@ function makeCounter(start = 0) {
     value: () => n,
   };
 }
-
-const c = makeCounter(10);
-c.inc(); // 11
-c.value(); // 11
 ```
 
-### 7.1 Module-level closure (Node ESM)
+### 10.1 Module-level closure
 
 ```ts
-// secrets.ts
 const key = process.env.APP_KEY ?? "";
 
 export function sign(payload: string) {
-  // capture `key` — không export trực tiếp
   return `${payload}.${key.length}`;
 }
 ```
 
-### 7.2 Pitfall: capture trong vòng lặp
+### 10.2 Loop capture
 
 ```ts
-// var (tránh) → cùng một binding
-// let/const trong for → mỗi vòng một binding
-
 const handlers: Array<() => number> = [];
 for (let i = 0; i < 3; i++) {
   handlers.push(() => i);
@@ -386,60 +478,39 @@ for (let i = 0; i < 3; i++) {
 handlers.map((h) => h()); // [0, 1, 2]
 ```
 
-### 7.3 Closure giữ reference → memory
+Dùng `let`/`const` trong `for` — tránh `var`.
 
-```ts
-function attach(huge: Uint8Array) {
-  const head = huge.subarray(0, 4);
-  return () => head[0]; // có thể giữ toàn bộ `huge` tùy engine/opt
-}
-```
+### 10.3 Memory
 
-Tránh capture object lớn không cần thiết; copy phần nhỏ cần dùng.
+Tránh capture object lớn không cần thiết trong closure sống lâu (cache process-wide). Copy phần nhỏ cần dùng.
 
 ---
 
-## 8. Lambda / arrow như callback
+## 11. Lambda / arrow như callback
 
 ```ts
 const nums = [1, 2, 3, 4];
 const evens = nums.filter((n) => n % 2 === 0);
-const labels = nums.map((n) => `#${n}`);
 ```
 
-Async callback:
+Async + `map`:
 
 ```ts
-const urls = ["/a", "/b"];
-
-// Sai phổ biến: map async trả Promise[] — cần Promise.all
-const pages = await Promise.all(urls.map(async (u) => {
-  const res = await fetch(u);
-  return res.text();
-}));
+const pages = await Promise.all(
+  urls.map(async (u) => {
+    const res = await fetch(u);
+    return res.text();
+  }),
+);
 ```
 
-`forEach` + `async` **không** await được:
+`forEach` + `async` **không** await được — dùng `for...of` hoặc `Promise.all`.
 
-```ts
-// Tránh
-items.forEach(async (x) => {
-  await save(x); // fire-and-forget
-});
-
-// Nên
-for (const x of items) {
-  await save(x);
-}
-// hoặc
-await Promise.all(items.map((x) => save(x)));
-```
+Chi tiết `this` với method/arrow: [oop.md](oop.md) §9 · [functions-methods.md](functions-methods.md).
 
 ---
 
-## 9. EventEmitter — pointer
-
-Node dùng **observer pattern** qua `EventEmitter` (`node:events`): đăng ký hàm listener, phát event.
+## 12. EventEmitter — pointer
 
 ```ts
 import { EventEmitter } from "node:events";
@@ -456,56 +527,106 @@ class Auth extends EventEmitter<UserEvents> {
 }
 
 const auth = new Auth();
-auth.on("login", (userId) => {
-  console.log("welcome", userId);
-});
-auth.on("error", (err) => {
-  console.error(err);
-});
+auth.on("login", (userId) => console.log("welcome", userId));
 ```
 
-Ghi chú thực dụng:
-
-- Listener là callback thường / arrow; cẩn thận `this` nếu dùng method thường.
-- Luôn lắng `error` trên stream/emitter — error không có listener có thể crash process.
-- Prefer typed events (generic `EventEmitter` trong Node hiện đại / thư viện).
-- `once`, `off`/`removeListener`, `removeAllListeners` để tránh leak.
-- Chi tiết lifecycle & backpressure: xem tài liệu Event loop / Node APIs.
-
-`EventTarget` / `AbortSignal` cũng dùng callback theo hướng Web API — ngày càng phổ biến trong Node.
+- Luôn lắng `error` trên stream/emitter khi có thể crash process.
+- `once` / `off` / `AbortSignal` tránh leak.
+- Chi tiết: [nodejs-apis.md](nodejs-apis.md), [event-loop.md](event-loop.md).
 
 ---
 
-## 10. Best practices
+## 13. Best practices
 
-**Nên**
+1. API mới: `Promise<T>` / `async function` — không invent err-first.
+2. Đặt tên kiểu rõ: `Predicate<T>`, `Mapper<T,U>`, `Middleware`.
+3. HOF cho cross-cutting (retry, timeout, log) thay copy-paste.
+4. `unknown` cho `err` rồi thu hẹp — [exceptions.md](exceptions.md).
+5. Giữ `strictFunctionTypes`; sửa chữ ký thay vì nới lỏng.
+6. Overload khi cần; discriminated union khi domain phức tạp.
+7. Curry nhẹ (1–2 tầng); tránh curry framework.
+8. `map(async)` → nhớ `Promise.all` / pool có giới hạn.
+9. Callback method: bind / arrow — xem OOP.
+10. Cross-link khai báo hàm đầy đủ ở [functions-methods.md](functions-methods.md).
 
-- API mới: trả `Promise<T>` / `async function`, không invent err-first mới.
-- Đặt tên kiểu hàm rõ: `Predicate<T>`, `Mapper<T,U>`, `Middleware`.
-- HOF để tái sử dụng cross-cutting (retry, timeout, log) thay vì copy-paste.
-- Dùng `unknown` cho `err` rồi thu hẹp — xem `exceptions.md`.
+---
 
-**Tránh**
+## 14. Checklist
 
-- Callback hell; nếu phải giữ callback API → cung cấp bản `promisify`.
-- Nuốt lỗi trong callback: `if (err) return;` mà không log/forward.
-- Generic “quá thông minh” làm inference vỡ — simplify chữ ký.
-- Capture state mutable lớn trong closure sống lâu (cache toàn process).
+```text
+□ Callback legacy? có bản Promise / promisify
+□ Function type / callable interface đặt tên rõ
+□ Predicate / type guard khi filter union
+□ Generic: inference đủ; annotate khi cần
+□ HOF wrap không nuốt lỗi
+□ strictFunctionTypes: param callback an toàn
+□ Overload cụ thể trước; impl bao hết — hoặc dùng union/discriminant
+□ Closure: let trong loop; không giữ buffer khổng lồ
+□ forEach+async tránh; Promise.all / for-await
+□ EventEmitter: off / signal; listen error
+```
 
-**Cheat sheet kiểu hàm**
+---
+
+## 15. Cheat sheet
 
 ```ts
 type Fn = (a: number, b?: string) => boolean;
-interface Callable { (x: string): void; meta: string }
+type Predicate<T> = (value: T) => boolean;
+interface Callable {
+  (x: string): void;
+  meta: string;
+}
 type GenFn = <T>(x: T) => T;
 type HOF = <T>(fn: () => T) => () => T;
+
+function isStr(x: unknown): x is string {
+  return typeof x === "string";
+}
+
+// Overload skeleton
+function f(x: string): number;
+function f(x: number): string;
+function f(x: string | number): number | string {
+  return typeof x === "string" ? x.length : String(x);
+}
 ```
+
+| Cần | Chọn |
+|---|---|
+| I/O mới | Promise / async |
+| Legacy Node | err-first + `promisify` |
+| Thu hẹp kiểu | `x is T` predicate |
+| Partial config | curry nhẹ / partial |
+| Return phụ thuộc arg | overload / conditional type |
+| Listener typed | function prop + strictFunctionTypes |
 
 ---
 
-## Tài liệu liên quan
+## 16. Version notes
 
-- [Hàm & Method](functions-methods.md)
+| Nền | Liên quan |
+|---|---|
+| ES2015 | arrow, rest/default, Promise |
+| ES2017 | async/await |
+| Node cổ điển | err-first callback |
+| Node hiện đại | `fs/promises`, `fetch`, `util.promisify` |
+| TS | function types, call/construct signatures, overload |
+| TS `strictFunctionTypes` | param callback contravariant (trong `strict`) |
+| **TS 7** | `strict` mặc định → variance chặt hơn codebase cũ |
+| **Node 26** | Promise-first builtins; AbortSignal phổ biến |
+
+Baseline: **Node 26** + **TS 7**.
+
+---
+
+## 17. Tài liệu liên quan
+
+- [Hàm & Method](functions-methods.md) — declaration, `this`, overload, generators
 - [Exception / Error](exceptions.md)
 - [Lập trình bất đồng bộ](async.md)
+- [AbortSignal & request context](abort-context.md)
 - [Iterator, Iterable & “LINQ-like”](iterables-linq.md)
+- [Lập trình hướng đối tượng](oop.md)
+- [Node.js built-ins](nodejs-apis.md) — `events`
+- [Node 26 & TypeScript 7 highlights](node26-ts7.md)

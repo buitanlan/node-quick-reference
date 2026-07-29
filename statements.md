@@ -1,30 +1,30 @@
-# Statements (Phát biểu) trong JavaScript / TypeScript
+# Statements (Phát biểu)
 
-**Statement** là đơn vị thực thi (khác *expression* cho giá trị). Tài liệu tham chiếu theo **ES hiện đại + TypeScript 7** trên **Node.js 26** (ESM ưu tiên). Bao gồm Explicit Resource Management: `using` / `await using`.
+**Statement** là đơn vị thực thi (khác *expression* cho giá trị). Tham chiếu **ES hiện đại + TypeScript 7** trên **Node.js 26** (ESM ưu tiên). Bao gồm Explicit Resource Management: `using` / `await using`, ASI, và các bẫy `return` trong `finally`.
 
 ---
 
 ## Mục lục
 
-- [Statements (Phát biểu) trong JavaScript / TypeScript](#statements-phát-biểu-trong-javascript--typescript)
+- [Statements (Phát biểu)](#statements-phát-biểu)
   - [Mục lục](#mục-lục)
   - [1. Tổng quan \& phân loại](#1-tổng-quan--phân-loại)
   - [2. Khối `{ ... }`, scope \& TDZ](#2-khối----scope--tdz)
   - [3. Declaration statements](#3-declaration-statements)
-    - [3.1 `const` / `let` / `var`](#31-const--let--var)
-    - [3.2 Destructuring declaration](#32-destructuring-declaration)
-    - [3.3 `using` / `await using` declarations](#33-using--await-using-declarations)
-    - [3.4 Function \& class declarations](#34-function--class-declarations)
-    - [3.5 `import` / `export`](#35-import--export)
   - [4. Expression statements](#4-expression-statements)
-  - [5. Selection: `if` / `else`, `switch`](#5-selection-if--else-switch)
+  - [5. Selection: `if` / `else`, `switch` exhaustive](#5-selection-if--else-switch-exhaustive)
   - [6. Iteration: `while` / `do` / `for` / `for...of` / `for...in` / `for await...of`](#6-iteration-while--do--for--forof--forin--for-awaitof)
   - [7. Jump: `break` / `continue` / `return` / `throw` / labeled](#7-jump-break--continue--return--throw--labeled)
   - [8. `try` / `catch` / `finally`](#8-try--catch--finally)
-  - [9. Explicit Resource Management (chi tiết)](#9-explicit-resource-management-chi-tiết)
-  - [10. `with` (không dùng) \& `debugger`](#10-with-không-dùng--debugger)
-  - [11. Empty statement \& strict mode](#11-empty-statement--strict-mode)
-  - [12. Mẹo \& best practices](#12-mẹo--best-practices)
+  - [9. Explicit Resource Management](#9-explicit-resource-management)
+  - [10. ASI \& empty statement](#10-asi--empty-statement)
+  - [11. `with` (không dùng) \& `debugger`](#11-with-không-dùng--debugger)
+  - [12. Bẫy thường gặp](#12-bẫy-thường-gặp)
+  - [13. Best practices](#13-best-practices)
+  - [14. Checklist](#14-checklist)
+  - [15. Cheat sheet](#15-cheat-sheet)
+  - [16. Version notes](#16-version-notes)
+  - [17. Tài liệu liên quan](#17-tài-liệu-liên-quan)
 
 ---
 
@@ -40,7 +40,7 @@
 | Exception / resource | `try`/`catch`/`finally`, `using` |
 | Misc | `debugger`, label, empty `;` |
 
-Module ESM toàn bộ ở **strict mode** mặc định.
+Module ESM toàn bộ ở **strict mode** mặc định — không cần `"use strict"`.
 
 ---
 
@@ -55,13 +55,34 @@ const x = 1;
 console.log(x); // 1
 ```
 
-- `let`/`const`/`class` có **TDZ**: truy cập trước khởi tạo → `ReferenceError`.  
-- `var` hoist + khởi tạo `undefined` — tránh.  
-- Block của `if`/`for`/`while` tạo scope cho `let`/`const`.
+- `let`/`const`/`class` có **TDZ**: truy cập trước khởi tạo → `ReferenceError`.
+- `var` hoist + khởi tạo `undefined` — tránh.
+- Block của `if`/`for`/`while`/`switch` case (với `{}`) tạo scope cho `let`/`const`.
 
 ```ts
 for (let i = 0; i < 3; i++) {
-  // mỗi iteration có binding i riêng (closure-friendly)
+  // mỗi iteration có binding i riêng (closure-friendly, ES2015+)
+}
+```
+
+**Bẫy scope:**
+
+| Bẫy | Chi tiết | Cách đúng |
+|-----|----------|-----------|
+| Shadow vô ý | biến ngoài không đổi | tên khác / tách hàm |
+| `switch` case chung scope | `let` trùng tên giữa case | bọc `{ }` mỗi case |
+| Closure trong `var` + `for` | cùng binding | `let` |
+
+```ts
+switch (k) {
+  case 1: {
+    const msg = "one";
+    break;
+  }
+  case 2: {
+    const msg = "two";
+    break;
+  }
 }
 ```
 
@@ -69,75 +90,33 @@ for (let i = 0; i < 3; i++) {
 
 ## 3. Declaration statements
 
-### 3.1 `const` / `let` / `var`
+### 3.1–3.5 Tóm tắt declaration
 
 ```ts
 const host = "127.0.0.1";
 let port = 3000;
-port = 3001;
-
-// const obj = {}; obj.x = 1; // OK — const cấm rebind, không deep-freeze
-```
-
-- Một statement có thể khai báo nhiều binding: `let a = 1, b = 2;`.  
-- `const` bắt buộc khởi tạo.
-
-### 3.2 Destructuring declaration
-
-```ts
 const { name, age = 0 } = user;
 const [first, ...rest] = items;
-const { nested: { id } } = payload;
-```
 
-- Default & rest trong pattern.  
-- Đổi tên: `{ name: userName }`.
-
-### 3.3 `using` / `await using` declarations
-
-```ts
 {
   using resource = acquire();
-  // resource[Symbol.dispose]() khi rời block
 }
 
-async function work() {
-  await using conn = await connect();
-  // conn[Symbol.asyncDispose]()
-}
-```
-
-Chi tiết mục 9.
-
-### 3.4 Function & class declarations
-
-```ts
 function helper() {}
-async function load() {}
-function* gen() {
-  yield 1;
-}
 async function* agen() {
   yield await Promise.resolve(1);
 }
-
 class Service {
   run() {}
 }
-```
 
-- Function declaration hoist (body khởi tạo sớm).  
-- Class declaration không dùng trước TDZ kết thúc.  
-- Trong TS: `abstract class`, parameter properties trong `constructor`.
-
-### 3.5 `import` / `export`
-
-Là module-level statements (không nằm trong block thường):
-
-```ts
 import { readFile } from "node:fs/promises";
 export const VERSION = 1;
 ```
+
+- `const` cấm rebind, không deep-freeze; function declaration hoist; class có TDZ.
+- Parameter properties / `enum` — **không** erasable cho Node type strip.
+- `using` / `await using`: mục 9. Module-level `import`/`export` không nằm trong block thường.
 
 ---
 
@@ -152,12 +131,20 @@ obj.method?.();
 void queueMicrotask(() => {});
 ```
 
-- Mọi expression có thể đứng một mình như statement (trừ một số bị hạn chế như bare `object literal` dễ nhầm block — dùng `({ a: 1 })` hoặc gán).  
-- Prefer bỏ giá trị thừa bằng cách không dùng, hoặc `void` khi cố ý.
+- Expression đứng một mình thành statement.
+- Bare object literal dễ nhầm **block**: dùng `({ a: 1 })` hoặc gán.
+- Prefer bỏ giá trị thừa bằng không dùng, hoặc `void` khi cố ý (và biết hệ quả Promise).
+
+```ts
+{
+  a: 1; // đây là label `a` + expression statement `1` — không phải object!
+}
+({ a: 1 }); // object expression
+```
 
 ---
 
-## 5. Selection: `if` / `else`, `switch`
+## 5. Selection: `if` / `else`, `switch` exhaustive
 
 ```ts
 if (status === "ok") {
@@ -169,7 +156,7 @@ if (status === "ok") {
 }
 ```
 
-- Điều kiện dùng truthiness; prefer so sánh tường minh với boolean/nullish khi cần.
+- Điều kiện dùng truthiness; prefer so sánh tường minh với boolean/nullish khi `0`/`""` hợp lệ.
 
 ```ts
 switch (code) {
@@ -183,12 +170,18 @@ switch (code) {
 }
 ```
 
-- `case` dùng `===`.  
-- Fall-through có chủ đích cần comment; quên `break` là bug kinh điển.  
-- TS: `switch` trên discriminated union + `assertNever` cho exhaustiveness.
+- `case` dùng `===` (strict).
+- Fall-through có chủ đích cần comment; quên `break`/`return` là bug kinh điển.
+- Không có `switch` expression riêng như C#; dùng map / ternary / hàm nhỏ.
+
+**Exhaustiveness với discriminated union (TS):**
 
 ```ts
 type Ev = { type: "ping" } | { type: "msg"; text: string };
+
+function assertNever(x: never): never {
+  throw new Error(`Unexpected: ${JSON.stringify(x)}`);
+}
 
 function handle(ev: Ev) {
   switch (ev.type) {
@@ -197,88 +190,71 @@ function handle(ev: Ev) {
     case "msg":
       console.log(ev.text);
       return;
-    default: {
-      const _exhaustive: never = ev;
-      return _exhaustive;
-    }
+    default:
+      return assertNever(ev);
   }
 }
 ```
 
-- Không có `switch` expression riêng như C#; dùng map / ternary / IIFE.
+**Bẫy `if`/`switch`:**
+
+| Bẫy | Chi tiết | Cách đúng |
+|-----|----------|-----------|
+| `if (x = 1)` | gán thay so sánh | `===`; lint `no-cond-assign` |
+| Fall-through | chạy nhầm case | `break` / `return` |
+| `default` nuốt union mới | quên cập nhật | `assertNever` |
+| Truthiness `if (count)` | `0` bị bỏ | `count !== undefined` / `??` |
 
 ---
 
 ## 6. Iteration: `while` / `do` / `for` / `for...of` / `for...in` / `for await...of`
 
-### `while` / `do`
+### `while` / `do` / `for`
 
 ```ts
 let n = 3;
-while (n > 0) {
-  n--;
-}
-
+while (n > 0) n--;
 do {
   n++;
 } while (n < 3);
-```
 
-### `for` cổ điển
-
-```ts
 for (let i = 0; i < list.length; i++) {
   console.log(list[i]);
 }
 ```
 
-### `for...of` (iterable)
+### `for...of` vs `for...in`
 
 ```ts
 for (const line of lines) {
   console.log(line);
 }
-
 for (const [k, v] of map) {
   console.log(k, v);
 }
-```
 
-- Phù hợp Array, Map, Set, string, Node streams (async iterable), v.v.
-
-### `for...in` (keys)
-
-```ts
 for (const key in obj) {
   if (!Object.hasOwn(obj, key)) continue;
   console.log(key, obj[key as keyof typeof obj]);
 }
 ```
 
-- Duyệt enumerable string keys trên prototype chain — **dễ bug**; thường thay bằng `Object.keys` / `Object.entries` / `Object.hasOwn`.
+- `for...of`: iterable (Array, Map, Set, string, `@@iterator`).
+- `for...in`: enumerable string keys trên prototype chain — **dễ bug**; prefer `Object.keys` / `entries` / `hasOwn`. **Không** dùng để duyệt array.
 
 ### `for await...of`
 
 ```ts
-for await (const chunk of asyncIterable) {
-  consume(chunk);
-}
-```
-
-- Chỉ trong async function / top-level ESM await context.  
-- Node: đọc stream async iterable hiện đại.
-
-```ts
-import { createReadStream } from "node:fs";
-import { readline } from "node:readline/promises"; // minh họa API — chọn API phù hợp version
-
-// Pattern chung:
 async function readAll(iterable: AsyncIterable<string>) {
   for await (const item of iterable) {
     console.log(item);
   }
 }
 ```
+
+- Chỉ trong async function / TLA ESM. Node Readable hiện đại thường async iterable.
+
+**Bẫy vòng lặp:** `for...in` trên Array → `for...of`; `await` tuần tự không cần → batch; sửa collection đang `of` → copy / index tự quản.
 
 ---
 
@@ -299,9 +275,9 @@ function f(): number {
 throw new Error("fail");
 ```
 
-- **Labeled statement**: `label: statement` — `break label` / `continue label` (continue chỉ với loop).  
-- Tránh lạm dụng label; refactor hàm nhỏ thường rõ hơn.  
-- `return` trong `finally` ghi đè return/throw đang pending — anti-pattern.  
+- **Labeled statement**: `label: statement` — `break label` thoát statement gắn nhãn; `continue label` chỉ với loop.
+- Tránh lạm dụng label; refactor hàm nhỏ thường rõ hơn.
+- `return` trong `finally` ghi đè return/throw đang pending — **anti-pattern** (mục 8).
 - `throw` non-Error được phép nhưng khó `instanceof` — nên `Error` / subclass.
 
 ```ts
@@ -316,6 +292,14 @@ class AppError extends Error {
 }
 ```
 
+**Bẫy jump:**
+
+| Bẫy | Chi tiết | Cách đúng |
+|-----|----------|-----------|
+| `break` trong `switch` tưởng thoát `for` | chỉ thoát switch | label trên `for` |
+| `continue` với label không phải loop | SyntaxError | chỉ loop |
+| Label khó đọc | control flow ẩn | tách hàm |
+
 ---
 
 ## 8. `try` / `catch` / `finally`
@@ -327,17 +311,39 @@ try {
   if (e instanceof AppError) {
     console.error(e.code, e.message);
   } else {
-    throw e; // rethrow
+    throw e;
   }
 } finally {
   await release();
 }
 ```
 
-- `catch` optional binding: `catch { }`.  
-- TS `useUnknownInCatchVariables`: `e` là `unknown`.  
-- `try` có thể kèm `using` bên trong block — dispose chạy theo quy tắc scope (thường trước khi rời block, phối hợp với finally theo spec).  
-- Không có conditional `catch when` như C# — lọc bằng `if` trong catch.
+- `catch` optional binding: `catch { }`.
+- TS `useUnknownInCatchVariables`: `e` là `unknown`.
+- Không có `catch when` như C# — lọc bằng `if` trong catch.
+- `try` có thể chứa `using` — dispose theo scope khi rời block (phối hợp thứ tự với `finally` theo spec ERM).
+
+### `return` / `throw` trong `finally`
+
+```ts
+function bad(): number {
+  try {
+    return 1;
+  } finally {
+    return 2; // ghi đè — caller nhận 2; lỗi trong try có thể bị nuốt nếu throw rồi return
+  }
+}
+
+function alsoBad(): void {
+  try {
+    throw new Error("x");
+  } finally {
+    return; // nuốt exception
+  }
+}
+```
+
+**Quy tắc:** `finally` chỉ cleanup (đóng handle, release lock). Không `return`/`throw`/`break`/`continue` trừ khi hiểu rõ và có lý do cực mạnh (hiếm).
 
 ```ts
 try {
@@ -350,9 +356,7 @@ try {
 
 ---
 
-## 9. Explicit Resource Management (chi tiết)
-
-Chuẩn hóa pattern “RAII-like” cho JS:
+## 9. Explicit Resource Management
 
 ```ts
 class Lock implements Disposable {
@@ -369,11 +373,7 @@ function withLock() {
   using _lock = new Lock();
   criticalSection();
 } // dispose luôn — kể cả throw
-```
 
-**Async:**
-
-```ts
 class Conn implements AsyncDisposable {
   async [Symbol.asyncDispose]() {
     await this.close();
@@ -385,80 +385,163 @@ class Conn implements AsyncDisposable {
 
 async function query() {
   await using c = new Conn();
-  return c;
+  /* ... */
 }
 ```
 
-**Nhiều resource — thứ tự LIFO:**
-
-```ts
-{
-  using a = makeA();
-  using b = makeB();
-} // dispose b, rồi a
-```
-
-**Ghi chú Node / TS:**
-
-- Bật lib/types có `Disposable`, `Symbol.dispose` (`lib`: ESNext hoặc phù hợp).  
-- Nhiều API Node vẫn chưa expose `Disposable` — wrapper mỏng gọi `.close()` / `.unref()` trong dispose.  
-- `await using` trong vòng lặp: mỗi iteration dispose trước iteration sau (hữu ích file handles).  
-- Lỗi dual (body + dispose) → `SuppressedError` (`.error` / `.suppressed`).
+- Nhiều `using` cùng block → dispose **LIFO**.
+- Lỗi body + dispose → có thể `SuppressedError` (`.error` / `.suppressed`).
+- Lib/types cần `Disposable` / `Symbol.dispose`; **nhiều API Node chưa** expose — wrapper gọi `.close()`.
+- `await using` trong vòng lặp: dispose mỗi iteration trước vòng sau.
 
 ```ts
 async function processFiles(paths: string[]) {
   for (const p of paths) {
-    await using f = await openTracked(p);
+    await using f = await openTracked(p); // wrapper minh họa, không phải API Node sẵn
     await handle(f);
   }
 }
 ```
 
+**Bẫy `using`:** sync `using` trên async resource → dùng `await using`; quên block → binding sống dài; kỳ vọng mọi fs/handle Disposable → wrapper.
+
 ---
 
-## 10. `with` (không dùng) & `debugger`
+## 10. ASI & empty statement
+
+Automatic Semicolon Insertion — engine chèn `;` theo quy tắc. Edge case hay gặp:
+
+```ts
+return
+  value; // tương đương return; rồi statement `value` — trả undefined!
+
+const x = a
+[0]; // có thể parse thành `const x = a[0]` hoặc tách dòng tùy ngữ cảnh — formatter giúp
+
+if (ok); // empty statement — thân if là no-op; khối sau luôn chạy
+{
+  oops();
+}
+```
+
+| Bẫy ASI | Kết quả | Cách đúng |
+|---------|---------|-----------|
+| `return` xuống dòng | `undefined` | `return value` cùng dòng / `(value)` |
+| `throw` xuống dòng | tương tự | cùng dòng |
+| `yield` xuống dòng (generator) | tương tự | cùng dòng |
+| Dòng bắt đầu bằng `(` / `[` / `` ` `` | dính expression trước | `;` trước dòng hoặc style nhất quán |
+| `if (c);` | thân rỗng | luôn dùng `{ }` |
+
+- Formatter (Prettier) + eslint `semi` giảm rủi ro.
+- Empty `;` cố ý hiếm khi cần — comment nếu cố ý.
+- `"use strict";` cần trong CJS script/function; **không cần** trong ESM.
+
+```ts
+for (;;) {
+  break; // vòng cố ý — vẫn nên rõ ràng
+}
+```
+
+---
+
+## 11. `with` (không dùng) & `debugger`
 
 ```ts
 debugger; // dừng nếu inspector đang gắn (node --inspect)
 ```
 
-- **`with (obj) { ... }`**: thêm object vào scope chain — **cấm trong strict mode** (và mọi ESM). Không dùng; gây tối nghĩa & tối ưu kém.  
-- `debugger` để trống trong production build nếu bundler strip; không dựa vào như logging.
+- **`with (obj) { ... }`**: thêm object vào scope chain — **cấm trong strict / ESM**. Không dùng.
+- `debugger` để trống trong production nếu bundler strip; không thay logging.
 
 ---
 
-## 11. Empty statement & strict mode
+## 12. Bẫy thường gặp
 
-```ts
-if (ok); // empty — thường bug
-for (;;) {
-  /* intentional empty body? vẫn nên có comment */
-}
-```
-
-- Dấu `;` một mình là empty statement.  
-- ASI (Automatic Semicolon Insertion) có edge case (`return\nvalue` → return undefined) — style nhất quán + formatter.  
-- `"use strict";` cần trong CJS script/function; **không cần** trong ESM module.
+| Bẫy | Dấu hiệu | Cách đúng |
+|-----|----------|-----------|
+| `for...in` array | index string / prototype | `for...of` |
+| `switch` thiếu `break` | fall-through | break/return/comment |
+| Union không exhaustive | case mới compile vẫn qua | `assertNever` |
+| `return` trong `finally` | sai giá trị / nuốt lỗi | chỉ cleanup |
+| ASI `return\\n` | `undefined` | cùng dòng |
+| Object literal làm statement | thành label/block | `({...})` |
+| `using` sai sync/async | resource lệch | `await using` |
+| Label/`break` nhầm tầng | thoát sai cấu trúc | label đúng hoặc tách hàm |
+| Destructuring `undefined` | TypeError | default / guard |
+| `await` tuần tự không cần | chậm | song song có kiểm soát |
 
 ---
 
-## 12. Mẹo & best practices
+## 13. Best practices
 
-- Prefer `const` + `for...of` / iterators hơn `for...in` / index thủ công khi không cần index.  
-- Dùng `using`/`await using` khi resource có protocol dispose; nếu không — `try`/`finally` + `close()`.  
-- Giữ `switch` exhaustiveness với `never` cho union.  
-- Tránh `return`/`throw` trong `finally`.  
-- Top-level await chỉ entry ESM; lib xuất sync API hoặc async function tường minh.  
-- Node 26: event-loop vẫn chạy nếu còn handle; `process.exitCode` + để loop drain thường sạch hơn `process.exit` giữa chừng statement cleanup.
+1. Prefer `const` + `for...of` hơn `for...in` / index khi không cần index.
+2. `switch` discriminant + `assertNever` cho exhaustiveness.
+3. `using`/`await using` khi có dispose; không thì `try`/`finally` + `close()`.
+4. Không `return`/`throw`/`break` trong `finally`; luôn `{ }` cho `if`/`for`.
+5. TLA chỉ entry; formatter bật để giảm ASI.
+6. Node 26: `process.exitCode` + drain loop thường sạch hơn `process.exit` giữa cleanup.
 
 ```ts
 async function main() {
   await using app = await bootstrap();
   await app.listen();
 }
-
 main().catch((err) => {
   console.error(err);
   process.exitCode = 1;
 });
 ```
+
+---
+
+## 14. Checklist
+
+```text
+□ for-of cho iterable; for-in chỉ object + hasOwn?
+□ switch có break/return; union có assertNever?
+□ finally chỉ cleanup? return/throw không bị ASI tách dòng?
+□ using vs await using đúng? Không with / if (c);?
+□ Entry: TLA hoặc main().catch + exitCode?
+```
+
+---
+
+## 15. Cheat sheet
+
+| Statement | Việc |
+|-----------|------|
+| `const`/`let` / `using` | khai báo (+ dispose LIFO) |
+| `if` / `switch` | nhánh; case dùng `===` |
+| `for...of` / `for await...of` | iterable / async iterable |
+| `for...in` | keys — cẩn thận prototype |
+| `break` / `continue` + label | nhảy tầng |
+| `try`/`catch`/`finally` | lỗi — finally = cleanup |
+| `return`/`throw` | thoát; tránh trong finally |
+
+---
+
+## 16. Version notes
+
+| Giai đoạn | Liên quan statement |
+|-----------|---------------------|
+| ES2015–18 | `let`/`const`; `for...of`; `async`/`await`; `for await...of` |
+| ES2020+ | top-level await |
+| ERM hiện đại | `using` / `await using` / `SuppressedError` |
+| TS | `assertNever`; `useUnknownInCatchVariables` |
+| Node 26 | baseline — kiểm tra API có `Disposable` hay không |
+
+Baseline: **Node 26** + **TS 7**.
+
+---
+
+## 17. Tài liệu liên quan
+
+- [keywords.md](keywords.md) — từng từ khóa / `using`
+- [operators.md](operators.md) — biểu thức trong statement
+- [literals.md](literals.md) — object literal vs block
+- [exceptions.md](exceptions.md) — Error, catch, AggregateError
+- [async.md](async.md) — await, TLA, vòng async
+- [iterables-linq.md](iterables-linq.md) — iterable / async iterable
+- [event-loop.md](event-loop.md) — khi statement “treo” loop
+- [main-function.md](main-function.md) — entry / shutdown
+- [node26-ts7.md](node26-ts7.md) — baseline

@@ -1,111 +1,82 @@
 # Modules & Packages
 
-*(ESM, CommonJS, `package.json` exports/imports, `node:` builtins)*
+*(ESM, CommonJS, `package.json` exports/imports, dual package hazard, `node:`, TypeScript `NodeNext`)*
 
-Baseline: **Node.js 26** (ESM-first), **TypeScript 7**. Node **24** Maintenance LTS cùng hướng ESM; khác biệt chủ yếu API mới (Temporal, `getOrInsert`, …).
+Baseline: **Node.js 26** (ESM-first), **TypeScript 7**. Node **24** LTS cùng hướng ESM — [node26-ts7.md](node26-ts7.md). Compiler: [tsconfig.md](tsconfig.md). npm/pnpm: [tooling.md](tooling.md).
 
 ---
 
 ## Mục lục
 
-- [Modules \& Packages](#modules--packages)
-  - [Mục lục](#mục-lục)
-  - [1. Hai hệ thống module](#1-hai-hệ-thống-module)
-  - [2. ESM — `import` / `export`](#2-esm--import--export)
-    - [2.1 Export](#21-export)
-    - [2.2 Import](#22-import)
-    - [2.3 Dynamic `import()`](#23-dynamic-import)
-    - [2.4 Top-level await](#24-top-level-await)
-  - [3. CommonJS — `require` / `module.exports`](#3-commonjs--require--moduleexports)
-  - [4. Chọn ESM hay CJS: `"type"` và đuôi file](#4-chọn-esm-hay-cjs-type-và-đuôi-file)
-  - [5. Interop ESM ↔ CJS](#5-interop-esm--cjs)
-    - [5.1 ESM import CJS](#51-esm-import-cjs)
-    - [5.2 CJS load ESM — `createRequire` \& dynamic import](#52-cjs-load-esm--createrequire--dynamic-import)
-  - [6. `package.json`: `exports`, `imports`, `main`](#6-packagejson-exports-imports-main)
-    - [6.1 `exports` map](#61-exports-map)
-    - [6.2 Conditional exports](#62-conditional-exports)
-    - [6.3 `imports` (subpath aliases nội bộ)](#63-imports-subpath-aliases-nội-bộ)
-  - [7. Builtin modules — `node:` protocol](#7-builtin-modules--node-protocol)
-  - [8. Path aliases: TypeScript vs runtime](#8-path-aliases-typescript-vs-runtime)
-  - [9. Best practices](#9-best-practices)
+1. [Hai hệ thống module](#1-hai-hệ-thống-module)
+2. [ESM — `import` / `export`](#2-esm--import--export)
+3. [CommonJS — `require` / `module.exports`](#3-commonjs--require--moduleexports)
+4. [`"type"` và đuôi file](#4-type-và-đuôi-file)
+5. [Interop ESM ↔ CJS](#5-interop-esm--cjs)
+6. [Dual package hazard](#6-dual-package-hazard)
+7. [`package.json`: `exports`, `imports`, `main`, `module`](#7-packagejson-exports-imports-main-module)
+8. [Conditional exports sâu](#8-conditional-exports-sâu)
+9. [Resolution edge cases & TypeScript `NodeNext`](#9-resolution-edge-cases--typescript-nodenext)
+10. [Builtin `node:` & import attributes](#10-builtin-node--import-attributes)
+11. [Circular dependencies](#11-circular-dependencies)
+12. [Publishing checklist](#12-publishing-checklist)
+13. [Best practices](#13-best-practices)
+14. [Checklist](#14-checklist)
+15. [Cheat sheet](#15-cheat-sheet)
+16. [Version notes](#16-version-notes)
+17. [Tài liệu liên quan](#17-tài-liệu-liên-quan)
 
 ---
 
 ## 1. Hai hệ thống module
 
-| | **ESM** (ECMAScript Modules) | **CommonJS (CJS)** |
+| | **ESM** | **CommonJS (CJS)** |
 |---|---|---|
 | Cú pháp | `import` / `export` | `require` / `module.exports` |
 | Load | bất đồng bộ, static analysis | đồng bộ |
-| `__dirname` / `__filename` | không có sẵn → dùng `import.meta` | có sẵn |
+| `__dirname` / `__filename` | qua `import.meta` | có sẵn |
 | Top-level await | có | không |
-| Khuyến nghị Node 26 | **mặc định cho code mới** | legacy / tương thích |
+| Khuyến nghị Node 26 | **mặc định code mới** | legacy / dual publish |
 
-Một file `.js` là ESM hay CJS phụ thuộc **`"type"` trong `package.json` gần nhất** và/hoặc **đuôi file** (`.mjs` / `.cjs`).
+File `.js` là ESM hay CJS phụ thuộc **`"type"` gần nhất** và/hoặc đuôi (`.mjs` / `.cjs`).
+
+> Node không đoán theo nội dung `import` vs `require` trong `.js` — sai `"type"` → parse error hoặc semantics lệch.
 
 ---
 
 ## 2. ESM — `import` / `export`
 
-### 2.1 Export
+### 2.1 Export / import
 
 ```ts
-// named exports
 export const VERSION = "1.0.0";
 export function add(a: number, b: number) {
   return a + b;
 }
-
-// rename khi export
-function internalHelper() {}
 export { internalHelper as helper };
-
-// default export (một module nên có tối đa một default)
 export default class App {
   start() {}
 }
-
-// re-export
 export { readFile } from "node:fs/promises";
 export * from "./utils.js";
-```
 
-### 2.2 Import
-
-```ts
 import App, { VERSION, add, helper } from "./app.js";
 import * as math from "./math.js";
-import { readFile as read } from "node:fs/promises";
-
-// side-effect import (chạy module, không lấy binding)
-import "./polyfill.js";
+import "./polyfill.js"; // side-effect
 ```
 
-**Lưu ý Node ESM:**
+**Node ESM:** relative import **cần đuôi** (`.js`, …). Với TS `NodeNext`: viết `from "./app.js"` dù nguồn là `app.ts`. Bare specifier đi qua `node_modules` + `exports`.
 
-- Phải kèm **đuôi file** khi import relative (`.js`, `.mjs`, …) trừ khi dùng bundler / loader đặc biệt.
-- Với TypeScript emit `nodenext`: viết `from "./app.js"` dù nguồn là `app.ts` (Node resolve theo file đã emit / strip).
-
-### 2.3 Dynamic `import()`
+### 2.2 Dynamic `import()` & top-level await
 
 ```ts
-async function loadPlugin(name: string) {
-  const mod = await import(`./plugins/${name}.js`);
-  return mod.default;
-}
-```
+const mod = await import(`./plugins/${name}.js`);
 
-- Trả về `Promise`. Dùng khi cần lazy-load, conditional load, hoặc load ESM từ CJS.
-
-### 2.4 Top-level await
-
-```ts
-// chỉ hợp lệ trong ESM
+// TLA — chỉ ESM; importer chờ evaluate xong
 const config = await import("./config.js");
-const data = await fetch("https://example.com/api").then((r) => r.json());
 ```
 
-Module chờ TLA xong mới “evaluate xong”; importer sẽ await gián tiếp.
+Lazy/conditional load; CJS → ESM. Đừng TLA nặng ở entry library (cold start + khó CJS consumer).
 
 ---
 
@@ -113,118 +84,128 @@ Module chờ TLA xong mới “evaluate xong”; importer sẽ await gián tiế
 
 ```js
 // math.cjs
-function add(a, b) {
-  return a + b;
-}
-module.exports = { add };
-// hoặc: exports.add = add;
-```
+module.exports = { add(a, b) { return a + b; } };
+// hoặc: exports.add = add; — đừng gán lại exports = {...}
 
-```js
 const { add } = require("./math.cjs");
 const path = require("node:path");
-const fs = require("fs"); // vẫn chạy; nên dùng node:
 ```
 
-Đặc điểm:
-
 - `require` **đồng bộ**, cache theo absolute path.
-- `module.exports = ...` thay thế toàn bộ export; `exports.foo = ...` gắn property (đừng gán lại `exports = ...`).
-- Có `__dirname`, `__filename`, `require.main`, `module.parent` (deprecated một phần).
-
-Tương đương ESM:
+- Có `__dirname`, `__filename`, `require.main`.
 
 ```ts
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 ```
 
 ---
 
-## 4. Chọn ESM hay CJS: `"type"` và đuôi file
+## 4. `"type"` và đuôi file
 
 ```json
 {
   "name": "my-app",
   "type": "module",
-  "main": "./dist/index.js",
   "exports": "./dist/index.js"
 }
 ```
 
-| File | Với `"type":"module"` | Với `"type":"commonjs"` / không khai báo |
+| File | `"type":"module"` | `"type":"commonjs"` / không khai báo |
 |---|---|---|
 | `.js` | ESM | CJS |
 | `.mjs` | luôn ESM | luôn ESM |
 | `.cjs` | luôn CJS | luôn CJS |
-| `.ts` (Node strip-types) | theo `"type"` + cấu hình | theo `"type"` |
+| `.ts` (strip-types) | theo `"type"` + cấu hình | theo `"type"` |
 
-Khuyến nghị dự án mới:
-
-```json
-{ "type": "module" }
-```
-
-và dùng `.cjs` chỉ khi bắt buộc (script legacy, config tool cũ).
+Dự án mới: `"type": "module"`; `.cjs` chỉ khi tool bắt buộc.
 
 ---
 
 ## 5. Interop ESM ↔ CJS
 
-### 5.1 ESM import CJS
+### 5.1 ESM → CJS
 
 ```ts
 import pkg from "some-cjs-package";
 import * as ns from "some-cjs-package";
-```
-
-- Default import thường nhận `module.exports`.
-- Named import từ CJS **có thể** hoạt động nhờ Node “synthetic named exports”, nhưng không đáng tin 100% với mọi package → ưu tiên default + destructure:
-
-```ts
+// Named import dựa synthetic named exports — không 100% với mọi package
 import cjs from "lodash";
-const { debounce } = cjs;
+const { debounce } = cjs; // an toàn hơn khi nghi ngờ
 ```
 
-### 5.2 CJS load ESM — `createRequire` & dynamic import
-
-CJS **không** `require()` được ESM thuần:
+### 5.2 CJS → ESM & `createRequire`
 
 ```js
-// ❌ require("./esm-only.mjs") → ERR_REQUIRE_ESM (tùy phiên bản/cờ)
-```
-
-**Từ ESM tạo `require` (đọc CJS / JSON / builtin):**
-
-```ts
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
-const pkg = require("./legacy.cjs");
-const data = require("./data.json");
-```
-
-**Từ CJS load ESM:** dùng dynamic `import()` (async):
-
-```js
-// loader.cjs
+// CJS không require() ESM thuần ổn định → dynamic import
 async function main() {
   const { default: App } = await import("./app.mjs");
   new App().start();
 }
-main();
 ```
+
+```ts
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const pkg = require("./legacy.cjs");
+const data = require("./data.json"); // sync từ ESM
+```
+
+| Từ → Sang | Cách | Sync? |
+|---|---|---|
+| ESM → CJS | `import` default / namespace | sau load |
+| CJS → ESM | `await import()` | **không** |
+| ESM → sync CJS/JSON | `createRequire` | có |
+| CJS → CJS | `require` | có |
 
 ---
 
-## 6. `package.json`: `exports`, `imports`, `main`
+## 6. Dual package hazard
 
-### 6.1 `exports` map
+Publish **cả** ESM và CJS (hai file / hai đường resolve) có thể evaluate **hai lần** cùng logical module → hai singleton:
 
-`exports` **che** cấu trúc thư mục: consumer chỉ import được entry được khai báo.
+Triệu chứng: `instanceof` fail, config/`Map` không chia sẻ, `===` giữa “cùng” export = `false`.
+
+**Nguyên nhân thường gặp:**
+
+1. `exports`: `import` → `.js`, `require` → `.cjs` khác nhau.
+2. Bundler lấy một bản, Node lấy bản kia.
+3. App trộn `require("pkg")` và `import "pkg"`.
+4. Thiếu `exports` → tool lấy `module` (ESM) trong khi Node lấy `main` (CJS).
+
+| Chiến lược | Mô tả |
+|---|---|
+| **ESM-only** | Chỉ `import` trong `exports`; CJS dùng `import()` |
+| **CJS facade mỏng** | `.cjs` bridge; state một nơi |
+| **`exports` khớp `main`** | Không để `main`/`module` lệch |
+| Document | Tránh require+import cùng pkg nếu dual |
+
+> Node gọi đây **dual package hazard**. Library mới trên Node 26: ưu tiên **ESM-only**.
+
+```json
+{
+  "name": "@acme/sdk",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  }
+}
+```
+
+`index.cjs` nên facade mỏng — không nhân đôi business + singleton.
+
+---
+
+## 7. `package.json`: `exports`, `imports`, `main`, `module`
+
+### 7.1 `exports` thắng
 
 ```json
 {
@@ -241,33 +222,18 @@ main();
 ```ts
 import { Client } from "@acme/sdk";
 import { trim } from "@acme/sdk/utils";
-// import from "@acme/sdk/dist/index.js" → bị chặn nếu không export
+// "@acme/sdk/dist/index.js" → ERR_PACKAGE_PATH_NOT_EXPORTED nếu không export
 ```
 
-`main` vẫn hữu ích cho tool cũ; với Node hiện đại **`exports` thắng**.
+| Field | Vai trò Node hiện đại | Ghi chú |
+|---|---|---|
+| `exports` | **Nguồn sự thật** | Ưu tiên khi có |
+| `main` | Fallback tool cũ | Giữ khớp `exports["."]` |
+| `module` | **Không** field Node chính thức | Bundler lịch sử |
+| `types` / conditional `types` | TypeScript | Trong `exports` |
+| `files` | npm pack whitelist | Kiểm soát tarball |
 
-### 6.2 Conditional exports
-
-```json
-{
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs",
-      "default": "./dist/index.js"
-    }
-  }
-}
-```
-
-Điều kiện phổ biến: `import`, `require`, `node`, `default`, `types` (TypeScript / bundler).
-
-Thứ tự điều kiện quan trọng — đặt `types` trước `import`/`require` theo khuyến nghị TS.
-
-### 6.3 `imports` (subpath aliases nội bộ)
-
-Chỉ dùng **trong package**, key bắt đầu `#`:
+### 7.2 `imports` — alias `#`
 
 ```json
 {
@@ -283,24 +249,117 @@ import { db } from "#lib/db.js";
 import config from "#config";
 ```
 
-Ưu điểm: alias **có hiệu lực ở runtime Node**, không cần bundler — khác `tsconfig` `paths`.
+**Runtime Node hiểu `#imports`** — khác `tsconfig.paths` (chỉ typecheck trừ bundler/loader).
 
 ---
 
-## 7. Builtin modules — `node:` protocol
+## 8. Conditional exports sâu
+
+```json
+{
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": {
+        "node": "./dist/index.node.js",
+        "default": "./dist/index.js"
+      },
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  }
+}
+```
+
+| Condition | Ai set | Ý nghĩa |
+|---|---|---|
+| `types` | TypeScript / tooling | `.d.ts` |
+| `import` | ESM `import` / `import()` | |
+| `require` | `require()` | |
+| `node` | Node runtime | Nhánh Node |
+| `default` | Fallback | Nên luôn có |
+| `browser` / … | Môi trường tương ứng | Tùy ecosystem |
+
+- **Thứ tự key có ý nghĩa** — đặt `types` **trước** `import`/`require` (khuyến nghị TS).
+- Wildcard `"./*": "./dist/*.js"` dễ lộ nội bộ — ưu tiên liệt kê subpath public.
+
+> Có `exports` thì deep import `pkg/dist/secret.js` bị chặn — tính năng, không bug.
+
+---
+
+## 9. Resolution edge cases & TypeScript `NodeNext`
+
+### 9.1 Skeleton & hành vi
+
+```json
+{
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "types": ["node"]
+  }
+}
+```
+
+Chi tiết: [tsconfig.md](tsconfig.md).
+
+| Hành vi `NodeNext` | Hệ quả |
+|---|---|
+| Bám Node (`exports`, đuôi) | `from "./foo"` thiếu đuôi → lỗi |
+| Tôn trọng `"type"` + `.mts`/`.cts` | Khớp ESM/CJS |
+| Conditional `types` trong `exports` | Publish đúng `.d.ts` |
+| `paths` không rewrite runtime | Dùng `#imports` hoặc relative |
+
+```ts
+// app.ts — đúng NodeNext / Node ESM
+import { util } from "./util.js"; // → util.ts nguồn / util.js emit
+```
+
+`rewriteRelativeImportExtensions` có thể cho `from "./util.ts"` rồi emit `.js` — convention phổ biến vẫn viết `.js` trong nguồn.
+
+### 9.2 `main` / `module` / `exports` lệch
+
+```json
+{
+  "main": "./legacy/index.js",
+  "module": "./esm/index.js",
+  "exports": { ".": "./dist/index.js" }
+}
+```
+
+Node (có `exports`) → `./dist/index.js`; bundler cũ có thể lấy `module` → **dual hazard / type lệch**. Một truth = `exports`; `main` chỉ mirror.
+
+### 9.3 Alias: TS vs runtime
+
+| Cách | Runtime Node? | Ghi chú |
+|---|---|---|
+| `#imports` | Có | Khuyến nghị app ESM |
+| Bundler rewrite | Sau bundle | OK |
+| `tsx` / loader | Dev | Cẩn thận prod |
+| Chỉ `tsconfig.paths` | **Không** | TS xanh, Node đỏ |
+
+---
+
+## 10. Builtin `node:` & import attributes
 
 ```ts
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { Worker } from "node:worker_threads";
 ```
 
-- `node:fs` rõ ràng hơn `fs` (tránh conflict với package npm tên trùng).
-- Nên **luôn** dùng prefix `node:` trong code mới.
-- Subpath promises: `node:fs/promises`, `node:stream/promises`, `node:timers/promises`, `node:dns/promises`.
+- Tránh conflict npm trùng tên; **luôn** `node:` trong code mới.
+- Subpath: `node:fs/promises`, `node:stream/promises`, `node:timers/promises`, `node:dns/promises`.
 
-Liệt kê:
+```ts
+import data from "./config.json" with { type: "json" };
+const mod = await import("./config.json", { with: { type: "json" } });
+```
+
+- Dùng `with` (không dùng `assert` cũ).
+- Thống nhất JSON qua `with` **hoặc** `createRequire` — đừng trộn lung tung trong cùng app.
 
 ```bash
 node -e "console.log(require('node:module').builtinModules)"
@@ -308,45 +367,152 @@ node -e "console.log(require('node:module').builtinModules)"
 
 ---
 
-## 8. Path aliases: TypeScript vs runtime
+## 11. Circular dependencies
 
-**TypeScript `paths`** chỉ ảnh hưởng **type-check / editor**, **không** rewrite path khi chạy bằng Node thuần:
-
-```json
-{
-  "compilerOptions": {
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    }
-  }
-}
-```
+**ESM:** cycle được với live bindings, nhưng đọc quá sớm → TDZ / `ReferenceError`:
 
 ```ts
-import { User } from "@/models/user.js"; // TS hiểu; Node runtime có thể FAIL
+// b.js
+import { a } from "./a.js";
+export const b = a + 1; // nguy hiểm nếu a chưa init
 ```
 
-Cách xử lý thực tế:
+**CJS:** `require` cycle trả `module.exports` đang xây → property `undefined` im lặng.
 
-| Cách | Runtime? | Ghi chú |
-|---|---|---|
-| `package.json` `#imports` | Có (Node) | Khuyến nghị cho app ESM Node |
-| Bundler (esbuild, tsup, webpack) | Có (sau bundle) | Rewrite khi build |
-| `tsx` / loader tùy chỉnh | Có (dev) | Tiện local; cẩn thận production |
-| Chỉ `tsc` emit | Không tự rewrite `paths` | Dùng relative hoặc `#imports` |
+| Cách tránh | Chi tiết |
+|---|---|
+| Shared `constants` / `types` | Không import ngược |
+| Dependency inversion | Interface + inject |
+| Lazy `import()` trong hàm | Tránh top-level cycle |
+| Gộp module | Nếu luôn đi cùng |
+| Tool | `madge`, `dpdm`, `import/no-cycle` |
 
-**Quy tắc:** alias muốn chạy trên Node → dùng `#imports` (hoặc bundler), đừng chỉ dựa vào `paths`.
+> Cycle “chạy được” ≠ thiết kế tốt. Public API nên **zero cycle**.
 
 ---
 
-## 9. Best practices
+## 12. Publishing checklist
 
-- Dự án mới: `"type":"module"`, import `node:*`, đuôi `.js` trong relative import.
-- Library publish: khai báo `exports` chặt; cung cấp `types` / dual package nếu cần CJS.
-- Tránh mixed ESM/CJS lung tung trong cùng tree — tách `.cjs` rõ ràng khi bắt buộc.
-- Dùng `createRequire` khi ESM cần đọc JSON/CJS sync; dùng dynamic `import()` khi CJS cần ESM.
-- Alias runtime → `#imports`; alias chỉ-for-TS → ghi chú rõ hoặc tránh.
-- Không dựa vào bare specifier resolution kiểu bundler (`import "lodash/get"`) trừ khi package `exports` cho phép.
+```text
+□ name, version, type đúng
+□ exports đủ entry public; conditional types → import → require → default
+□ main khớp exports["."]
+□ files / .npmignore — không leak test/.env
+□ .d.ts đúng; types trong exports
+□ npm pack --dry-run / pnpm pack
+□ Cài tarball vào fixture ESM (+ CJS nếu dual)
+□ Dual: test singleton/instanceof — hoặc ESM-only
+□ LICENSE, README, repository; engines.node nếu cần
+```
 
-**Tài liệu liên quan:** [tsconfig & biên dịch](tsconfig.md) · [npm / tooling](tooling.md) · [Node built-ins](nodejs-apis.md)
+```json
+{
+  "name": "@acme/sdk",
+  "version": "1.0.0",
+  "type": "module",
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "engines": { "node": ">=24" }
+}
+```
+
+---
+
+## 13. Best practices
+
+1. Mới: `"type":"module"`, `node:*`, đuôi `.js` relative.
+2. Publish: `exports` chặt + `types` conditional + `files` whitelist.
+3. Tránh mixed ESM/CJS — `.cjs` rõ khi bắt buộc.
+4. Hiểu dual hazard trước khi ship `import` + `require` khác file.
+5. `createRequire` cho sync CJS/JSON; `import()` khi CJS cần ESM.
+6. Alias runtime → `#imports`; đừng chỉ `paths`.
+7. TS: `module` / `moduleResolution` = **`NodeNext`**.
+8. Tôn trọng `exports` người khác — không deep-import `dist` nội bộ.
+9. JSON: một convention (`with` hoặc `createRequire`).
+10. CI: `npm pack` + install consumer tối thiểu mỗi release.
+
+---
+
+## 14. Checklist
+
+```text
+□ "type" tường minh
+□ Relative ESM có đuôi
+□ tsconfig NodeNext
+□ Không phụ thuộc field "module" cho Node runtime
+□ exports có default; types trước import/require
+□ Không cycle ở public API
+□ Dual đã test singleton — hoặc ESM-only
+□ #imports thay paths nếu cần alias runtime
+□ Builtin luôn node:
+□ Publish: files + dry-run pack + thử install
+```
+
+---
+
+## 15. Cheat sheet
+
+```ts
+import fs from "node:fs/promises";
+import cfg from "./config.json" with { type: "json" };
+import { x } from "#lib/x.js";
+const mod = await import("./plugin.js");
+
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+```
+
+```json
+{
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  },
+  "imports": { "#lib/*": "./dist/lib/*.js" }
+}
+```
+
+| Nhu cầu | Chọn |
+|---|---|
+| App Node mới | ESM + `NodeNext` |
+| Legacy CJS | `.cjs` / `"type":"commonjs"` cục bộ |
+| Alias runtime | `#imports` |
+| Load ESM từ CJS | `await import()` |
+| Tránh dual hazard | ESM-only hoặc facade mỏng |
+
+---
+
+## 16. Version notes
+
+| Dòng | Ghi chú |
+|---|---|
+| **Node 26** + **TS 7** | ESM-first; `NodeNext`; TS 7 từ chối `moduleResolution` cổ |
+| Node 24 LTS | Cùng hướng `exports` / ESM |
+| `exports` / `imports` | Ổn định; conditional `types` quan trọng với TS |
+| Import attributes `with` | Thay `assert`; JSON modules |
+| `node:` | Khuyến nghị bắt buộc style mới |
+| `require(ESM)` | Không phải đường chính — ưu tiên `import()` |
+| Dual package hazard | Vẫn đúng khi hai artifact — thiết kế có ý thức |
+
+---
+
+## 17. Tài liệu liên quan
+
+- [tsconfig & biên dịch TypeScript](tsconfig.md)
+- [npm / pnpm / yarn & tooling](tooling.md)
+- [Node.js built-ins](nodejs-apis.md)
+- [Entry point & chạy chương trình](main-function.md)
+- [Node 26 & TypeScript 7 highlights](node26-ts7.md)

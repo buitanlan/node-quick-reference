@@ -1,38 +1,37 @@
 # tsconfig & biên dịch TypeScript
 
-*(compilerOptions then chốt cho Node ESM, type stripping, project references)*
+`compilerOptions` then chốt cho Node ESM, type stripping, và project references trên **TypeScript 7** + **Node.js 26**.
 
-Baseline: **TypeScript 7** (compiler Go), chạy trên **Node.js 26** (ESM-first). Mục tiêu phổ biến: `module` / `moduleResolution`: **`NodeNext`**, `strict: true` (mặc định từ TS 7), và chọn rõ workflow **strip-types** vs **`tsc` emit** vs **tsx**. Xem [node26-ts7.md](node26-ts7.md).
+> Mục tiêu phổ biến: `module` / `moduleResolution`: **`NodeNext`**, `strict: true` (mặc định TS 7), và chọn rõ workflow **strip-types** vs **`tsc` emit** vs **tsx**. Xem [node26-ts7.md](node26-ts7.md) · [tooling.md](tooling.md).
 
 ---
 
 ## Mục lục
 
-- [tsconfig \& biên dịch TypeScript](#tsconfig--biên-dịch-typescript)
-  - [Mục lục](#mục-lục)
-  - [1. Vai trò `tsconfig.json`](#1-vai-trò-tsconfigjson)
-  - [2. Skeleton khuyến nghị (Node ESM)](#2-skeleton-khuyến-nghị-node-esm)
-  - [3. `module` \& `moduleResolution`](#3-module--moduleresolution)
-  - [4. `target`, `lib`, JSX](#4-target-lib-jsx)
-  - [5. `strict` và an toàn kiểu](#5-strict-và-an-toàn-kiểu)
-  - [6. `verbatimModuleSyntax`](#6-verbatimmodulesyntax)
-  - [7. `erasableSyntaxOnly` \& type stripping](#7-erasablesyntaxonly--type-stripping)
-  - [8. `noEmit` / `emitDeclarationOnly` / `outDir`](#8-noemit--emitdeclarationonly--outdir)
-  - [9. Ba cách chạy TypeScript trên Node](#9-ba-cách-chạy-typescript-trên-node)
-    - [9.1 Node type stripping](#91-node-type-stripping)
-    - [9.2 `tsc` emit](#92-tsc-emit)
-    - [9.3 `tsx` (dev)](#93-tsx-dev)
-  - [10. `@types/node`](#10-typesnode)
-  - [11. Path aliases vs runtime](#11-path-aliases-vs-runtime)
-  - [12. Project references (tóm tắt)](#12-project-references-tóm-tắt)
-  - [13. Checklist nhanh](#13-checklist-nhanh)
+1. [Vai trò `tsconfig.json`](#1-vai-trò-tsconfigjson)
+2. [Skeleton khuyến nghị (Node ESM)](#2-skeleton-khuyến-nghị-node-esm)
+3. [`module` & `moduleResolution`](#3-module--moduleresolution)
+4. [`target`, `lib`, JSX](#4-target-lib-jsx)
+5. [`strict` và an toàn kiểu](#5-strict-và-an-toàn-kiểu)
+6. [`verbatimModuleSyntax`](#6-verbatimmodulesyntax)
+7. [`erasableSyntaxOnly` & type stripping](#7-erasablesyntaxonly--type-stripping)
+8. [`noEmit` / emit / `outDir`](#8-noemit--emit--outdir)
+9. [Ba cách chạy TypeScript trên Node](#9-ba-cách-chạy-typescript-trên-node)
+10. [`@types/node`](#10-typesnode)
+11. [Path aliases vs runtime](#11-path-aliases-vs-runtime)
+12. [Project references](#12-project-references)
+13. [Best practices](#13-best-practices)
+14. [Checklist](#14-checklist)
+15. [Cheat sheet](#15-cheat-sheet)
+16. [Version notes](#16-version-notes)
+17. [Tài liệu liên quan](#17-tài-liệu-liên-quan)
 
 ---
 
 ## 1. Vai trò `tsconfig.json`
 
 - Bảo TypeScript **cách kiểm tra kiểu** và (tuỳ chọn) **emit** JS / `.d.ts`.
-- Editor (VS Code / GoLand) đọc `tsconfig` để IntelliSense.
+- Editor đọc `tsconfig` cho IntelliSense.
 - Không thay `package.json` `"type"` — module runtime vẫn do Node quyết định.
 
 Nhiều file: `tsconfig.json` (base), `tsconfig.build.json` (emit), `tsconfig.eslint.json` (scope lint).
@@ -55,6 +54,7 @@ Nhiều file: `tsconfig.json` (base), `tsconfig.build.json` (emit), `tsconfig.es
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
+    "noImplicitOverride": true,
     "types": ["node"],
     "rewriteRelativeImportExtensions": true
   },
@@ -65,20 +65,20 @@ Nhiều file: `tsconfig.json` (base), `tsconfig.build.json` (emit), `tsconfig.es
 
 Điều chỉnh theo workflow:
 
-- **Chỉ typecheck + Node strip / tsx:** thêm `"noEmit": true` (và có thể `erasableSyntaxOnly`).
+- **Chỉ typecheck + Node strip / tsx:** `"noEmit": true` (+ có thể `erasableSyntaxOnly`).
 - **Library publish:** `declaration: true`, `declarationMap`, có thể `composite`.
 
 `rewriteRelativeImportExtensions`: cho phép viết `from "./foo.ts"` và emit thành `.js` — hữu ích một số setup; với Node thuần cổ điển vẫn hay viết `./foo.js` trong nguồn `.ts`.
 
-Có thể kế thừa base: `"extends": "@tsconfig/node26/tsconfig.json"` rồi override theo workflow.
+Base cộng đồng: `"extends": "@tsconfig/node26/tsconfig.json"` rồi override.
 
-**TypeScript 7 — defaults / lỗi cứng hơn** (từ deprecation TS 6):
+### TypeScript 7 — defaults / lỗi cứng hơn
 
 - `strict` mặc định **true**.
 - `moduleResolution: "node"` / `node10` / `classic` → **error**; dùng `NodeNext` / `nodenext` / `bundler`.
 - `target: es5` (và vài target cũ) → **error**; với Node 26 ưu tiên **ES2024** / **ESNext**.
-- Ngữ nghĩa ngôn ngữ gần parity **6.0**; headline là tốc độ compiler Go (~8–12× full build, `--checkers` / `--builders` / `--singleThreaded`).
-- Programmatic compiler API ổn định khoảng **7.1**; tooling cần API cũ dùng bridge `@typescript/typescript6`.
+- Ngữ nghĩa ngôn ngữ gần parity **6.0**; headline tốc độ compiler Go (~8–12× full build; `--checkers` / `--builders` / `--singleThreaded`).
+- Programmatic compiler API ổn định khoảng **7.1**; tooling API cũ → `@typescript/typescript6`.
 
 ---
 
@@ -86,22 +86,20 @@ Có thể kế thừa base: `"extends": "@tsconfig/node26/tsconfig.json"` rồi 
 
 | Giá trị | Khi dùng |
 |---|---|
-| `NodeNext` | **Khuyến nghị** app/lib chạy trên Node hiện đại (theo `package.json` type/exports) |
-| `Node16` | Tương tự, neo theo luật Node 16; thường chọn `NodeNext` |
-| `ESNext` + bundler | Khi emit cho bundler; kèm `moduleResolution: "bundler"` |
+| `NodeNext` | **Khuyến nghị** app/lib Node hiện đại |
+| `Node16` | Neo luật Node 16; thường chọn `NodeNext` |
+| `ESNext` + `bundler` | Emit cho bundler |
 | `CommonJS` | Legacy CJS only |
-| `"node"` / `node10` / `classic` | **Lỗi trên TS 7** — đừng dùng |
+| `"node"` / `node10` / `classic` | **Lỗi trên TS 7** |
 
 Với `NodeNext`:
 
 - Relative import cần đuôi phù hợp (thường `.js` trong import path).
 - Tôn trọng `package.json` `exports` / `"type"`.
-- `require` vs `import` được type-check theo ngữ cảnh file.
 
 ```ts
-// trong .ts emit ESM
 import { readFile } from "node:fs/promises";
-import { helper } from "./helper.js"; // trỏ tới helper.ts nguồn
+import { helper } from "./helper.js"; // trỏ helper.ts nguồn
 ```
 
 ---
@@ -109,19 +107,16 @@ import { helper } from "./helper.js"; // trỏ tới helper.ts nguồn
 ## 4. `target`, `lib`, JSX
 
 - `target`: phiên bản JS **emit** (hoặc giả định runtime nếu `noEmit`).
-- Node 26 hiểu ES2024+ khá đầy đủ → `target`/`lib` **ES2024** hoặc **ESNext** hợp lý.
-- Đừng thêm DOM `lib` trừ khi share code browser hoặc dùng API DOM cố ý.
-- `jsx` chỉ khi có React/JSX; service API thuần thì bỏ.
+- Node 26 hiểu ES2024+ khá đầy đủ → `ES2024` hoặc `ESNext`.
+- Đừng thêm DOM `lib` trừ khi share browser hoặc dùng API DOM cố ý.
+- Temporal: theo dõi `lib` / `@types/node` — có thể cần ambient nếu global chưa có trong types.
+- `jsx` chỉ khi React/JSX.
 
 ---
 
 ## 5. `strict` và an toàn kiểu
 
-Trên **TS 7**, `strict` mặc định **true**. `"strict": true` bật nhóm:
-
-- `strictNullChecks`, `strictFunctionTypes`, `strictBindCallApply`,
-- `strictPropertyInitialization`, `noImplicitAny`, `noImplicitThis`,
-- `alwaysStrict`, `useUnknownInCatchVariables`, …
+Trên **TS 7**, `strict` mặc định **true** — gồm `strictNullChecks`, `strictFunctionTypes`, `strictBindCallApply`, `strictPropertyInitialization`, `noImplicitAny`, `noImplicitThis`, `alwaysStrict`, `useUnknownInCatchVariables`, …
 
 Bổ sung hay dùng:
 
@@ -136,7 +131,17 @@ Bổ sung hay dùng:
 }
 ```
 
-Bật dần trên codebase cũ nếu quá ồn.
+`strictFunctionTypes` ảnh hưởng variance callback — [functions-callbacks.md](functions-callbacks.md).
+
+### 5.1 Tắt từng flag? (không khuyến nghị)
+
+Trên codebase migrate, đôi khi tạm tắt `strictPropertyInitialization` hoặc trì hoãn `noUncheckedIndexedAccess`. **Đừng** tắt cả `strict` trên TS 7 rồi quên bật lại — ghi TODO/issue. Prefer enable dần theo package trong monorepo (`references` + tsconfig riêng) hơn một `strict: false` toàn repo.
+
+### 5.2 IsolatedDeclarations / declaration emit (tóm tắt)
+
+Khi publish `.d.ts` và muốn emit nhanh/an toàn hơn, theo dõi option kiểu `isolatedDeclarations` (TS 5.5+) — yêu cầu type annotation đủ trên export để generate declarations không cần inference toàn chương trình. Hữu ích monorepo lớn; có thể ồn trên codebase cũ — bật có chủ đích.
+
+Không bắt buộc cho app nội bộ chỉ `noEmit` + strip.
 
 ---
 
@@ -146,10 +151,7 @@ Bật dần trên codebase cũ nếu quá ồn.
 { "compilerOptions": { "verbatimModuleSyntax": true } }
 ```
 
-Ép import/export **giống runtime**:
-
 ```ts
-// type-only phải ghi rõ
 import type { User } from "./types.js";
 import { createUser } from "./user.js";
 
@@ -173,36 +175,28 @@ Tránh import giá trị bị xóa nhầm lúc emit / strip. Kết hợp tốt v
 }
 ```
 
-Khi bật, TypeScript **cấm** cú pháp không chỉ là type annotation / không xóa sạch được bằng strip, ví dụ điển hình:
-
-- `enum`
-- `namespace` / `module` (non-ESM),
-- parameter properties trong constructor (`constructor(public x: number)`),
-- một số dạng decorators / syntax experimental tùy phiên bản.
-
-Mục tiêu: file `.ts` **chạy được** trên Node type stripping (chỉ bỏ types) mà không cần transpile đầy đủ.
-
-Thay thế thường dùng:
+Khi bật, TypeScript **cấm** cú pháp không xóa sạch bằng strip:
 
 | Tránh (khi erasable) | Dùng thay |
 |---|---|
 | `enum` | `as const` object + type |
-| Parameter props | khai báo field tường minh |
-| `namespace` | ES modules |
+| Parameter properties | field tường minh |
+| `namespace` / `module` (non-ESM) | ES modules |
+| Decorators | bỏ hoặc chuyển pipeline `tsc`/`tsx` |
+
+Mục tiêu: `.ts` chạy được trên Node type stripping mà không cần transpile đầy đủ. Chi tiết decorator: [decorators.md](decorators.md). OOP fields: [oop.md](oop.md).
 
 ---
 
-## 8. `noEmit` / `emitDeclarationOnly` / `outDir`
+## 8. `noEmit` / emit / `outDir`
 
 | Option | Ý nghĩa |
 |---|---|
-| `noEmit: true` | Chỉ typecheck (CI, strip-types, tsx) |
-| `emitDeclarationOnly` | Chỉ `.d.ts` (khi JS do bundler tạo) |
+| `noEmit: true` | Chỉ typecheck |
+| `emitDeclarationOnly` | Chỉ `.d.ts` (JS do bundler) |
 | `outDir` / `rootDir` | Cấu trúc emit |
 | `sourceMap` | Debug |
-| `declaration` | Xuất kiểu cho library |
-
-Script CI phổ biến:
+| `declaration` | Library types |
 
 ```json
 {
@@ -219,19 +213,16 @@ Script CI phổ biến:
 
 ### 9.1 Node type stripping
 
-Từ Node **22.6** (experimental) → ổn định qua 24 → trên **Node 26** type stripping **ổn định và mặc định** cho `.ts`:
+Trên **Node 26**, type stripping **ổn định** cho `.ts`:
 
 ```bash
 node src/index.ts
 ```
 
-Node 26 **đã gỡ** `--experimental-transform-types`. Chỉ cú pháp **erasable** (annotation, `interface`/`type`, generics erasable, `satisfies`…) chạy qua strip. `enum` / `namespace` / decorators / parameter properties → `tsc` / `tsx` / bundler.
-
-Đặc điểm:
-
 - **Không** type-check; **không** transpile syntax “thừa”.
-- Nhanh cho dev/simple deploy; vẫn nên `tsc --noEmit` trên CI.
-- Khuyến nghị: `erasableSyntaxOnly` + `verbatimModuleSyntax` để fail sớm trong editor.
+- Đã gỡ `--experimental-transform-types`.
+- Vẫn nên `tsc --noEmit` trên CI.
+- Khuyến nghị: `erasableSyntaxOnly` + `verbatimModuleSyntax`.
 
 ### 9.2 `tsc` emit
 
@@ -240,9 +231,7 @@ tsc -p tsconfig.json
 node dist/index.js
 ```
 
-- Kiểm soát tối đa, phù hợp production cổ điển và thư viện.
-- Emit tôn trọng `module: NodeNext`.
-- Có thể thêm bundler (esbuild/tsup) nếu cần single file / minify.
+Kiểm soát tối đa; phù hợp production và thư viện. Tôn trọng `module: NodeNext`.
 
 ### 9.3 `tsx` (dev)
 
@@ -251,11 +240,7 @@ tsx src/index.ts
 tsx watch src/index.ts
 ```
 
-- Transpile nhanh (esbuild), chạy hầu hết cú pháp TS.
-- Thuận tiện local; **không** thay typecheck — vẫn chạy `tsc --noEmit`.
-- Production: thường emit bằng `tsc`/bundler thay vì dựa tsx.
-
-**Tóm tắt chọn:**
+Transpile nhanh (esbuild); **không** thay typecheck.
 
 | Môi trường | Gợi ý |
 |---|---|
@@ -279,11 +264,7 @@ pnpm add -D typescript@^7 @types/node@^26
 }
 ```
 
-- Cung cấp type cho `process`, `Buffer`, `node:fs`, … và globals Node.
-- Version **major** `@types/node` nên khớp major Node bạn target (**Node 26** → `@types/node@^26`).
-- Không cần `@types/node` nếu chỉ dùng typed package thuần và không đụng builtin — nhưng app Node thực tế **luôn** nên có.
-
-`/// <reference types="node" />` hiếm khi cần nếu `types`/`typeRoots` đã đúng.
+Major `@types/node` khớp major Node (**26** → `@types/node@^26`). App Node thực tế **luôn** nên có.
 
 ---
 
@@ -300,20 +281,17 @@ pnpm add -D typescript@^7 @types/node@^26
 
 `paths` **không** được Node hiểu khi chạy `node dist/...` trừ khi:
 
-- dùng `package.json` `#imports`,
-- hoặc bundler/loader rewrite,
-- hoặc tránh alias, dùng relative / `#lib/...`.
+- `package.json` `#imports`,
+- bundler/loader rewrite,
+- hoặc tránh alias — relative / `#lib/...`.
 
 Chi tiết: [modules-packages.md](modules-packages.md).
 
 ---
 
-## 12. Project references (tóm tắt)
-
-Chia monorepo thành nhiều project TS build theo thứ tự:
+## 12. Project references
 
 ```json
-// tsconfig.json (solution)
 {
   "files": [],
   "references": [
@@ -324,7 +302,6 @@ Chia monorepo thành nhiều project TS build theo thứ tự:
 ```
 
 ```json
-// packages/core/tsconfig.json
 {
   "compilerOptions": {
     "composite": true,
@@ -338,26 +315,145 @@ Chia monorepo thành nhiều project TS build theo thứ tự:
 
 ```bash
 tsc -b
+tsc -b --clean
+tsc -b -w
 ```
 
-- `composite: true` bắt buộc cho project được reference.
-- Tăng tốc incremental build lớn; cần `declaration`.
-- Công cụ: `tsc -b --clean`, watch `-b -w`.
+`composite: true` bắt buộc cho project được reference. Không bắt buộc cho app nhỏ một package.
 
-Không bắt buộc cho app nhỏ một package.
+### 12.1 `tsconfig` tách build vs typecheck
+
+```json
+// tsconfig.json — editor + CI typecheck
+{
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}
+```
+
+```json
+// tsconfig.build.json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "sourceMap": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}
+```
+
+### 12.2 Incremental
+
+```json
+{
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo"
+  }
+}
+```
+
+Hữu ích monorepo / CI cache; gitignore file build info nếu không chia sẻ artifact. Kết hợp `tsc -b` khi dùng project references.
 
 ---
 
-## 13. Checklist nhanh
+## 13. Best practices
 
-1. `"type": "module"` trong `package.json` (nếu chọn ESM).  
-2. `module` / `moduleResolution`: `NodeNext` (không dùng `node`/`classic`).  
-3. `strict` + `verbatimModuleSyntax`.  
-4. Workflow strip-types? → `erasableSyntaxOnly` + `noEmit` + tránh `enum`/namespace/decorators/param props.  
-5. Workflow emit? → `outDir`, `declaration` nếu publish.  
-6. `typescript@^7`, `@types/node@^26`.  
-7. CI: `tsc --noEmit` dù dev dùng tsx/strip.  
-8. Alias runtime → `#imports`, không chỉ `paths`.  
-9. Tooling cần programmatic API cũ → `@typescript/typescript6` cho tới ~TS 7.1.
+1. `NodeNext` + `"type": "module"` khi chọn ESM.
+2. Giữ `strict` + `verbatimModuleSyntax`.
+3. Chọn một workflow strip vs emit; đừng nửa nạc.
+4. Strip? → `erasableSyntaxOnly`; tránh enum/namespace/decorators/param props.
+5. CI luôn `tsc --noEmit`.
+6. `@types/node@^26` với baseline Node 26.
+7. Alias runtime qua `#imports`, không chỉ `paths`.
+8. `noImplicitOverride` khi dùng class hierarchy.
+9. Tách `tsconfig.build.json` nếu dev `noEmit` nhưng prod emit.
+10. Tooling API cũ → bridge cho tới ~TS 7.1.
 
-**Tài liệu liên quan:** [node26-ts7.md](node26-ts7.md) · [modules-packages.md](modules-packages.md) · [tooling.md](tooling.md) · [decorators.md](decorators.md)
+---
+
+## 14. Checklist
+
+```text
+□ "type": "module" (nếu ESM)
+□ module / moduleResolution: NodeNext
+□ strict + verbatimModuleSyntax
+□ Strip? erasableSyntaxOnly + noEmit + tránh non-erasable
+□ Emit? outDir + declaration nếu publish
+□ typescript@^7, @types/node@^26
+□ CI: tsc --noEmit
+□ Alias runtime → #imports
+□ noImplicitOverride / noUncheckedIndexedAccess cân nhắc
+□ Không dùng moduleResolution node/classic (TS 7 error)
+```
+
+---
+
+## 15. Cheat sheet
+
+```json
+{
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "noEmit": true,
+    "types": ["node"]
+  }
+}
+```
+
+```bash
+tsc --noEmit
+tsc -p tsconfig.build.json
+node src/index.ts
+```
+
+| Option | Việc |
+|---|---|
+| `NodeNext` | ESM/CJS theo package.json |
+| `erasableSyntaxOnly` | Khớp Node strip |
+| `verbatimModuleSyntax` | `import type` tường minh |
+| `noEmit` | Typecheck-only |
+| `composite` | Project references |
+
+---
+
+## 16. Version notes
+
+| Nền | Liên quan |
+|---|---|
+| TS 5+ | `verbatimModuleSyntax`, Stage 3 decorators |
+| TS 5.8+ / gần đây | `erasableSyntaxOnly` (theo dõi đúng minor bạn dùng) |
+| **TS 7** | `strict` default; cấm `moduleResolution` cũ; compiler Go; API ~7.1 |
+| Node 22.6+ | type stripping experimental |
+| **Node 26** | strip ổn định; không transform-types |
+| `@types/node` | major khớp Node |
+
+Baseline: **Node 26** + **TS 7**.
+
+---
+
+## 17. Tài liệu liên quan
+
+- [Node 26 & TypeScript 7 highlights](node26-ts7.md)
+- [Modules & Packages](modules-packages.md)
+- [npm / pnpm / yarn & tooling](tooling.md)
+- [Decorators & Metadata](decorators.md)
+- [Lập trình hướng đối tượng](oop.md) — parameter properties / override
+- [Function type, Callback & Lambda](functions-callbacks.md) — `strictFunctionTypes`
+- [Entry point & chạy chương trình](main-function.md)

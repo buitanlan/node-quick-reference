@@ -1,78 +1,135 @@
 # Entry point & chạy chương trình
 
-Trong Node.js **không có** hàm `Main` bắt buộc như C#. Điểm vào (entry point) được xác định bởi cách bạn **gọi runtime**, bởi trường trong `package.json` (`main` / `module` / `exports` / `bin`), hoặc bởi shebang khi chạy script CLI. Baseline tài liệu: **Node.js 26** (Current; LTS dự kiến Oct 2026), **TypeScript 7**. Node **24** vẫn Maintenance LTS. Ưu tiên **ESM + TypeScript**; CJS vẫn phổ biến và được ghi rõ khi cần.
+Trong Node.js **không có** hàm `Main` bắt buộc như C# / `func main` như Go. Điểm vào do cách **gọi runtime**, trường `package.json` (`main` / `exports` / `bin`), hoặc shebang CLI quyết định.
 
-Node 26: **type stripping ổn định, mặc định** cho `.ts` — `node file.ts` (không type-check). Chỉ cú pháp **erasable**; `--experimental-transform-types` **đã gỡ**. Dùng `tsc` / `tsx` / bundler khi cần kiểm tra kiểu đầy đủ hoặc syntax không erasable.
+Baseline: **Node.js 26** (Current; LTS dự kiến Oct 2026) + **TypeScript 7**. Node **24** vẫn Maintenance LTS. Ưu tiên **ESM + TypeScript**; CJS ghi rõ khi cần.
+
+> Node 26: **type stripping ổn định, mặc định** cho `.ts` — `node file.ts` (không type-check). Chỉ cú pháp **erasable**; `--experimental-transform-types` **đã gỡ**. Prod thường `tsc`/bundler emit JS; CI luôn `tsc --noEmit`.
 
 ---
 
 ## Mục lục
 
-- [Entry point & chạy chương trình](#entry-point--chạy-chương-trình)
+- [Entry point \& chạy chương trình](#entry-point--chạy-chương-trình)
   - [Mục lục](#mục-lục)
   - [1. Tổng quan entry point](#1-tổng-quan-entry-point)
-  - [2. `package.json`: `main` / `module` / `exports` / `type`](#2-packagejson-main--module--exports--type)
-    - [2.1 `type`](#21-type)
-    - [2.2 `main` và `module`](#22-main-và-module)
-    - [2.3 `exports` (khuyến nghị hiện đại)](#23-exports-khuyến-nghị-hiện-đại)
-    - [2.4 `bin`](#24-bin)
-  - [3. Chạy chương trình](#3-chạy-chương-trình)
-    - [3.1 `node file.js`](#31-node-filejs)
-    - [3.2 `node file.ts` (type stripping)](#32-node-filets-type-stripping)
-    - [3.3 `tsx` / `ts-node` (overview)](#33-tsx--ts-node-overview)
-    - [3.4 Script npm](#34-script-npm)
-  - [4. ESM vs CJS entry](#4-esm-vs-cjs-entry)
-  - [5. Shebang & CLI scripts](#5-shebang--cli-scripts)
-  - [6. `process.argv`, exit codes, `process.exit`](#6-processargv-exit-codes-processexit)
-  - [7. Top-level `await` trong ESM](#7-top-level-await-trong-esm)
-  - [8. Mẹo thực tế & pitfalls](#8-mẹo-thực-tế--pitfalls)
+  - [2. Các chế độ entry: strip / tsc / ESM / CJS / bin](#2-các-chế-độ-entry-strip--tsc--esm--cjs--bin)
+    - [2.1 `node file.ts` (type stripping)](#21-node-filets-type-stripping)
+    - [2.2 `tsc` emit rồi `node dist/…`](#22-tsc-emit-rồi-node-dist)
+    - [2.3 ESM vs CJS](#23-esm-vs-cjs)
+    - [2.4 `package.json` `exports` / `bin`](#24-packagejson-exports--bin)
+    - [2.5 Shebang \& CLI](#25-shebang--cli)
+  - [3. `process.argv` \& `util.parseArgs`](#3-processargv--utilparseargs)
+  - [4. Exit codes: `process.exit` vs `exitCode`](#4-exit-codes-processexit-vs-exitcode)
+  - [5. Signal \& graceful shutdown](#5-signal--graceful-shutdown)
+  - [6. Top-level await vs `async main().catch`](#6-top-level-await-vs-async-maincatch)
+  - [7. Environment \& dotenv — thận trọng](#7-environment--dotenv--thận-trọng)
+  - [8. Readiness / health (tóm tắt)](#8-readiness--health-tóm-tắt)
+  - [9. Pitfalls](#9-pitfalls)
+  - [10. Best practices](#10-best-practices)
+  - [11. Checklist](#11-checklist)
+  - [12. Cheat sheet](#12-cheat-sheet)
+  - [13. Version notes](#13-version-notes)
+  - [14. Tài liệu liên quan](#14-tài-liệu-liên-quan)
 
 ---
 
 ## 1. Tổng quan entry point
 
-- **CLI trực tiếp**: `node path/to/entry.js` (hoặc `.mjs` / `.cjs` / `.ts` khi type stripping).  
-- **Package entry**: khi `require('pkg')` / `import 'pkg'` → Node resolve theo `exports` (ưu tiên) rồi `main`.  
-- **CLI binary**: `npx my-cli` / global install → resolve qua `bin`.  
-- **Không có** “một hàm Main duy nhất”; mọi top-level code trong module được load sẽ chạy ngay khi module được đánh giá.
+| Cách vào | Ví dụ | Ghi chú |
+|---|---|---|
+| CLI trực tiếp | `node dist/index.js` / `node src/index.ts` | Top-level chạy khi module evaluate |
+| Package entry | `import 'pkg'` / `require('pkg')` | Resolve `exports` rồi `main` |
+| Binary | `npx my-cli` / global `bin` | Shim npm + shebang |
+
+- **Không** có một hàm Main duy nhất — mọi top-level code trong module được load sẽ chạy.
+- Giữ entry **mỏng**: parse args → config → `await main()` / `run(signal)` → map exit code.
+- So Go: không `init()` bắt buộc; hạn chế side-effect import ở thư viện.
 
 ```ts
-// src/index.ts — toàn bộ top-level là “entry logic”
-console.log("boot");
-await bootstrap(); // chỉ hợp lệ trong ESM (xem mục 7)
+// src/index.ts
+import { parseArgs } from "node:util";
+import { main } from "./app.js";
+
+const { values, positionals } = parseArgs({
+  options: { port: { type: "string", default: "3000" } },
+  allowPositionals: true,
+});
+
+try {
+  await main({ port: Number(values.port), files: positionals });
+} catch (err) {
+  console.error(err);
+  process.exitCode = 1;
+}
 ```
 
 ---
 
-## 2. `package.json`: `main` / `module` / `exports` / `type`
+## 2. Các chế độ entry: strip / tsc / ESM / CJS / bin
 
-### 2.1 `type`
+### 2.1 `node file.ts` (type stripping)
+
+```bash
+node src/index.ts
+node --watch src/index.ts
+```
+
+| Được (erasable) | Không (cần tsc/tsx/bundler) |
+|---|---|
+| `type` / `interface` / `as` / `satisfies` | `enum`, `namespace` |
+| Generics erasable; type-only import/export | Parameter properties, decorators emit, `const enum` |
+
+- Runtime **xóa annotation**, **không** type-check.
+- tsconfig: `erasableSyntaxOnly` + `verbatimModuleSyntax`.
+- Dev nhanh OK; **CI `tsc --noEmit`**; prod nhiều team emit JS.
+
+### 2.2 `tsc` emit rồi `node dist/…`
 
 ```json
 {
-  "type": "module"
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "node --watch src/index.ts"
+  }
 }
 ```
 
-- `"type": "module"` → `.js` được coi là **ESM**.  
-- `"type": "commonjs"` (mặc định nếu thiếu) → `.js` là **CJS**.  
-- Luôn có thể override bằng đuôi: `.mjs` = ESM, `.cjs` = CJS bất kể `type`.  
-- Với TypeScript: `module` trong `tsconfig` phải khớp chiến lược emit/runtime (NodeNext / Node16 / ESNext + `"type": "module"`).
+| Tool | Vai trò |
+|---|---|
+| **node (strip)** | Không dependency; không type-check |
+| **tsx** | Dev nhanh (esbuild), ESM tốt |
+| **ts-node** | Compiler TS/SWC; ESM cấu hình phức tạp hơn |
+| **tsc emit** | Prod/CI rõ; gần runtime nhất |
 
-### 2.2 `main` và `module`
+- `module` / `moduleResolution`: **NodeNext** khớp `"type": "module"`.
+- Import ESM: đuôi `.js` theo convention emit Node.
+
+### 2.3 ESM vs CJS
 
 ```json
-{
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js"
-}
+{ "type": "module" }
 ```
 
-- **`main`**: entry truyền thống cho CJS (`require`). Node vẫn đọc khi không có `exports`.  
-- **`module`**: convention của bundler (Webpack/Rollup) — **Node không dùng** field này để resolve.  
-- Package hiện đại nên dựa vào **`exports`**, giữ `main` chỉ để tương thích tooling cũ.
+| | **ESM** | **CJS** |
+|---|---|---|
+| Kích hoạt | `"type":"module"` / `.mjs` | mặc định / `.cjs` |
+| Top-level `await` | Có | Không (async IIFE) |
+| `__dirname` | Từ `import.meta.url` | Có sẵn |
 
-### 2.3 `exports` (khuyến nghị hiện đại)
+```ts
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const cfg = join(__dirname, "config.json");
+```
+
+> Field **`module`** trong `package.json` là convention bundler — **Node không dùng** để resolve. Dựa vào **`exports`**.
+
+### 2.4 `package.json` `exports` / `bin`
 
 ```json
 {
@@ -85,129 +142,17 @@ await bootstrap(); // chỉ hợp lệ trong ESM (xem mục 7)
       "require": "./dist/index.cjs"
     },
     "./package.json": "./package.json"
-  }
+  },
+  "bin": { "my-tool": "./bin/cli.js" },
+  "main": "./dist/index.cjs"
 }
 ```
 
-- Chỉ các đường dẫn liệt kê trong `exports` mới **public**; import deep path không khai báo sẽ fail.  
-- Conditional exports: `import`, `require`, `node`, `default`, `types`, …  
-- Subpath: `"./utils": "./dist/utils.js"`.  
-- Node 26: resolve theo spec `exports` nghiêm; tránh dựa vào “folder index” nếu chưa export rõ.
+- Chỉ path trong `exports` mới public.
+- `bin`: shebang + **JS đã emit** — không phụ thuộc `tsx` trên máy user.
+- Giữ `main` để tương thích tooling cũ; resolve hiện đại = `exports`.
 
-### 2.4 `bin`
-
-```json
-{
-  "bin": {
-    "my-tool": "./bin/cli.js"
-  }
-}
-```
-
-- Sau `npm link` / install, tạo shim gọi file này.  
-- File bin nên có **shebang** và executable bit (Unix). Trên Windows, npm tạo `.cmd` wrapper.
-
----
-
-## 3. Chạy chương trình
-
-### 3.1 `node file.js`
-
-```bash
-node dist/index.js
-node --env-file=.env dist/index.js   # Node 20.6+; ổn định trên 26
-```
-
-- Đường dẫn tương đối theo CWD.  
-- Có thể truyền flag: `--watch`, `--inspect`, `--experimental-*` (ít cần hơn trên 26).
-
-### 3.2 `node file.ts` (type stripping)
-
-Từ Node **22.6+** (experimental) → ổn định qua 24 → trên **Node 26** mặc định cho `.ts`:
-
-```bash
-node src/index.ts
-```
-
-- Runtime **xóa annotation kiểu**, không type-check.  
-- **Chỉ erasable TS**: interfaces, type aliases, `as`/`satisfies`, generics erasable.  
-- **Không** chạy qua strip: `enum`, `namespace`, decorators, parameter properties → cần `tsc` / `tsx` / bundler.  
-- Node 26 **đã gỡ** `--experimental-transform-types` (không còn transform non-erasable trên runtime).  
-- Khuyến nghị: `erasableSyntaxOnly` + `verbatimModuleSyntax`; prod thường emit JS bằng `tsc`/bundler; CI luôn `tsc --noEmit`.
-
-```ts
-// OK với type stripping (erasable)
-type User = { id: string };
-const u = { id: "1" } satisfies User;
-console.log(u.id);
-```
-
-### 3.3 `tsx` / `ts-node` (overview)
-
-| Tool | Vai trò | Ghi chú |
-|------|---------|---------|
-| **tsx** | Chạy TS nhanh (esbuild), hỗ trợ ESM tốt | Phổ biến cho monorepo/dev |
-| **ts-node** | Chạy qua compiler TS / SWC | Cấu hình ESM phức tạp hơn; vẫn gặp nhiều |
-| **node (strip)** | Không cần dependency | Không type-check; hạn chế cú pháp |
-
-```bash
-npx tsx src/index.ts
-npx ts-node --esm src/index.ts
-```
-
-### 3.4 Script npm
-
-```json
-{
-  "scripts": {
-    "start": "node dist/index.js",
-    "dev": "node --watch src/index.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
-  }
-}
-```
-
-- Tách **chạy** và **type-check**: `node` strip ≠ kiểm tra kiểu.
-
----
-
-## 4. ESM vs CJS entry
-
-**ESM** (`"type": "module"` hoặc `.mjs`):
-
-```ts
-// index.ts
-import { readFile } from "node:fs/promises";
-
-const text = await readFile("./data.txt", "utf8"); // top-level await
-console.log(text.length);
-```
-
-**CJS** (mặc định / `.cjs`):
-
-```js
-// index.cjs
-const { readFileSync } = require("node:fs");
-console.log(readFileSync("./data.txt", "utf8").length);
-// Không có top-level await trong CJS thuần
-```
-
-- Trong ESM: `__dirname` / `__filename` **không có sẵn** → dùng `import.meta.url` + `fileURLToPath`.  
-- `require` trong ESM: Node hỗ trợ `createRequire` hoặc (tùy phiên bản) `import module from 'node:module'`.  
-- Interop: CJS `module.exports` khi import ESM thường nằm ở `.default` tùy emit — kiểm tra bằng thử nghiệm, không đoán.
-
-```ts
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const cfg = join(__dirname, "config.json");
-```
-
----
-
-## 5. Shebang & CLI scripts
+### 2.5 Shebang & CLI
 
 ```ts
 #!/usr/bin/env node
@@ -218,28 +163,65 @@ const { values } = parseArgs({
 });
 if (values.help) {
   console.log("Usage: my-tool [options]");
-  process.exit(0);
+  process.exitCode = 0;
+} else {
+  await run();
 }
 ```
 
-- Dòng đầu **phải** là shebang, không có BOM.  
-- `env node` linh hoạt hơn hardcode `/usr/bin/node`.  
-- Với TS: publish file `.js` đã emit vào `bin`, hoặc dùng runner (`tsx`) trong dev only — CLI publish nên là JS.
+- Dòng đầu phải shebang, không BOM; `env node` linh hoạt hơn hardcode path.
+- Windows: npm tạo `.cmd` wrapper.
 
 ---
 
-## 6. `process.argv`, exit codes, `process.exit`
+## 3. `process.argv` & `util.parseArgs`
 
-```ts
-// node app.js --port 3000 input.txt
-// process.argv[0] = đường dẫn node
-// process.argv[1] = đường dẫn script
-// process.argv.slice(2) = args người dùng
-const args = process.argv.slice(2);
+```text
+node app.js --port 3000 input.txt
+argv[0]=node  argv[1]=script  argv.slice(2)=args người dùng
 ```
 
-- Dùng `node:util` `parseArgs` (ổn định) thay parser tự viết cho CLI đơn giản.  
-- **Exit code**: `0` = thành công; khác 0 = lỗi (convention: `1` generic, `2` misuse — không chuẩn cứng như sysexits mọi nơi).
+```ts
+import { parseArgs } from "node:util";
+
+const { values, positionals } = parseArgs({
+  args: process.argv.slice(2),
+  options: {
+    port: { type: "string", short: "p", default: "3000" },
+    verbose: { type: "boolean", short: "v", default: false },
+    tag: { type: "string", multiple: true },
+  },
+  allowPositionals: true,
+  strict: true, // unknown flag → throw
+});
+```
+
+| Option | Ý nghĩa |
+|---|---|
+| `type: "string" \| "boolean"` | Kiểu flag |
+| `short` / `multiple` / `default` | Alias, lặp → mảng, mặc định |
+| `allowPositionals` | Arg không phải flag |
+| `strict` | Từ chối flag lạ |
+
+- Subcommand phức tạp: parse hai pha hoặc lib (`commander`, `cac`).
+- Usage / lỗi → **stderr**; data CLI → **stdout**.
+
+```ts
+if (positionals.length < 1) {
+  console.error("usage: tool <file>");
+  process.exitCode = 2;
+}
+```
+
+---
+
+## 4. Exit codes: `process.exit` vs `exitCode`
+
+| Code | Convention |
+|---|---|
+| `0` | Thành công |
+| `1` | Lỗi chung |
+| `2` | Sai cách dùng / argument |
 
 ```ts
 async function main(): Promise<number> {
@@ -252,67 +234,274 @@ async function main(): Promise<number> {
   }
 }
 
-const code = await main();
-process.exitCode = code; // ưu tiên hơn process.exit() đột ngột
-// hoặc: process.exit(code);
+process.exitCode = await main();
 ```
 
-- **`process.exit(code)`**: thoát ngay, có thể cắt dở I/O / `beforeExit` / log chưa flush.  
-- **`process.exitCode = n`**: đặt mã, để event loop kết thúc tự nhiên — thường an toàn hơn.  
-- Unhandled rejection / uncaughtException: Node 26 (và từ các bản trước đã siết) mặc định thoát với code ≠ 0 cho unhandled rejection.
+| | **`process.exit(code)`** | **`process.exitCode = n`** |
+|---|---|---|
+| Hành vi | Thoát **ngay** | Đặt mã; thoát khi loop idle |
+| I/O / log | Có thể cắt dở flush | An toàn hơn |
+| Khi dùng | Fatal không cứu được | **Mặc định khuyến nghị** |
 
 ```ts
 process.on("uncaughtException", (err) => {
   console.error("fatal", err);
   process.exit(1);
 });
+
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandled", reason);
+  process.exitCode = 1;
+});
 ```
+
+> Unhandled rejection trên Node hiện đại thường **fail** process. Đừng nuốt rejection ở entry.
 
 ---
 
-## 7. Top-level `await` trong ESM
+## 5. Signal & graceful shutdown
 
-- Chỉ trong **ESM** (và các ngữ cảnh tương đương: modules được load như ESM).  
-- Module chứa TLA sẽ **đợi** promise resolve trước khi consumer nhận exports.  
-- Chuỗi dependency có TLA làm chậm startup — giữ TLA ở entry, không rải khắp lib.
+Tinh thần tương đương `signal.NotifyContext` (Go):
 
 ```ts
-// ESM entry
-const config = await import("./config.js").then((m) => m.load());
-export const app = createApp(config);
+import http from "node:http";
+
+const server = http.createServer((_req, res) => res.end("ok"));
+await new Promise<void>((r) => server.listen(3000, r));
+
+let ready = true;
+const ac = new AbortController();
+
+async function shutdown(signal: string) {
+  console.error("shutdown", signal);
+  ready = false; // readiness fail trước
+  ac.abort(new Error(signal));
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => (err ? reject(err) : resolve()));
+  });
+  // đóng DB / worker pool…
+  process.exitCode = 0;
+}
+
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+
+// truyền ac.signal xuống fetch / queue / run()
 ```
 
-- CJS: bọc trong async IIFE:
+| Tín hiệu | Ai gửi | Việc làm |
+|---|---|---|
+| **SIGINT** | Ctrl+C | Graceful stop |
+| **SIGTERM** | K8s / systemd / Docker | Graceful (rồi SIGKILL) |
+| **SIGKILL** | OS | Không bắt được |
+| Windows | Chủ yếu Ctrl+C | `SIGTERM` hạn chế hơn Unix |
 
-```js
-(async () => {
-  const config = await loadConfig();
-  start(config);
-})().catch((err) => {
-  console.error(err);
-  process.exit(1);
+> K8s `terminationGracePeriodSeconds`: `close` + drain trước kill. Dùng `once` + guard để tránh shutdown hai lần.
+
+```ts
+const FORCE_MS = 10_000;
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+  setTimeout(() => process.exit(1), FORCE_MS).unref();
 });
 ```
 
 ---
 
-## 8. Mẹo thực tế & pitfalls
+## 6. Top-level await vs `async main().catch`
 
-- **Một entry rõ ràng**: `src/index.ts` → emit `dist/index.js`; `package.json` `exports`/`bin` trỏ đúng file.  
-- **Đừng** dựa vào `module` field của package.json cho Node resolve.  
-- Type stripping ≠ thay thế CI `tsc --noEmit`.  
-- Phân biệt dual package hazard (CJS+ESM cùng graph) — đọc Node docs “Dual CommonJS/ES module packages”.  
-- Worker / child process: entry là file riêng; truyền path tuyệt đối ổn định hơn relative theo CWD.  
-- Baseline tài liệu là **Node 26**; nếu còn deploy trên **24** Maintenance LTS, kiểm tra changelog khi dùng API mới (Temporal, `getOrInsert`, …). Xem [node26-ts7.md](node26-ts7.md).
+**ESM + TLA:**
 
 ```ts
-// Mẫu entry production gọn
-import { main } from "./app.js";
+const config = await loadConfig();
+await start(config);
+```
 
-try {
-  await main(process.argv.slice(2));
-} catch (err) {
+**`main().catch` (rõ exit, dễ test):**
+
+```ts
+async function main(argv: string[]): Promise<void> {
+  await start(await loadConfig(), argv);
+}
+
+main(process.argv.slice(2)).catch((err) => {
   console.error(err);
   process.exitCode = 1;
+});
+```
+
+**CJS** — không TLA:
+
+```js
+(async () => { await main(); })().catch((err) => {
+  console.error(err);
+  process.exitCode = 1;
+});
+```
+
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Top-level `await` | Ít boilerplate ESM | Export module trì hoãn; TLA lan lib → chậm |
+| `main().catch` | Testable; map exit rõ | Thêm vài dòng |
+
+> Giữ TLA **ở entry/boot**. Library: export sync + nhận config từ entry.
+
+---
+
+## 7. Environment & dotenv — thận trọng
+
+```bash
+node --env-file=.env dist/index.js   # Node 20.6+; ổn định trên 26
+```
+
+```ts
+const port = Number(process.env.PORT ?? "3000");
+
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`missing env ${name}`);
+  return v;
 }
 ```
+
+| Cách | Khi dùng |
+|---|---|
+| `--env-file` | Dev/prod; **không** cần package `dotenv` |
+| `dotenv` package | Legacy — cẩn thận load order |
+| Secret manager / K8s Secret | Prod — không commit secret |
+| Hardcode fallback | Chỉ default an toàn (port), không API key |
+
+- Đừng `dotenv.config()` **sau** khi module khác đã đọc `process.env` lúc import.
+- `.env.example` không secret; validate env lúc boot → fail fast.
+- `NODE_OPTIONS` ảnh hưởng mọi entry — document trong README.
+
+---
+
+## 8. Readiness / health (tóm tắt)
+
+| Probe | Ý nghĩa | Entry / shutdown |
+|---|---|---|
+| **Liveness** | Process còn sống? | `/healthz` → 200 nếu loop còn |
+| **Readiness** | Nhận traffic? | `ready=false` ngay khi bắt đầu shutdown; fail nếu DB chưa sẵn |
+| **Startup** | Boot xong? | K8s startupProbe lúc migrate/warm |
+
+```ts
+let ready = false;
+
+async function boot() {
+  await connectDb();
+  ready = true;
+  await listen();
+}
+
+// GET /ready → ready ? 200 : 503
+```
+
+Chi tiết loop lag: [event-loop.md](event-loop.md). Entry **set `ready`**; signal **clear `ready`** trước `server.close`.
+
+---
+
+## 9. Pitfalls
+
+1. Tin `node file.ts` = đã type-check → thiếu CI `tsc --noEmit`.
+2. Rely field `module` trong `package.json` cho Node resolve.
+3. `process.exit(0)` giữa chừng → mất log / cắt `close` server.
+4. TLA trong thư viện sâu → import chậm; dual package hazard khi publish CJS+ESM.
+5. Không bắt SIGTERM trên container → SIGKILL giữa request.
+6. `dotenv` sau side-effect import; quên `exitCode` sau catch → exit 0 giả.
+7. Worker/child path relative CWD sai dưới systemd — dùng `import.meta.url`.
+8. Nhiều handler SIGTERM không guard → `close` hai lần.
+
+---
+
+## 10. Best practices
+
+1. Entry mỏng: `parseArgs` → validate env → `run(signal)` → `exitCode`; `exports`/`bin` trỏ đúng.
+2. Ưu tiên `process.exitCode`; `process.exit` chỉ fatal.
+3. SIGINT/SIGTERM: readiness=false → `server.close` → AbortSignal → force timeout.
+4. TLA chỉ boot; logic trong `main`/`run` export được để test.
+5. `--env-file` / secret store; không commit secret; validate boot.
+6. Stderr = log/lỗi; stdout = dữ liệu CLI; document exit codes 0/1/2.
+7. Strip cho dev; emit + `tsc --noEmit` cho CI/prod; baseline Node 26.
+
+---
+
+## 11. Checklist
+
+```text
+□ Entry mỏng; logic trong main/run có thể test
+□ ESM/CJS/`type`/`exports`/`bin` khớp cách chạy thật
+□ parseArgs — usage → stderr, exit 2 khi misuse
+□ Lỗi: exitCode = 1; tránh process.exit trừ fatal
+□ SIGINT + SIGTERM graceful; force timeout; ready=false sớm
+□ TLA chỉ entry hoặc main().catch (CJS)
+□ Env: --env-file / secrets; validate bắt buộc lúc boot
+□ CI: tsc --noEmit; prod không chỉ dựa strip
+□ HTTP: phân biệt /ready vs /healthz
+□ Worker/child: path import.meta.url; đóng lúc shutdown
+```
+
+---
+
+## 12. Cheat sheet
+
+| Việc | API / pattern |
+|---|---|
+| Chạy JS / TS strip | `node dist/index.js` / `node src/index.ts` |
+| Env file | `node --env-file=.env …` |
+| Args / flags | `argv.slice(2)` / `parseArgs` |
+| Exit an toàn / ngay | `exitCode = n` / `process.exit(n)` |
+| Shutdown | `SIGINT`/`SIGTERM` → close + AbortSignal |
+| TLA | chỉ ESM entry |
+| `__dirname` ESM | `fileURLToPath(import.meta.url)` |
+| CLI publish | `bin` + shebang + JS emit |
+
+```ts
+#!/usr/bin/env node
+import { parseArgs } from "node:util";
+
+const { values, positionals } = parseArgs({
+  options: { help: { type: "boolean", short: "h" } },
+  allowPositionals: true,
+});
+
+async function main() {
+  if (values.help) {
+    console.log("usage: tool <file>");
+    return;
+  }
+  void positionals;
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exitCode = 1;
+});
+```
+
+---
+
+## 13. Version notes
+
+| Dòng / feature | Ghi chú |
+|---|---|
+| **Node 26** (baseline) | Type stripping mặc định; transform-types đã gỡ |
+| Node 24 LTS | Strip ổn định — [node26-ts7.md](node26-ts7.md) |
+| Node 20.6+ | `--env-file` |
+| `util.parseArgs` | Ổn định cho CLI đơn giản |
+| Top-level await | ESM only |
+| Unhandled rejection | Fail process (policy hiện đại) |
+| **TypeScript 7** | `erasableSyntaxOnly` / `verbatimModuleSyntax` khớp strip |
+
+---
+
+## 14. Tài liệu liên quan
+
+- [node26-ts7.md](node26-ts7.md) — baseline Node 26 & TS 7
+- [modules-packages.md](modules-packages.md) — ESM/CJS, `exports`
+- [tsconfig.md](tsconfig.md) — emit, NodeNext, erasable
+- [async.md](async.md) — TLA, Promise, AbortSignal
+- [event-loop.md](event-loop.md) — shutdown vs loop; health/lag
+- [threading.md](threading.md) — đóng worker pool khi signal
+- [exceptions.md](exceptions.md) — uncaught / unhandledRejection
+- [tooling.md](tooling.md) — npm scripts, runners
