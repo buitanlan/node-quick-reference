@@ -2,7 +2,7 @@
 
 Bộ tài liệu tham chiếu **in-depth / advanced** cho **Node.js 26** (Current; dự kiến LTS tháng 10/2026) cùng **TypeScript 7** (compiler Go) khi viết ứng dụng phía server / tooling. Không phải giáo trình nhập môn: các khái niệm được trình bày dạng tham khảo kèm semantics, bảng quyết định, pitfalls và version gates. Nếu chưa biết JavaScript/TypeScript, bắt đầu bằng tài liệu chính thức bên dưới, rồi dùng bộ này khi cần tra cứu sâu hơn.
 
-**Baseline:** Node.js **26** + TypeScript **7**. Node **24** vẫn Maintenance LTS trong giai đoạn chuyển — xem [Node 26 & TypeScript 7 highlights](node26-ts7.md).
+**Baseline:** Node.js **26** (V8 **14.6**, Undici **8**) + TypeScript **7**. Node **24** vẫn Maintenance LTS trong giai đoạn chuyển. Type stripping (`node file.ts`) chỉ erasable syntax; CI luôn `tsc --noEmit`. Chi tiết compiler: [tsconfig.md](tsconfig.md); built-ins: [nodejs-apis.md](nodejs-apis.md).
 
 ---
 
@@ -31,7 +31,6 @@ Tham khảo chính thức: [MDN JavaScript](https://developer.mozilla.org/en-US/
 
 ### Node.js / runtime
 
-- [Node 26 & TypeScript 7 highlights](node26-ts7.md)
 - [Event loop & concurrency model](event-loop.md)
 - [Lập trình bất đồng bộ](async.md)
 - [AbortSignal & request context](abort-context.md)
