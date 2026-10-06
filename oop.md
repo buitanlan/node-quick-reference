@@ -8,27 +8,63 @@ TypeScript bổ sung class, access modifier, `abstract`, `implements`… trên J
 
 ## Mục lục
 
-1. [Class fields & constructors](#1-class-fields--constructors)
-2. [Access modifiers (TS-only erase)](#2-access-modifiers-ts-only-erase)
-3. [Native `#private` & brand check](#3-native-private--brand-check)
-4. [Static members & static initialization blocks](#4-static-members--static-initialization-blocks)
-5. [Prototype chain, `[[HomeObject]]`, `super`, `override`](#5-prototype-chain-homeobject-super-override)
-6. [`implements`, instance type vs constructor type](#6-implements-instance-type-vs-constructor-type)
-7. [Abstract classes & abstract construct signatures](#7-abstract-classes--abstract-construct-signatures)
-8. [`instanceof` & `Symbol.hasInstance`](#8-instanceof--symbolhasinstance)
-9. [Accessors vs methods](#9-accessors-vs-methods)
-10. [`this` trong method vs arrow](#10-this-trong-method-vs-arrow)
-11. [Polymorphic `this` types](#11-polymorphic-this-types)
-12. [Composition vs inheritance (Go embedding)](#12-composition-vs-inheritance-go-embedding)
-13. [Mixin: intersection + constraint](#13-mixin-intersection--constraint)
-14. [Structural typing, declaration merging](#14-structural-typing-declaration-merging)
-15. [Decorators (cross-link)](#15-decorators-cross-link)
-16. [Khi nào KHÔNG dùng class / `extends`](#16-khi-nào-không-dùng-class--extends)
-17. [Best practices](#17-best-practices)
-18. [Checklist](#18-checklist)
-19. [Cheat sheet](#19-cheat-sheet)
-20. [Version matrix](#20-version-matrix)
-21. [Tài liệu liên quan](#21-tài-liệu-liên-quan)
+- [1. Class fields & constructors](#1-class-fields--constructors)
+  - [1.1 Khai báo cơ bản](#11-khai-báo-cơ-bản)
+  - [1.2 Parameter properties vs field tường minh (erasable)](#12-parameter-properties-vs-field-tường-minh-erasable)
+  - [1.3 Definite assignment / `!`](#13-definite-assignment--)
+  - [1.4 Thứ tự khởi tạo](#14-thứ-tự-khởi-tạo)
+  - [1.5 `readonly`](#15-readonly)
+- [2. Access modifiers (TS-only erase)](#2-access-modifiers-ts-only-erase)
+- [3. Native `#private` & brand check](#3-native-private--brand-check)
+  - [3.1 Brand check vs WeakMap cũ](#31-brand-check-vs-weakmap-cũ)
+  - [3.2 `#private` method / getter](#32-private-method--getter)
+  - [3.3 `new.target`](#33-newtarget)
+- [4. Static members & static initialization blocks](#4-static-members--static-initialization-blocks)
+  - [4.1 `static {}` (ES2022)](#41-static--es2022)
+  - [4.2 Static vs instance diagram](#42-static-vs-instance-diagram)
+- [5. Prototype chain, `[[HomeObject]]`, `super`, `override`](#5-prototype-chain-homeobject-super-override)
+  - [5.1 Prototype chain](#51-prototype-chain)
+  - [5.2 `[[HomeObject]]` và `super`](#52-homeobject-và-super)
+  - [5.3 `override` & `noImplicitOverride`](#53-override--noimplicitoverride)
+  - [5.4 Override vs overload](#54-override-vs-overload)
+- [6. `implements`, instance type vs constructor type](#6-implements-instance-type-vs-constructor-type)
+  - [6.1 Interface constructor (construct signature)](#61-interface-constructor-construct-signature)
+  - [6.2 Class như interface — `typeof Class` vs `InstanceType`](#62-class-như-interface--typeof-class-vs-instancetype)
+  - [6.3 Interface vs type alias](#63-interface-vs-type-alias)
+  - [6.4 Method optional](#64-method-optional)
+- [7. Abstract classes & abstract construct signatures](#7-abstract-classes--abstract-construct-signatures)
+  - [7.1 Abstract construct signatures](#71-abstract-construct-signatures)
+- [8. `instanceof` & `Symbol.hasInstance`](#8-instanceof--symbolhasinstance)
+  - [8.1 `Symbol.hasInstance`](#81-symbolhasinstance)
+  - [8.2 Khi hữu ích / khi mong manh](#82-khi-hữu-ích--khi-mong-manh)
+  - [8.3 Cross-realm pitfall](#83-cross-realm-pitfall)
+  - [8.4 Class có `private` → gần nominal hơn](#84-class-có-private--gần-nominal-hơn)
+- [9. Accessors vs methods](#9-accessors-vs-methods)
+- [10. `this` trong method vs arrow](#10-this-trong-method-vs-arrow)
+  - [10.1 Prototype method — `this` động](#101-prototype-method--this-động)
+  - [10.2 Arrow field — lexical `this`](#102-arrow-field--lexical-this)
+  - [10.3 Annotate `this` param (TS)](#103-annotate-this-param-ts)
+- [11. Polymorphic `this` types](#11-polymorphic-this-types)
+- [12. Composition vs inheritance (Go embedding)](#12-composition-vs-inheritance-go-embedding)
+  - [12.1 Composition](#121-composition)
+  - [12.2 Go embedding analogue](#122-go-embedding-analogue)
+  - [12.3 Inheritance khi hợp lý](#123-inheritance-khi-hợp-lý)
+  - [12.4 Anti-pattern](#124-anti-pattern)
+- [13. Mixin: intersection + constraint](#13-mixin-intersection--constraint)
+  - [13.1 Constructor args xuyên mixin](#131-constructor-args-xuyên-mixin)
+- [14. Structural typing, declaration merging](#14-structural-typing-declaration-merging)
+  - [14.1 Structural, không nominal](#141-structural-không-nominal)
+  - [14.2 Class dùng làm kiểu](#142-class-dùng-làm-kiểu)
+  - [14.3 Khi dùng class vs interface](#143-khi-dùng-class-vs-interface)
+  - [14.4 Declaration merging của class](#144-declaration-merging-của-class)
+  - [14.5 Class expression & `typeof`](#145-class-expression--typeof)
+- [15. Decorators (cross-link)](#15-decorators-cross-link)
+- [16. Khi nào KHÔNG dùng class / `extends`](#16-khi-nào-không-dùng-class--extends)
+- [17. Best practices](#17-best-practices)
+- [18. Checklist](#18-checklist)
+- [19. Cheat sheet](#19-cheat-sheet)
+- [20. Version matrix](#20-version-matrix)
+- [21. Tài liệu liên quan](#21-tài-liệu-liên-quan)
 
 ---
 
@@ -313,22 +349,6 @@ new A().hasX({}); // false
 
 **Khi nào KHÔNG dùng WeakMap cho private:** class mới trên Node 26 — `#field` đủ, rõ hơn, không giữ map. WeakMap còn hợp khi ẩn data trên object **không phải instance** (decorate DOM node — không có trên Node thuần).
 
-### 3.3 `new.target`
-
-```ts
-class Base {
-  constructor() {
-    if (new.target === Base) {
-      throw new Error("use subclass");
-    }
-  }
-}
-```
-
-`new.target` là constructor được `new` thật (derived khi `new Derived`). Abstract TS không chặn runtime — `new.target` có thể giả lập. Erasable (là JS).
-
----
-
 ### 3.2 `#private` method / getter
 
 ```ts
@@ -346,6 +366,20 @@ class C {
 ```
 
 Không `super.#hidden()` từ subclass — private **không kế thừa** như `protected`. Subclass khai `#hidden` riêng, không override.
+
+### 3.3 `new.target`
+
+```ts
+class Base {
+  constructor() {
+    if (new.target === Base) {
+      throw new Error("use subclass");
+    }
+  }
+}
+```
+
+`new.target` là constructor được `new` thật (derived khi `new Derived`). Abstract TS không chặn runtime — `new.target` có thể giả lập. Erasable (là JS).
 
 ---
 
@@ -1210,7 +1244,6 @@ Không `super()` thiếu args của base. Field mixin init **sau** `super` — c
 
 ---
 
----
 
 ## 14. Structural typing, declaration merging
 
@@ -1262,27 +1295,6 @@ run({ start() {} }); // OK — structural: đủ method start
 
 Prefer: **interface cho dữ liệu & port**, **class cho adapter/service có lifecycle**.
 
-### 14.5 Class expression & `typeof`
-
-```ts
-const make = <T extends string>(name: T) =>
-  class {
-    readonly kind = name;
-  };
-
-const Cat = make("cat");
-type Cat = InstanceType<typeof Cat>;
-new Cat().kind; // "cat"
-```
-
-Class expression ẩn danh: stack/`name` nghèo — đặt `class Cat extends …` khi public.
-
-`Foo.name` runtime là chuỗi tên hàm constructor (minify đổi). Đừng dùng `name` làm discriminant ổn định — dùng `code` / literal field.
-
-> Class expression trả từ factory generic: mỗi lần gọi một constructor **khác** (`instanceof` không chia sẻ giữa lần gọi).
-
----
-
 ### 14.4 Declaration merging của class
 
 TS cho merge **class + interface** cùng tên (instance side) và **class + namespace** (static side). **Không** merge hai `class`.
@@ -1321,6 +1333,25 @@ Bar.helper();
 Module augmentation **không** thêm method runtime vào class lib — chỉ kiểu. Implement thật phải prototype patch (đừng, trừ polyfill).
 
 > Collision: interface merge `y: string` trong khi class có `y: number` → lỗi. Augment class built-in (`interface Error`) — [exceptions.md](exceptions.md), [typesystem.md](typesystem.md).
+
+### 14.5 Class expression & `typeof`
+
+```ts
+const make = <T extends string>(name: T) =>
+  class {
+    readonly kind = name;
+  };
+
+const Cat = make("cat");
+type Cat = InstanceType<typeof Cat>;
+new Cat().kind; // "cat"
+```
+
+Class expression ẩn danh: stack/`name` nghèo — đặt `class Cat extends …` khi public.
+
+`Foo.name` runtime là chuỗi tên hàm constructor (minify đổi). Đừng dùng `name` làm discriminant ổn định — dùng `code` / literal field.
+
+> Class expression trả từ factory generic: mỗi lần gọi một constructor **khác** (`instanceof` không chia sẻ giữa lần gọi).
 
 ---
 
@@ -1498,3 +1529,5 @@ Baseline: **Node 26** + **TS 7**.
 - [Main / entry](main-function.md) — không I/O trong `static {}` lúc import
 
 ---
+
+- [Kiểm hợp đồng public và lifecycle](testing.md)

@@ -2,29 +2,64 @@
 
 Trong JS/TS, **hàm** là giá trị first-class; **method** là hàm gắn object/class. Baseline: **ESM**, **Node.js 26**, **TypeScript 7**.
 
-Kiểu hàm / callback / HOF → [functions-callbacks.md](functions-callbacks.md). `async` → [async.md](async.md). `using` đầy đủ → [statements.md](statements.md) §9. Iterator / `function*` sâu → [iterables-linq.md](iterables-linq.md).
+Kiểu hàm / callback / HOF → [functions-callbacks.md](functions-callbacks.md). `async` → [async.md](async.md). `using` đầy đủ → [statements.md](statements.md#11-using-vs-tryfinally). Iterator / `function*` sâu → [iterables-linq.md](iterables-linq.md).
 
 ---
 
 ## Mục lục
 
-1. [Declaration vs expression vs arrow](#1-declaration-vs-expression-vs-arrow)
-2. [`this` binding](#2-this-binding)
-3. [Tham số: default, rest, spread, optional](#3-tham-số-default-rest-spread-optional)
-4. [Overload trong TypeScript](#4-overload-trong-typescript)
-5. [Closure, TDZ & loop capture](#5-closure-tdz--loop-capture)
-6. [Method trên object & class](#6-method-trên-object--class)
-7. [Getter / Setter](#7-getter--setter)
-8. [`call` / `apply` / `bind`](#8-call--apply--bind)
-9. [Generator functions](#9-generator-functions)
-10. [`async function` (tóm tắt)](#10-async-function-tóm-tắt)
-11. [`using` & Explicit Resource Management](#11-using--explicit-resource-management)
-12. [Chi phí & pitfalls](#12-chi-phí--pitfalls)
-13. [Best practices](#13-best-practices)
-14. [Checklist](#14-checklist)
-15. [Cheat sheet](#15-cheat-sheet)
-16. [Version matrix](#16-version-matrix)
-17. [Tài liệu liên quan](#17-tài-liệu-liên-quan)
+- [1. Declaration vs expression vs arrow](#1-declaration-vs-expression-vs-arrow)
+  - [1.1 Declaration (hoisted)](#11-declaration-hoisted)
+  - [1.2 Expression](#12-expression)
+  - [1.3 Arrow](#13-arrow)
+  - [1.4 So sánh](#14-so-sánh)
+  - [1.5 `length`, default params, rest](#15-length-default-params-rest)
+- [2. `this` binding](#2-this-binding)
+  - [2.1 Bảng exhaustive (non-arrow)](#21-bảng-exhaustive-non-arrow)
+  - [2.2 `new.target`](#22-newtarget)
+  - [2.3 Class method vs arrow field](#23-class-method-vs-arrow-field)
+  - [2.4 Annotate `this` (TS)](#24-annotate-this-ts)
+  - [2.5 Proxy, `this` & method extract](#25-proxy-this--method-extract)
+  - [2.6 `this` trong callback Node](#26-this-trong-callback-node)
+- [3. Tham số: default, rest, spread, optional](#3-tham-số-default-rest-spread-optional)
+  - [3.1 Default — chỉ `undefined`, lazy, TDZ](#31-default--chỉ-undefined-lazy-tdz)
+  - [3.2 Rest & `arguments`](#32-rest--arguments)
+  - [3.3 Destructuring & options object](#33-destructuring--options-object)
+  - [3.4 Optional (TS)](#34-optional-ts)
+- [4. Overload trong TypeScript](#4-overload-trong-typescript)
+  - [4.1 Implementation vs declaration](#41-implementation-vs-declaration)
+  - [4.2 Class / interface](#42-class--interface)
+  - [4.3 Overload + generic / type predicate](#43-overload--generic--type-predicate)
+  - [4.4 Merge chữ ký (declaration merging)](#44-merge-chữ-ký-declaration-merging)
+- [5. Closure, TDZ & loop capture](#5-closure-tdz--loop-capture)
+  - [5.1 Closure](#51-closure)
+  - [5.2 TDZ](#52-tdz)
+  - [5.3 Loop capture](#53-loop-capture)
+- [6. Method trên object & class](#6-method-trên-object--class)
+  - [6.1 Method vs function property](#61-method-vs-function-property)
+  - [6.2 Tách method & wrapper](#62-tách-method--wrapper)
+- [7. Getter / Setter](#7-getter--setter)
+  - [7.1 Side effects — getter bị gọi “vô hình”](#71-side-effects--getter-bị-gọi-vô-hình)
+  - [7.2 Setter chỉ `undefined` vs omit](#72-setter-chỉ-undefined-vs-omit)
+- [8. `call` / `apply` / `bind`](#8-call--apply--bind)
+  - [8.1 `bind` — `name` / `length` / `new`](#81-bind--name--length--new)
+  - [8.2 `Function.prototype.toString`](#82-functionprototypetostring)
+  - [8.3 `length` của wrapper Node](#83-length-của-wrapper-node)
+- [9. Generator functions](#9-generator-functions)
+  - [9.1 `next` / `throw` / `return`](#91-next--throw--return)
+  - [9.2 Async generator](#92-async-generator)
+- [10. `async function` (tóm tắt)](#10-async-function-tóm-tắt)
+  - [10.1 `async` method vs `async` arrow field](#101-async-method-vs-async-arrow-field)
+- [11. `using` & Explicit Resource Management](#11-using--explicit-resource-management)
+  - [11.1 Function / block scope](#111-function--block-scope)
+- [12. Chi phí & pitfalls](#12-chi-phí--pitfalls)
+  - [12.1 Tail-call **không** được đảm bảo](#121-tail-call-không-được-đảm-bảo)
+  - [12.2 Recursive stack](#122-recursive-stack)
+- [13. Best practices](#13-best-practices)
+- [14. Checklist](#14-checklist)
+- [15. Cheat sheet](#15-cheat-sheet)
+- [16. Version matrix](#16-version-matrix)
+- [17. Tài liệu liên quan](#17-tài-liệu-liên-quan)
 
 ---
 
@@ -87,6 +122,10 @@ const toPoint = (x: number, y: number) => ({ x, y }); // object → bọc `(...)
 - Không có `prototype`. `new square()` → `TypeError`.
 - Nested arrow **không** tạo `arguments` — nhìn ra hàm non-arrow bao quanh (nếu có).
 
+Arrow IIFE: `(() => { … })()` không tạo `this` mới. Dùng khi cần block expression (module init). `void fn()` khi cố ý bỏ Promise — không liên quan `length`.
+
+---
+
 ### 1.4 So sánh
 
 | | Declaration | Expression | Arrow |
@@ -128,6 +167,8 @@ const config = (() => {
 
 Named IIFE đệ quy: `(function walk(n: Node): void { … walk(child); })(root)`.
 
+`fn.length` với param destructure: `function f({ a }: Opts)` → `length === 1` (một binding), không phải số field. Options object không tăng `length`.
+
 ---
 
 ## 2. `this` binding
@@ -154,7 +195,7 @@ Named IIFE đệ quy: `(function walk(n: Node): void { … walk(child); })(root)
 | `super.fn()` | `this` hiện tại | `undefined` | Home object / `[[HomeObject]]` |
 | `setTimeout(obj.fn, 0)` | `undefined` | `undefined` | Pass method = detach |
 | `emitter.on("x", obj.fn)` | `undefined` (trừ API tự bind) | `undefined` | Node `EventEmitter` **không** bind |
-| Tagged template `` fn`…` `` | `undefined` | `undefined` | Không phải method call |
+| Tagged template | Bare `tag`: `undefined`; `obj.tag`: `obj` | Theo call site | Method tag vẫn giữ receiver |
 | `arr.forEach(obj.fn)` | `undefined` (trừ `thisArg` đối số 2) | `undefined` | `forEach`/`map` nhận `thisArg` |
 | Class static `C.m()` | `C` (constructor) | `undefined` | Detach `const { m } = C` mất `this` |
 | Class field initializer | instance đang construct | — | Chạy như thể trong ctor |
@@ -247,13 +288,13 @@ const proxy = new Proxy(target, {});
 proxy.inc(); // this === proxy (không phải target) — field trên target có thể lệch
 ```
 
-`get` trap trả method raw: `this` lúc gọi phụ thuộc **cách gọi**, không tự bind vào proxy trừ khi trap bind. Pattern an toàn: trap trả `fn.bind(receiver)` hoặc wrap.
+`get` trap trả method raw: `this` phụ thuộc cách gọi. Với private fields/native internal slots, proxy không mang brand của target; bind vào `receiver` vẫn có thể lỗi. Có thể bind vào **target** nếu hợp đồng cần brand, nhưng cache wrapper để giữ identity và đánh giá việc bypass trap. Proxy trong ví dụ không có trap vẫn forward ghi `n` xuống target.
 
 `with` (cấm ESM) và sloppy `this === globalThis` — không thuộc baseline Node ESM.
 
 ### 2.6 `this` trong callback Node
 
-`fs.readFile(path, cb)` gọi `cb(err, data)` như bare call → `this === undefined`. `EventEmitter.emit` gọi listener bare (trừ khi bạn `on("e", fn.bind(obj))`). Đừng viết `function () { this.foo }` làm listener nếu cần instance — arrow lexical hoặc bind.
+`fs.readFile(path, cb)` không cung cấp receiver nghiệp vụ cho callback. `EventEmitter.emit` gọi listener **thường** với `this === emitter`; arrow giữ `this` lexical, hàm đã `bind` giữ receiver đã bind. Khi cần instance của service, dùng arrow hoặc bind. [Hợp đồng EventEmitter](https://nodejs.org/api/events.html#passing-arguments-and-this-to-listeners).
 
 ---
 
@@ -385,7 +426,7 @@ function f(a: number, b?: number, c = 1) {}
 // b?: ≈ number | undefined ở call-site; required không đứng sau optional (trừ default/rest)
 ```
 
-`--exactOptionalPropertyTypes`: `b?: number` **khác** `b: number | undefined` (không được truyền `undefined` tường minh trừ khi union). Public API: quyết định có chấp nhận `undefined` hay chỉ “omit”.
+Tham số `b?: number` chấp nhận cả bỏ đối số **và** truyền `undefined`; `b: number | undefined` yêu cầu vị trí đối số vẫn được truyền. `exactOptionalPropertyTypes` chỉ siết **property** như `{ b?: number }`, không thay quy tắc tham số hàm.
 
 ---
 
@@ -597,6 +638,10 @@ Object literal `method()` enumerable `true`; class method enumerable `false`. `J
 
 `Function.prototype.toString` trên method class thường gồm `method()` không có `function` keyword — đừng parse source thủ công.
 
+Tagged template nhận array template có `.raw` và values. Bare `tag` dùng bare-call `this`; `obj.tag` làm tag vẫn có `this === obj`. Template object được tái sử dụng tại cùng call site, không phải object mới mỗi lần.
+
+---
+
 ### 6.2 Tách method & wrapper
 
 ```ts
@@ -741,25 +786,31 @@ b2.length; // 0
 function demo(a: number) {
   return a;
 }
-demo.toString(); // source text (engine có thể chuẩn hoá whitespace)
+demo.toString(); // source JS mà runtime nhận; type annotations đã bị xóa
 
 Math.max.toString(); // "function max() { [native code] }"
 ```
 
 | Trường hợp | Kết quả điển hình |
 |---|---|
-| JS source còn trên hàm | Chuỗi gần với source |
+| JS source còn trên hàm | Giữ source text, gồm whitespace và comment (ES2018+) |
 | Builtin / host | `{ [native code] }` |
 | Bound | `"function bound …"` / native-style tùy engine |
-| Proxy functor | Có thể `TypeError` |
+| Callable Proxy | Native-style string; receiver không callable mới TypeError |
 
-Đừng dùng `toString()` làm bảo mật, fingerprint license, hay “parse AST”. Bundler minify đổi body. `eval(fn.toString())` mất closure. Test: so sánh hành vi, không so sánh source.
+Đừng dùng `toString()` làm bảo mật, fingerprint license, hay “parse AST”. Bundler/strip/emit đổi source trước khi runtime nhận nó. Tái tạo từ chuỗi không giữ môi trường closure gốc. Test hành vi thay vì so source.
 
 Dynamic `new Function("a", "return a + 1")` tạo hàm trong **non-module** scope (không closure, không `import`) — CSP / tooling thường cấm. Khác `eval` một mức, vẫn không phải API app điển hình.
+
+Direct `eval(...)` có thể đọc lexical scope của nơi gọi (ESM strict); indirect eval (`(0, eval)(...)`) và `new Function(...)` dùng global scope. Không dùng chuỗi mã từ input làm logic ứng dụng; xem [security.md](security.md).
+
+---
 
 ### 8.3 `length` của wrapper Node
 
 `promisify(fs.readFile).length` **không** phải hợp đồng ổn định (overload, default, rest). `bind` giảm `length` (§8.1). Decorator wrap: gán lại `name` nếu log production dựa vào đó.
+
+Wrapper mặc định của `util.promisify` sao chép descriptor `name` / `length` của hàm gốc; `callbackify` thêm suffix tên và tăng `length` một để tính callback. `promisify.custom` có thể trả hàm khác. Arity thực tế vẫn phải theo hợp đồng API, không suy từ `fn.length`.
 
 ---
 
@@ -850,6 +901,8 @@ for await (const line of lines(source)) {
 
 Producer CPU-bound trong async gen vẫn **block event loop** — `yield` không nhả thread; cần `await` (hoặc `setImmediate` có chủ đích) giữa các chunk nặng. See [event-loop.md](event-loop.md).
 
+Generator method `*g()` trên class: `this` dynamic như method. `yield` không giữ `this` đặc biệt — cùng binding. Async gen method tương tự.
+
 ---
 
 ## 10. `async function` (tóm tắt)
@@ -885,7 +938,7 @@ Không trộn `arguments` (async function **có** `arguments`) với arrow neste
 
 ## 11. `using` & Explicit Resource Management
 
-Node 26 + TS hỗ trợ `using` / `await using`. Chi tiết → [statements.md](statements.md) §9.
+Node 26 + TS hỗ trợ `using` / `await using`. Chi tiết → [statements.md](statements.md#11-using-vs-tryfinally).
 
 ```ts
 class FileTracker implements Disposable {
@@ -1120,7 +1173,7 @@ if (new.target === undefined) throw new TypeError("use new");
 
 Baseline: **Node 26** + **TS 7**. Bật `lib` có `Disposable`/ESNext khi dùng `using`.
 
-`Function.prototype.toString` chuẩn hoá (có thể chèn/`strip` comment) không ổn định giữa V8 versions — không gate feature bằng parse source. Feature-detect API (`typeof Iterator.concat === "function"`) thay vì đọc body hàm.
+`Function.prototype.toString` giữ source text nếu source có sẵn; kết quả phản ánh mã sau build/strip, không khôi phục TypeScript ban đầu. Feature-detect API (`typeof Iterator.concat === "function"`) thay vì parse source hàm.
 
 ---
 
@@ -1137,14 +1190,4 @@ Baseline: **Node 26** + **TS 7**. Bật `lib` có `Disposable`/ESNext khi dùng 
 - [Event loop & concurrency model](event-loop.md) — recursion vs queue, async gen CPU
 - [AbortSignal & request context](abort-context.md) — đóng async generator + signal
 
-`node:util` `callbackify` / `promisify` giữ `name` theo convention Node; wrap tay thì tự gán `Object.defineProperty(wrapped, "name", { value: orig.name })`. `length` của promisified function thường `orig.length - 1` (bỏ callback) — không ổn định mọi overload; đừng phụ thuộc.
-
-Tagged template như hàm: `` fn`${x}` `` nhận `{ raw }` + values — `this` bare. Không dùng làm method trừ khi bind.
-
-`fn.length` với param destructure: `function f({ a }: Opts)` → `length === 1` (một binding), không phải số field. Options object không tăng `length`.
-
-Arrow IIFE: `(() => { … })()` không tạo `this` mới. Dùng khi cần block expression (module init). `void fn()` khi cố ý bỏ Promise — không liên quan `length`.
-
-`eval` / `new Function` tạo hàm **không** đóng over module scope — khác closure bình thường. Baseline ESM: không dùng.
-
-Generator method `*g()` trên class: `this` dynamic như method. `yield` không giữ `this` đặc biệt — cùng binding. Async gen method tương tự.
+- [Eval và code không tin cậy](security.md)

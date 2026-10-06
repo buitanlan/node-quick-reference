@@ -8,23 +8,63 @@ Iterator / LINQ-like sâu hơn → [iterables-linq.md](iterables-linq.md). Type-
 
 ## Mục lục
 
-1. [Array — semantics & methods](#1-array--semantics--methods)
-2. [Map](#2-map)
-3. [Set](#3-set)
-4. [WeakMap, WeakSet, WeakRef & FinalizationRegistry](#4-weakmap-weakset-weakref--finalizationregistry)
-5. [Object vs Map vs Record](#5-object-vs-map-vs-record)
-6. [TypedArray, ArrayBuffer & Buffer](#6-typedarray-arraybuffer--buffer)
-7. [Utility types cho collections](#7-utility-types-cho-collections)
-8. [Generics thực dụng với collections](#8-generics-thực-dụng-với-collections)
-9. [Conditional types, `infer` & mapped types](#9-conditional-types-infer--mapped-types)
-10. [`ReadonlyArray`, tuple & `as const`](#10-readonlyarray-tuple--as-const)
-11. [Iterator protocol (tóm tắt)](#11-iterator-protocol-tóm-tắt)
-12. [Hiệu năng & pitfalls](#12-hiệu-năng--pitfalls)
-13. [Best practices](#13-best-practices)
-14. [Checklist](#14-checklist)
-15. [Cheat sheet](#15-cheat-sheet)
-16. [Version matrix](#16-version-matrix)
-17. [Tài liệu liên quan](#17-tài-liệu-liên-quan)
+- [1. Array — semantics & methods](#1-array--semantics--methods)
+  - [1.1 Mutating vs copy — bảng đủ method thường dùng](#11-mutating-vs-copy--bảng-đủ-method-thường-dùng)
+  - [1.2 Tra cứu, transform & sparse / holes](#12-tra-cứu-transform--sparse--holes)
+  - [1.3 `sort` comparator — bẫy](#13-sort-comparator--bẫy)
+  - [1.4 Static `Array` & factory](#14-static-array--factory)
+  - [1.5 `copyWithin` / `fill` / `length`](#15-copywithin--fill--length)
+  - [1.6 Shallow copy — chọn API](#16-shallow-copy--chọn-api)
+- [2. Map](#2-map)
+  - [2.1 Key equality — SameValueZero](#21-key-equality--samevaluezero)
+  - [2.2 Object ↔ Map](#22-object--map)
+  - [2.3 `getOrInsert` / `getOrInsertComputed` (Node 26)](#23-getorinsert--getorinsertcomputed-node-26)
+  - [2.4 Clone, JSON, `structuredClone`](#24-clone-json-structuredclone)
+  - [2.5 `NaN`, object key, intern](#25-nan-object-key-intern)
+- [3. Set](#3-set)
+  - [3.1 Set operations (ES2025 / Node 26)](#31-set-operations-es2025--node-26)
+  - [3.2 Set-like & thứ tự](#32-set-like--thứ-tự)
+  - [3.3 Mutable iterate](#33-mutable-iterate)
+- [4. WeakMap, WeakSet, WeakRef & FinalizationRegistry](#4-weakmap-weakset-weakref--finalizationregistry)
+  - [4.1 So sánh với Map / Set](#41-so-sánh-với-map--set)
+  - [4.2 Pattern: private data side-table](#42-pattern-private-data-side-table)
+  - [4.3 `WeakRef` vs `FinalizationRegistry` vs `WeakMap`](#43-weakref-vs-finalizationregistry-vs-weakmap)
+  - [4.4 Cache WeakRef (minh họa — đo trước khi dùng)](#44-cache-weakref-minh-họa--đo-trước-khi-dùng)
+  - [4.5 WeakSet](#45-weakset)
+- [5. Object vs Map vs Record](#5-object-vs-map-vs-record)
+  - [5.1 Bảng quyết định ngắn](#51-bảng-quyết-định-ngắn)
+- [6. TypedArray, ArrayBuffer & Buffer](#6-typedarray-arraybuffer--buffer)
+  - [6.1 Overview](#61-overview)
+  - [6.2 Endian & views](#62-endian--views)
+  - [6.3 Node `Buffer`](#63-node-buffer)
+  - [6.4 Pitfalls](#64-pitfalls)
+  - [6.5 TypedArray vs `Array` methods](#65-typedarray-vs-array-methods)
+  - [6.6 Transfer](#66-transfer)
+  - [6.7 Encoding `Buffer`](#67-encoding-buffer)
+- [7. Utility types cho collections](#7-utility-types-cho-collections)
+  - [7.1 `Readonly` / `Partial` + excess property](#71-readonly--partial--excess-property)
+  - [7.2 `Omit` / `Pick` pitfalls](#72-omit--pick-pitfalls)
+- [8. Generics thực dụng với collections](#8-generics-thực-dụng-với-collections)
+  - [8.1 Constraints + variance](#81-constraints--variance)
+  - [8.2 Branded / nominal keys](#82-branded--nominal-keys)
+  - [8.3 Default type param & inference fail](#83-default-type-param--inference-fail)
+  - [8.4 `satisfies` với collections](#84-satisfies-với-collections)
+  - [8.5 `Array` covariant — ví dụ lỗ](#85-array-covariant--ví-dụ-lỗ)
+- [9. Conditional types, `infer` & mapped types](#9-conditional-types-infer--mapped-types)
+  - [9.1 Mapped `-readonly` / `-?` (nhắc)](#91-mapped--readonly----nhắc)
+- [10. `ReadonlyArray`, tuple & `as const`](#10-readonlyarray-tuple--as-const)
+  - [10.1 Variadic tuple & collections](#101-variadic-tuple--collections)
+- [11. Iterator protocol (tóm tắt)](#11-iterator-protocol-tóm-tắt)
+  - [11.1 `Object.groupBy` / `Map.groupBy`](#111-objectgroupby--mapgroupby)
+- [12. Hiệu năng & pitfalls](#12-hiệu-năng--pitfalls)
+  - [12.1 Memory: Map vs object vs Array](#121-memory-map-vs-object-vs-array)
+  - [12.2 `structuredClone` vs JSON vs spread](#122-structuredclone-vs-json-vs-spread)
+  - [12.3 Index `number` vs string trên Array](#123-index-number-vs-string-trên-array)
+- [13. Best practices](#13-best-practices)
+- [14. Checklist](#14-checklist)
+- [15. Cheat sheet](#15-cheat-sheet)
+- [16. Version matrix](#16-version-matrix)
+- [17. Tài liệu liên quan](#17-tài-liệu-liên-quan)
 
 ---
 
@@ -351,7 +391,7 @@ a.isSupersetOf(b);
 a.isDisjointFrom(b);
 ```
 
-**Không mutate** `a` (trả `Set` mới). Đối số: Set-like (`size` + `has` + `keys()`) — `Map` không phải Set-like đầy đủ cho mọi method theo cùng nghĩa; truyền `Set` / object đúng protocol.
+Các method tạo tập kết quả **không mutate** `a`; các predicate trả boolean. Đối số nhận Set-like (`size` + `has` + `keys()`): **Map hợp lệ**, các method xét **keys** của Map. Array không có protocol này.
 
 | Method | Ý nghĩa | Pattern tay (runtime cũ) |
 |---|---|---|
@@ -713,7 +753,7 @@ type V = Awaited<Promise<number>>; // number
 
 | Type | Việc |
 |---|---|
-| `Partial` / `Required` / `Readonly` | optional / required / shallow freeze |
+| `Partial` / `Required` / `Readonly` | optional / required / shallow readonly type |
 | `Pick` / `Omit` / `Record` | subset / bỏ field / dictionary |
 | `Exclude` / `Extract` / `NonNullable` | lọc union |
 | `ReturnType` / `Parameters` / `Awaited` / `InstanceType` | suy từ hàm / Promise / class |
@@ -731,15 +771,15 @@ const ok: Patch = widened; // excess **không** bắt — đã widen
 
 > **Callout:** Excess property check chỉ object **fresh**. `Partial` không chặn field lạ sau khi đi qua biến. Validate I/O (JSON) bằng schema, không chỉ `Partial<T>`.
 
-`Readonly<T>` gán **từ** `T` (mutable → readonly OK). Ngược lại không. `ReadonlyArray<T>` nhận `T[]`; `T[]` **không** nhận `readonly T[]` khi method mutate.
+Readonly property trên object không tạo tính bất biến runtime và TS vẫn cho nhiều phép gán sang kiểu mutable tương ứng. `readonly T[]` được kiểm chặt hơn: không gán vào `T[]` vì thiếu method mutate. Thiết kế API nhận readonly và tránh alias mutable.
 
-`Partial<Readonly<T>>` vs `Readonly<Partial<T>>`: optional vs readonly từng field — khác mapped. PATCH API: `Partial<Pick<…>>` rõ hơn `Partial<T>` nuốt `id`.
+`Partial<Readonly<T>>` và `Readonly<Partial<T>>` tạo cùng optional/readonly modifiers cho object thông thường. PATCH API: `Partial<Pick<…>>` rõ hơn `Partial<T>` bao cả `id`.
 
 `exactOptionalPropertyTypes`: `Partial` cho phép omit, việc truyền `undefined` tường minh có thể lỗi.
 
 ### 7.2 `Omit` / `Pick` pitfalls
 
-`Omit<T, "a" | "b">` trên union **không** distributive như `Exclude` trên union thuần — mapped trên union có thể thành intersection không mong. Union DTO: `T extends any ? Omit<T, "id"> : never` nếu cần distribute.
+`Pick`/`Omit` trên union chỉ giữ key chung từ `keyof T`, không tự phân phối như `Exclude`. Dùng `type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never` để giữ từng variant.
 
 `keyof` trên `any` = `string | number | symbol`. `keyof` trên object với index signature rộng. `Pick<T, K>` đòi `K extends keyof T`.
 
@@ -833,7 +873,7 @@ const table = {
 } as const satisfies Record<Role, readonly string[]>;
 ```
 
-`satisfies` giữ literal + kiểm đủ key — khác `Record<Role, string[]>` widen value thành `string[]`.
+`satisfies` kiểm đủ key và giữ kiểu sau contextual typing; property mutable vẫn có thể widen. Dùng `as const satisfies` nếu cần literal/readonly, như [typesystem.md](typesystem.md#15-satisfies-vs-as-const-vs-annotation).
 
 ### 8.5 `Array` covariant — ví dụ lỗ
 
@@ -845,15 +885,12 @@ const animals: Animal[] = dogs; // TS cho phép
 
 Truyền `Dog[]` vào `function f(xs: Animal[]) { xs.push(cat); }` — lỗ. Input: `readonly Animal[]` không `push`. Output builder: `Animal[]` tạo mới, không alias `Dog[]`.
 
-`Set<Dog>` **không** gán `Set<Animal>` (invariant) — TS bắt. Thêm `Cat` qua wide Set không lọt kiểu. `Array` là ngoại lệ lịch sử.
+`Set<Dog>` có thể gán sang `Set<Animal>` trong hệ kiểu TS dù mutate qua alias rộng là không sound. Method parameters có ngoại lệ bivariance; `strictFunctionTypes` không tự làm collection mutable invariant. Nhận `ReadonlySet<Animal>` ở API chỉ đọc. [Method variance](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-2-6.html#strict-function-types).
 
-`Map<string, Dog>` vs `Map<string, Animal>` invariant trên `V`. Readonly map type (nếu tự viết `{ get(k: K): V }`) có thể covariant `V` — đừng `set` trên kiểu đó.
-
----
+`Map<string, Dog>` cũng có thể được nhìn qua alias `Map<string, Animal>` và bị thêm giá trị khác. Dùng `ReadonlyMap` cho consumer chỉ đọc; khi cần invariant thực sự, thiết kế wrapper với function property cho cả input/output và kiểm type tests. Readonly view vẫn chia cùng object runtime.
 
 ---
 
----
 
 ## 9. Conditional types, `infer` & mapped types
 
@@ -1155,27 +1192,11 @@ SameValueZero: `-0` và `0` một key — `Object.is` phân biệt nhưng Map kh
 
 ---
 
----
-
----
-
----
-
----
-
----
-
----
 
 `Set.prototype.union` độ phức tạp O(|A|+|B|) điển hình; không mutate. Chain `a.union(b).intersection(c)` alloc trung gian — N lớn đo hoặc một vòng.
 
 ---
 
----
-
----
-
----
 
 ## 17. Tài liệu liên quan
 
@@ -1192,10 +1213,11 @@ SameValueZero: `-0` và `0` một key — `Object.is` phân biệt nhưng Map kh
 
 `Number.isInteger(i)` trước khi dùng index; `arr[1.2]` ToString `"1.2"` — property lạ, không element 1.
 
-`Float64Array` `sort` so sánh số (khác Array default string). `NaN` trong TypedArray sort: thứ tự implementation-defined — lọc trước. `Uint8Array` sort 0..255.
+`Float64Array.sort()` mặc định so sánh số: `-0` trước `+0`, `NaN` sau mọi số; thứ tự này được quy định. `Uint8Array.sort()` sắp 0..255. Comparator tự viết phải có thứ tự nhất quán. [CompareTypedArrayElements](https://tc39.es/ecma262/multipage/indexed-collections.html#sec-comparetypedarrayelements).
 
 `Buffer.compare(a, b)` / `buf.compare` lexicographic bytes — không locale.
 
 ---
 
----
+
+- [Type tests cho public generics](testing.md)

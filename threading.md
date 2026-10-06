@@ -10,18 +10,47 @@ Baseline: **Node.js 26** + **TypeScript 7**. JS trên main thread vẫn **một 
 
 ## Mục lục
 
-1. [Khi nào workers / child_process / cluster / chỉ async](#1-khi-nào-workers--child_process--cluster--chỉ-async)
-2. [So sánh nhanh (kể cả PM2-like)](#2-so-sánh-nhanh-kể-cả-pm2-like)
-3. [`worker_threads`](#3-worker_threads)
-4. [`child_process`](#4-child_process)
-5. [`cluster`](#5-cluster)
-6. [Resource limits, memory, khi **không** dùng workers](#6-resource-limits-memory-khi-không-dùng-workers)
-7. [Testing notes](#7-testing-notes)
-8. [Best practices](#8-best-practices)
-9. [Checklist](#9-checklist)
-10. [Cheat sheet](#10-cheat-sheet)
-11. [Version notes](#11-version-notes)
-12. [Tài liệu liên quan](#12-tài-liệu-liên-quan)
+- [1. Khi nào workers / child_process / cluster / chỉ async](#1-khi-nào-workers--child_process--cluster--chỉ-async)
+  - [1.1 Khi **không** thread (I/O-bound)](#11-khi-không-thread-io-bound)
+  - [1.2 I/O trong worker — khi nào sai](#12-io-trong-worker--khi-nào-sai)
+- [2. So sánh nhanh (kể cả PM2-like)](#2-so-sánh-nhanh-kể-cả-pm2-like)
+- [3. `worker_threads`](#3-worker_threads)
+  - [3.1 Tạo `Worker`](#31-tạo-worker)
+  - [3.2 `parentPort`, `workerData`, `isMainThread`](#32-parentport-workerdata-ismainthread)
+  - [3.3 `postMessage`, structured clone & transfer list](#33-postmessage-structured-clone--transfer-list)
+  - [3.4 `MessageChannel` / `MessagePort`](#34-messagechannel--messageport)
+  - [3.5 `receiveMessageOnPort`](#35-receivemessageonport)
+  - [3.6 `SharedArrayBuffer` & `Atomics` — data race](#36-sharedarraybuffer--atomics--data-race)
+  - [3.7 Worker pool & backpressure](#37-worker-pool--backpressure)
+  - [3.8 `resourceLimits`](#38-resourcelimits)
+  - [3.9 Uncaught exception trong worker](#39-uncaught-exception-trong-worker)
+  - [3.10 `terminate` vs abort](#310-terminate-vs-abort)
+  - [3.11 `environmentData` & `SHARE_ENV`](#311-environmentdata--share_env)
+  - [3.12 `postMessageToThread`](#312-postmessagetothread)
+  - [3.13 `BroadcastChannel` (cùng process)](#313-broadcastchannel-cùng-process)
+- [4. `child_process`](#4-child_process)
+  - [4.1 `spawn` / `execFile` / `fork` / `exec`](#41-spawn--execfile--fork--exec)
+  - [4.2 `execFile` vs `exec` — injection](#42-execfile-vs-exec--injection)
+  - [4.3 `fork` IPC vs `spawn` stdio](#43-fork-ipc-vs-spawn-stdio)
+  - [4.4 Promise API](#44-promise-api)
+  - [4.5 stdio & treo pipe](#45-stdio--treo-pipe)
+- [5. `cluster`](#5-cluster)
+  - [5.1 `cluster` vs PM2 vs K8s](#51-cluster-vs-pm2-vs-k8s)
+  - [5.2 IPC `cluster`](#52-ipc-cluster)
+- [6. Resource limits, memory, khi **không** dùng workers](#6-resource-limits-memory-khi-không-dùng-workers)
+- [7. Testing notes](#7-testing-notes)
+  - [7.1 Inspector & debug](#71-inspector--debug)
+  - [7.2 Transfer `FileHandle` & TCP: ownership và version gate](#72-transfer-filehandle--tcp-ownership-và-version-gate)
+  - [7.3 Tạo worker thất bại](#73-tạo-worker-thất-bại)
+  - [7.4 Capture stdout worker](#74-capture-stdout-worker)
+  - [7.5 Sai lầm transfer thường gặp](#75-sai-lầm-transfer-thường-gặp)
+  - [7.6 Abort job trong pool (cooperative → terminate)](#76-abort-job-trong-pool-cooperative--terminate)
+  - [7.7 `child_process` vs worker — bảng quyết định CPU native](#77-child_process-vs-worker--bảng-quyết-định-cpu-native)
+- [8. Best practices](#8-best-practices)
+- [9. Checklist](#9-checklist)
+- [10. Cheat sheet](#10-cheat-sheet)
+- [11. Version notes](#11-version-notes)
+- [12. Tài liệu liên quan](#12-tài-liệu-liên-quan)
 
 ---
 
@@ -189,8 +218,7 @@ const moved = structuredClone({ ab }, { transfer: [ab] });
 | `ArrayBuffer` | Sender `byteLength === 0` (detached) |
 | `MessagePort` | Bắt buộc liệt kê nếu nằm trong `value` — thiếu → `ERR_MISSING_MESSAGE_PORT_IN_TRANSFER_LIST` |
 | `FileHandle` | Chuyển fd sang isolate kia |
-| `net.Server` (TCP) | Chuyển listening socket + accept queue |
-| `net.Socket` (TCP) | Socket **chưa** đọc / không buffered — không thì `ERR_WORKER_HANDLE_NOT_TRANSFERABLE` |
+| `net.Server` / `net.Socket` (TCP) | Có trong docs **26.10.0**; điều kiện ownership và gate ở §7.2, không suy ra mọi 26.x/24 |
 | Không: `SharedArrayBuffer` | Share, **không** transfer — không đưa vào list |
 
 Object trong `transferList` nhưng không reachable từ `value` vẫn bị detach. Untransferable trong list → throw (Node 21+). `ArrayBuffer` **không** trong list → **copy**.
@@ -354,7 +382,7 @@ Worker: nhận `{ id, payload }`, trả `{ id, ok, value|error }`. **Một job i
 - Queue **bounded** — đầy thì reject (HTTP 503) hoặc chờ có ceiling; unbounded = OOM dưới burst.
 - Timeout job **không** tự dừng CPU worker — cần `terminate` + spawn lại, hoặc cooperative abort (message / SAB flag). Timeout chỉ reject Promise phía parent.
 - `worker.postMessage` nhanh hơn worker xử lý → RAM clone. Transfer buffer lớn; đừng chatty IPC từng byte.
-- `fork`/`net` `send()` trả `false` khi buffer đầy — pause + `'drain'` (stdio/IPC process). Worker `postMessage` không có boolean drain giống `process.send`; tự giới hạn in-flight.
+- IPC `child.send()` trả `false` khi backlog lớn hoặc channel đóng; giới hạn queue và dùng callback của `send` để điều tiết. IPC không có event `drain`. `net.Socket.write()` / stdio Writable mới dùng `drain`; Worker `postMessage` tự giới hạn in-flight.
 
 > Production: **`piscina`** / **`workerpool`** (queue, stats, recirculate). Skeleton thiếu cancel đầy đủ.
 
@@ -522,14 +550,17 @@ spawn(`ls ${name}`, { shell: true }); // ❌ giống exec
 |--|--------|---------|
 | Kênh | IPC (`send` / `'message'`), serialization nội bộ | stdio pipes (`stdout` chunks) |
 | Payload | Object structured-ish (không function) | Bytes / text protocol tự định nghĩa |
-| Backpressure | `send()` → `boolean`; `false` thì chờ `'drain'` | `writable.write` + `'drain'` |
+| Backpressure | `send()` → boolean; callback báo gửi xong/lỗi, queue bounded | `writable.write` + `drain` |
 | Đời | `disconnect()` / `kill()` | `kill(sig)` / close stdin |
 | Startup | Node boot + module | Binary bất kỳ |
 
 ```ts
 const child = fork(new URL("./task.js", import.meta.url));
-const ok = child.send({ type: "work", n: 10 });
-if (!ok) child.once("drain", () => { /* retry / resume */ });
+const ok = child.send({ type: "work", n: 10 }, (error) => {
+  if (error) console.error("IPC send failed", error);
+  // Cho phép enqueue tiếp theo theo giới hạn queue của ứng dụng.
+});
+if (!ok) { /* ngừng enqueue thêm; message này không cần gửi lại */ }
 child.on("message", (msg) => {
   console.log(msg);
   child.disconnect();
@@ -545,12 +576,14 @@ process.on("message", (msg: { n?: number }) => {
 
 Serialization `fork`: mặc định JSON-ish; `serialization: 'advanced'` (structured clone, giống worker hơn) trên Node hiện đại — đọc docs `fork` options trước khi gửi Map/Date. Vẫn không gửi function / native socket trừ API transfer riêng.
 
-`child.send` backpressure: nếu `false`, **không** spam `send` — đợi `'drain'` hoặc coi là quá tải (giết job). Giống pool worker queue full.
+`child.send` backpressure: `false` không có nghĩa message chưa được nhận vào queue, nên không retry cùng message vô điều kiện. Callback chỉ báo gửi xong/lỗi, có thể chạy trước khi child nhận; ACK nghiệp vụ là message riêng. Channel đóng phải reject các job đang chờ. [IPC contract](https://nodejs.org/api/child_process.html#subprocesssendmessage-sendhandle-options-callback).
 
 ### 4.4 Promise API
 
 ```ts
-import { execFile } from "node:child_process/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
+const execFile = promisify(execFileCallback);
 
 const { stdout } = await execFile("node", ["-v"]);
 await execFile("node", ["script.js"], { signal: AbortSignal.timeout(5_000) });
@@ -737,9 +770,11 @@ type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false;
 
 Worker `switch (msg.type)`: `abort` set flag; `run` kiểm tra flag giữa vòng CPU. Parent timeout: gửi `abort`, `setTimeout` → `terminate()` nếu không `exit`.
 
-### 7.2 Transfer `FileHandle` / TCP (tóm tắt)
+### 7.2 Transfer `FileHandle` & TCP: ownership và version gate
 
-Accept trên main, `postMessage({ socket }, [socket])` sang worker pool — worker đọc HTTP. Socket phải **chưa** `read`. Server `listen` transfer được (TCP). Unix socket / UDP: đọc docs; đừng giả định mọi handle transfer.
+Worker Threads chuyển được `FileHandle`, `ArrayBuffer`, `MessagePort`. Docs **26.10.0** còn hỗ trợ TCP `net.Server` / `net.Socket` / `net.BoundSocket`; docs 26.0.0 chưa có hợp đồng TCP này. Với package support nhiều minor, ghim và kiểm bản tối thiểu trước khi dùng. Đây là transfer ownership giữa thread, khác `child.send(message, sendHandle)` giữa process. [Worker transfer list](https://nodejs.org/api/worker_threads.html#portpostmessagevalue-transferlist), [TCP conditions](https://nodejs.org/api/net.html#transferring-tcp-handles-to-other-threads).
+
+`net.Server` chuyển listening handle cùng accept queue. `net.Socket` phải là TCP vừa tạo/accept, chưa bắt đầu đọc, không đang connect và không có buffered data; vi phạm → `ERR_WORKER_HANDLE_NOT_TRANSFERABLE`. Phía gửi không dùng handle sau transfer. `net.BoundSocket` được thêm ở 26.4.0; chỉ TCP transferable, không pipe handle.
 
 `FileHandle` transfer: fd đổi chủ isolate — phía gửi không `close` nữa (đã detach). Double-close = lỗi.
 
@@ -766,12 +801,12 @@ Không `stdout: true` thì `console.log` worker trộn stdout parent — khó l�
 | `postMessage(port)` không list `transferList` | `ERR_MISSING_MESSAGE_PORT_IN_TRANSFER_LIST` |
 | Dùng `ArrayBuffer` sau transfer | `byteLength === 0` / throw detached |
 | Transfer `SharedArrayBuffer` | Không hợp lệ — share, đừng list |
-| `net.Socket` đã `read` rồi transfer | `ERR_WORKER_HANDLE_NOT_TRANSFERABLE` |
+| Transfer socket đã đọc / có buffer | Không hợp lệ; TCP transfer chỉ khi trạng thái và phiên bản hỗ trợ (§7.2) |
 | Gửi class instance có method | Method mất; còn data enumerable |
 | Gửi `AbortSignal` live | Không clone như tín hiệu sống — gửi message abort |
 | Mix `receiveMessageOnPort` + `on("message")` | Mất event |
 
-`structuredClone` trên main để **test** payload trước khi `postMessage` — cùng thuật toán, bắt circular + function sớm.
+`structuredClone` giúp kiểm tra payload dữ liệu: function bị từ chối, circular reference được hỗ trợ. Native transferable riêng của Node phải kiểm tra theo hợp đồng Worker; class instance thường mất prototype/method khi clone.
 
 ### 7.6 Abort job trong pool (cooperative → terminate)
 
@@ -932,7 +967,7 @@ Main thường `threadId === 0` nhưng đừng hardcode trong protocol — đọ
 □ terminate last resort; abort cooperative trước
 □ resourceLimits: nhớ không cover ArrayBuffer; OOM global
 □ child_process: spawn/execFile; không exec shell + user input
-□ fork IPC: send() false → drain; disconnect/kill
+□ fork IPC: bounded queue + send callback + ACK; disconnect/kill
 □ Ước heap × số worker
 □ Test: logic thuần tách parentPort; terminate trong finally
 □ Shutdown: đóng pool / kill child trước exit
@@ -983,7 +1018,7 @@ if (isMainThread) {
 | `structuredClone` | Global; cùng thuật toán với `postMessage` |
 | `resourceLimits` | Best-effort; không cover ArrayBuffer |
 | `cluster.isPrimary` | Thay `isMaster` deprecated |
-| `child_process/promises` + `AbortSignal` | Hủy subprocess |
+| `promisify(execFile)` + `AbortSignal` | Promise từ `node:child_process`; không có module `child_process/promises` |
 | `receiveMessageOnPort` | Sync; nuốt `'message'` |
 | `await using Worker` | `Symbol.asyncDispose` → `terminate` (22.18+ / 24.2+) |
 | `Atomics.waitAsync` | Wait không block (ES2024) |
@@ -999,3 +1034,7 @@ if (isMainThread) {
 - [main-function.md](main-function.md) — entry, signal shutdown (đóng pool)
 - [nodejs-apis.md](nodejs-apis.md) — fs, http, stream
 - [exceptions.md](exceptions.md) — unhandledRejection / error EventEmitter
+
+- [Worker/IPC crash và shutdown tests](testing.md)
+- [Worker/process isolation](security.md)
+- [Heap riêng và RSS chung](diagnostics.md)

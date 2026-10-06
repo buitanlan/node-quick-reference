@@ -10,28 +10,75 @@ Baseline: **Node.js 26**, **TypeScript 7**, ESM-first. Async hiện đại = **P
 
 ## Mục lục
 
-1. [Từ callback → Promise → async/await](#1-từ-callback--promise--asyncawait)
-2. [Promise internals & thenable assimilation](#2-promise-internals--thenable-assimilation)
-3. [Microtask scheduling (và event loop)](#3-microtask-scheduling-và-event-loop)
-4. [Tạo & chuyển đổi Promise](#4-tạo--chuyển-đổi-promise)
-5. [`then` vs `await` — exception paths](#5-then-vs-await--exception-paths)
-6. [`finally` trên Promise vs `try/finally`](#6-finally-trên-promise-vs-tryfinally)
-7. [`queueMicrotask` vs `Promise.resolve().then`](#7-queuemicrotask-vs-promiseresolvethen)
-8. [Kết hợp nhiều Promise (combinators)](#8-kết-hợp-nhiều-promise-combinators)
-9. [Tuần tự vs song song vs pool](#9-tuần-tự-vs-song-song-vs-pool)
-10. [Lỗi: unhandledRejection vs catch-after-tick](#10-lỗi-unhandledrejection-vs-catch-after-tick)
-11. [`await using` & async dispose](#11-await-using--async-dispose)
-12. [`AbortSignal` — overview](#12-abortsignal--overview)
-13. [`util.promisify` & callbackify](#13-utilpromisify--callbackify)
-14. [`node:stream/promises` — pipeline & destroy](#14-nodestreampromises--pipeline--destroy)
-15. [Top-level await & TLA cycles](#15-top-level-await--tla-cycles)
-16. [`AsyncLocalStorage` snapshot tại `await`](#16-asynclocalstorage-snapshot-tại-await)
-17. [Pitfalls async (bảng)](#166-pitfalls-async-bảng)
-18. [Best practices](#17-best-practices)
-19. [Checklist](#18-checklist)
-20. [Cheat sheet](#19-cheat-sheet)
-21. [Version matrix](#20-version-matrix)
-22. [Tài liệu liên quan](#21-tài-liệu-liên-quan)
+- [1. Từ callback → Promise → async/await](#1-từ-callback--promise--asyncawait)
+  - [1.1 Callback style (Node)](#11-callback-style-node)
+  - [1.2 Promise](#12-promise)
+  - [1.3 async/await](#13-asyncawait)
+- [2. Promise internals & thenable assimilation](#2-promise-internals--thenable-assimilation)
+  - [2.1 Settled exactly once](#21-settled-exactly-once)
+  - [2.2 Thenable là gì?](#22-thenable-là-gì)
+  - [2.3 Quy tắc assimilate (cần nhớ)](#23-quy-tắc-assimilate-cần-nhớ)
+  - [2.4 TypeScript: `PromiseLike<T>` vs `Promise<T>`](#24-typescript-promiselike-vs-promise)
+  - [2.5 Thenable async & reentrancy](#25-thenable-async--reentrancy)
+  - [2.6 `await` không phải “yield thread”](#26-await-không-phải-yield-thread)
+- [3. Microtask scheduling (và event loop)](#3-microtask-scheduling-và-event-loop)
+- [4. Tạo & chuyển đổi Promise](#4-tạo--chuyển-đổi-promise)
+  - [4.1 Constructor, `resolve`, `reject`](#41-constructor-resolve-reject)
+  - [4.2 `Promise.try` (baseline 26)](#42-promisetry-baseline-26)
+  - [4.3 `Promise.withResolvers()`](#43-promisewithresolvers)
+- [5. `then` vs `await` — exception paths](#5-then-vs-await--exception-paths)
+  - [5.1 `await` + `try/catch`](#51-await--trycatch)
+  - [5.2 `.then(onFulfilled, onRejected)` — hai nhánh **không** bắt lỗi nhau](#52-thenonfulfilled-onrejected--hai-nhánh-không-bắt-lỗi-nhau)
+  - [5.3 `return` thenable trong `async`](#53-return-thenable-trong-async)
+  - [5.4 `catch` vs `then(undefined, handler)`](#54-catch-vs-thenundefined-handler)
+- [6. `finally` trên Promise vs `try/finally`](#6-finally-trên-promise-vs-tryfinally)
+  - [6.1 `Promise.prototype.finally`](#61-promiseprototypefinally)
+  - [6.2 `try/finally` với `await`](#62-tryfinally-với-await)
+- [7. `queueMicrotask` vs `Promise.resolve().then`](#7-queuemicrotask-vs-promiseresolvethen)
+- [8. Kết hợp nhiều Promise (combinators)](#8-kết-hợp-nhiều-promise-combinators)
+  - [8.1 `Promise.all`](#81-promiseall)
+  - [8.2 `Promise.allSettled`](#82-promiseallsettled)
+  - [8.3 `Promise.race`](#83-promiserace)
+  - [8.4 `Promise.any`](#84-promiseany)
+  - [8.5 Abort gắn combinator](#85-abort-gắn-combinator)
+  - [8.6 Chọn combinator nhanh](#86-chọn-combinator-nhanh)
+  - [8.7 Combinator với promise đã settle](#87-combinator-với-promise-đã-settle)
+  - [8.8 `all` và kiểu lỗi](#88-all-và-kiểu-lỗi)
+- [9. Tuần tự vs song song vs pool](#9-tuần-tự-vs-song-song-vs-pool)
+  - [9.1 Ba chế độ](#91-ba-chế-độ)
+  - [9.2 `mapPool`](#92-mappool)
+  - [9.3 Backpressure tư duy](#93-backpressure-tư-duy)
+  - [9.4 Pipeline giai đoạn (seq of parallel)](#94-pipeline-giai-đoạn-seq-of-parallel)
+  - [9.5 Retry phải nằm trong deadline & idempotency budget](#95-retry-phải-nằm-trong-deadline--idempotency-budget)
+- [10. Lỗi: unhandledRejection vs catch-after-tick](#10-lỗi-unhandledrejection-vs-catch-after-tick)
+  - [10.1 Cùng turn vs sau tick](#101-cùng-turn-vs-sau-tick)
+  - [10.2 Floating promises & async constructor](#102-floating-promises--async-constructor)
+  - [10.3 Nuốt lỗi / empty catch](#103-nuốt-lỗi--empty-catch)
+- [11. `await using` & async dispose](#11-await-using--async-dispose)
+- [12. `AbortSignal` — overview](#12-abortsignal--overview)
+- [13. `util.promisify` & callbackify](#13-utilpromisify--callbackify)
+- [14. `node:stream/promises` — pipeline & destroy](#14-nodestreampromises--pipeline--destroy)
+  - [14.1 `pipeline`](#141-pipeline)
+  - [14.2 Lỗi, `destroy`, abort](#142-lỗi-destroy-abort)
+  - [14.3 `finished` & `for await`](#143-finished--for-await)
+  - [14.4 Web Streams / `fetch` body](#144-web-streams--fetch-body)
+- [15. Top-level await & TLA cycles](#15-top-level-await--tla-cycles)
+  - [15.1 Hệ quả lên module graph](#151-hệ-quả-lên-module-graph)
+  - [15.2 Cycle + TLA](#152-cycle--tla)
+  - [15.3 CJS không có TLA](#153-cjs-không-có-tla)
+  - [15.4 Khi nên / không nên TLA](#154-khi-nên--không-nên-tla)
+- [16. `AsyncLocalStorage` snapshot tại `await`](#16-asynclocalstorage-snapshot-tại-await)
+  - [16.1 Snapshot / restore tại `await`](#161-snapshot--restore-tại-await)
+  - [16.2 `run` vs `enterWith` vs `snapshot`](#162-run-vs-enterwith-vs-snapshot)
+  - [16.3 Nested `run`](#163-nested-run)
+  - [16.4 Mất context — checklist ngắn](#164-mất-context--checklist-ngắn)
+  - [16.5 Async generator (tóm tắt)](#165-async-generator-tóm-tắt)
+  - [16.6 Pitfalls async (bảng)](#166-pitfalls-async-bảng)
+- [17. Best practices](#17-best-practices)
+- [18. Checklist](#18-checklist)
+- [19. Cheat sheet](#19-cheat-sheet)
+- [20. Version matrix](#20-version-matrix)
+- [21. Tài liệu liên quan](#21-tài-liệu-liên-quan)
 
 ---
 
@@ -735,15 +782,25 @@ async function mapPool<T, R>(
   fn: (item: T, index: number) => Promise<R>,
   signal?: AbortSignal,
 ): Promise<R[]> {
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new RangeError("limit must be a positive safe integer");
+  }
+  signal?.throwIfAborted();
   const out = new Array<R>(items.length);
   let next = 0;
+  let failed = false;
 
   async function worker() {
-    while (true) {
+    while (!failed) {
       signal?.throwIfAborted();
       const i = next++;
       if (i >= items.length) return;
-      out[i] = await fn(items[i]!, i);
+      try {
+        out[i] = await fn(items[i]!, i);
+      } catch (error) {
+        failed = true; // ngừng nhận job mới; các job đang chạy vẫn cần signal
+        throw error;
+      }
     }
   }
 
@@ -789,6 +846,12 @@ async function ingest(ids: string[], signal: AbortSignal) {
 | Parallel toàn bộ | Độc lập, N nhỏ |
 | Pool | Độc lập, N lớn |
 | Seq-of-pools | Pipeline ETL / request handler nhiều bước |
+
+### 9.5 Retry phải nằm trong deadline & idempotency budget
+
+Retry chỉ khi phân loại lỗi là transient và operation an toàn để lặp; timeout không chứng minh server chưa commit. POST/payment cần idempotency key cùng hợp đồng phía server. Giới hạn attempts, backoff exponential có jitter, tôn trọng `Retry-After` khi phù hợp; không retry validation/auth/abort của caller.
+
+Mọi attempt và sleep dùng **deadline tổng** ban đầu, không tạo timeout đầy đủ mới mỗi lần. Giới hạn retry concurrency/queue toàn process để tránh khuếch đại overload. Test số attempt, elapsed budget và side effect trùng. `Promise.race` chỉ reject ngoài mà không abort công việc thì retry có thể tạo hai attempt cùng chạy. Xem [cancellation](abort-context.md) và [testing](testing.md).
 
 ---
 
@@ -953,7 +1016,7 @@ async function work(signal: AbortSignal) {
 }
 ```
 
-> Sync `using` trên resource cần `await close()` → sai. Grammar / `SuppressedError` → [statements.md](statements.md) §9, [functions-methods.md](functions-methods.md) §11. Abort + cleanup → [abort-context.md](abort-context.md).
+> Sync `using` trên resource cần `await close()` → sai. Grammar / `SuppressedError` → [statements.md](statements.md#11-using-vs-tryfinally), [functions-methods.md](functions-methods.md) §11. Abort + cleanup → [abort-context.md](abort-context.md).
 
 ---
 
@@ -1273,7 +1336,7 @@ Pointer hủy + cấm giấu `AbortController` trong ALS: [abort-context.md](abo
 
 ---
 
-## 16.5 Async generator (tóm tắt)
+### 16.5 Async generator (tóm tắt)
 
 ```ts
 async function* pages(signal: AbortSignal) {
@@ -1295,7 +1358,7 @@ for await (const items of pages(signal)) {
 
 ---
 
-## 16.6 Pitfalls async (bảng)
+### 16.6 Pitfalls async (bảng)
 
 | Bẫy | Hệ quả | Cách |
 |-----|--------|------|
@@ -1395,7 +1458,7 @@ async function run(signal: AbortSignal) {
 | Node 17.3+ / 16.14+ | `AbortSignal.timeout` |
 | Node 20+ | `AbortSignal.any`; Web Streams mạnh hơn |
 | ES2024 / Node 22+ | `Promise.withResolvers`, `Array.fromAsync` |
-| Node 22+ | `Promise.try`; ERM `await using` / `Symbol.asyncDispose` |
+| Node 24/26 | `Promise.try`; ngữ pháp ERM `await using` (không suy từ Symbol trên Node 22) |
 | Node 22.15+ / 23.11+ | `AsyncLocalStorage.snapshot` / `bind` ổn định |
 | Node 24–26 | Baseline: fetch/undici + signal trên fs/stream; `await using Worker` |
 
@@ -1414,3 +1477,6 @@ Baseline repo: **Node 26** + **TS 7** — dùng `timeout` / `any` / `withResolve
 - [statements.md](statements.md) — `try/finally`, `await using`
 - [functions-methods.md](functions-methods.md) — `async` function, Disposable
 - [modules-packages.md](modules-packages.md) — ESM graph, CJS interop
+
+- [Retry/cancellation tests](testing.md)
+- [Latency và queue measurements](diagnostics.md)

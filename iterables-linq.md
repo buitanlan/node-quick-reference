@@ -10,20 +10,78 @@ Không document `Iterator.zip` / `chunks` / `windows` / async-iterator-helpers n
 
 ## Mục lục
 
-1. [Iterable & Iterator protocol](#1-iterable--iterator-protocol)
-2. [`for...of` & built-in iterables](#2-forof--built-in-iterables)
-3. [Generators như producer](#3-generators-như-producer)
-4. [Array helpers — LINQ-like](#4-array-helpers--linq-like)
-5. [Bảng LINQ ↔ JS](#5-bảng-linq--js)
-6. [Iterator helpers trên Node 26](#6-iterator-helpers-trên-node-26)
-7. [Async iteration: `for await...of`](#7-async-iteration-for-awaitof)
-8. [Lazy pipelines & custom iterables](#8-lazy-pipelines--custom-iterables)
-9. [Khi **không** xây query DSL tùy biến](#9-khi-không-xây-query-dsl-tùy-biến)
-10. [Best practices](#10-best-practices)
-11. [Checklist](#11-checklist)
-12. [Cheat sheet](#12-cheat-sheet)
-13. [Version notes](#13-version-notes)
-14. [Tài liệu liên quan](#14-tài-liệu-liên-quan)
+- [1. Iterable & Iterator protocol](#1-iterable--iterator-protocol)
+  - [1.1 Iterable](#11-iterable)
+  - [1.2 Iterator — `next` / `return` / `throw`](#12-iterator--next--return--throw)
+  - [1.3 Typing (TS)](#13-typing-ts)
+  - [1.4 `using` đóng iterator](#14-using-đóng-iterator)
+- [2. `for...of` & built-in iterables](#2-forof--built-in-iterables)
+  - [2.1 `Array.from` vs spread](#21-arrayfrom-vs-spread)
+- [3. Generators như producer](#3-generators-như-producer)
+  - [3.1 `yield*`](#31-yield)
+  - [3.2 Producer nhận giá trị (ít dùng hàng ngày)](#32-producer-nhận-giá-trị-ít-dùng-hàng-ngày)
+  - [3.3 Early cleanup](#33-early-cleanup)
+  - [3.4 Pull vs “chạy hết lúc tạo”](#34-pull-vs-chạy-hết-lúc-tạo)
+  - [3.5 `throw` vào generator đang `yield*`](#35-throw-vào-generator-đang-yield)
+- [4. Array helpers — LINQ-like](#4-array-helpers--linq-like)
+  - [4.1 Projection / filter / flatten](#41-projection--filter--flatten)
+  - [4.2 Aggregate & khi `reduce` **tệ hơn** `for`](#42-aggregate--khi-reduce-tệ-hơn-for)
+  - [4.3 Sort / slice (Take/Skip)](#43-sort--slice-takeskip)
+  - [4.4 Quantifiers / elements](#44-quantifiers--elements)
+  - [4.5 Distinct / group](#45-distinct--group)
+  - [4.6 Join — thủ công / đẩy DB](#46-join--thủ-công--đẩy-db)
+  - [4.7 Chuỗi thao tác (eager)](#47-chuỗi-thao-tác-eager)
+  - [4.8 Lazy vs eager (quyết định)](#48-lazy-vs-eager-quyết-định)
+  - [4.9 ThenBy / multi-key sort](#49-thenby--multi-key-sort)
+  - [4.10 `flat` / `flatMap` độ sâu](#410-flat--flatmap-độ-sâu)
+  - [4.11 Empty / undefined phần tử](#411-empty--undefined-phần-tử)
+- [5. Bảng LINQ ↔ JS](#5-bảng-linq--js)
+  - [5.1 Ví dụ dịch “query” C# → JS](#51-ví-dụ-dịch-query-c--js)
+- [6. Iterator helpers trên Node 26](#6-iterator-helpers-trên-node-26)
+  - [6.1 Bảng helper ↔ Array (lazy vs eager)](#61-bảng-helper--array-lazy-vs-eager)
+  - [6.2 Từng helper (sync, Node 26)](#62-từng-helper-sync-node-26)
+  - [6.3 `Iterator.concat` chi tiết](#63-iteratorconcat-chi-tiết)
+- [7. Async iteration: `for await...of`](#7-async-iteration-for-awaitof)
+  - [7.1 Protocol](#71-protocol)
+  - [7.2 Async generator](#72-async-generator)
+  - [7.3 Node streams / readline](#73-node-streams--readline)
+  - [7.4 Lỗi, `break` & AbortSignal](#74-lỗi-break--abortsignal)
+  - [7.5 `Array.fromAsync`](#75-arrayfromasync)
+  - [7.6 Backpressure async iterator](#76-backpressure-async-iterator)
+  - [7.7 `fetch` body / Node stream](#77-fetch-body--node-stream)
+  - [7.8 Lỗi `next()` reject](#78-lỗi-next-reject)
+- [8. Lazy pipelines & custom iterables](#8-lazy-pipelines--custom-iterables)
+  - [8.1 Generator pipeline (portable)](#81-generator-pipeline-portable)
+  - [8.2 Reusable vs one-shot — pitfalls](#82-reusable-vs-one-shot--pitfalls)
+  - [8.3 `yield*` compose](#83-yield-compose)
+  - [8.4 Zip / cửa sổ (khi Array không đủ)](#84-zip--cửa-sổ-khi-array-không-đủ)
+  - [8.5 Custom iterable — checklist bẫy](#85-custom-iterable--checklist-bẫy)
+  - [8.6 String, `arguments`, TypedArray](#86-string-arguments-typedarray)
+  - [8.7 Push vs pull (tóm tắt)](#87-push-vs-pull-tóm-tắt)
+  - [8.8 `Iterator.from` semantics](#88-iteratorfrom-semantics)
+  - [8.9 Materialize checklist](#89-materialize-checklist)
+  - [8.10 `reduce` trên iterator vs Array](#810-reduce-trên-iterator-vs-array)
+  - [8.11 Infinite + `take` + `forEach`](#811-infinite--take--foreach)
+  - [8.12 TypeScript: `Iterable` vs `ArrayLike`](#812-typescript-iterable-vs-arraylike)
+  - [8.13 Node `Readable.from(iterable)`](#813-node-readablefromiterable)
+  - [8.14 `yield` giá trị lớn](#814-yield-giá-trị-lớn)
+  - [8.15 So sánh `forEach` Array vs iterator](#815-so-sánh-foreach-array-vs-iterator)
+  - [8.16 `break` không chạy `finally` của **outer** nếu…](#816-break-không-chạy-finally-của-outer-nếu)
+  - [8.17 `Map`/`Set` keys iterator + helpers](#817-mapset-keys-iterator--helpers)
+  - [8.18 `for await` + `AbortSignal.any`](#818-for-await--abortsignalany)
+  - [8.19 Debug lazy pipeline](#819-debug-lazy-pipeline)
+  - [8.20 `using` + `for...of`](#820-using--forof)
+  - [8.21 Spread vs `concat` vs `Iterator.concat`](#821-spread-vs-concat-vs-iteratorconcat)
+  - [8.22 `done` và value completion](#822-done-và-value-completion)
+  - [8.23 `Array.from` mapFn và `thisArg`](#823-arrayfrom-mapfn-và-thisarg)
+- [9. Khi **không** xây query DSL tùy biến](#9-khi-không-xây-query-dsl-tùy-biến)
+  - [9.1 Exception: thư viện parser / compiler](#91-exception-thư-viện-parser--compiler)
+  - [9.2 `for await` + JSON lines](#92-for-await--json-lines)
+- [10. Best practices](#10-best-practices)
+- [11. Checklist](#11-checklist)
+- [12. Cheat sheet](#12-cheat-sheet)
+- [13. Version notes](#13-version-notes)
+- [14. Tài liệu liên quan](#14-tài-liệu-liên-quan)
 
 ---
 
@@ -110,7 +168,7 @@ function once<T>(it: Iterator<T>) {
 
 ### 1.4 `using` đóng iterator
 
-Iterator hiện đại có `[Symbol.dispose]` gọi `return()`. `using it = xs[Symbol.iterator]()` đóng khi hết block — [functions-methods.md](functions-methods.md) §11, [statements.md](statements.md) §9.
+Iterator hiện đại có `[Symbol.dispose]` gọi `return()`. `using it = xs[Symbol.iterator]()` đóng khi hết block — [functions-methods.md](functions-methods.md) §11, [statements.md](statements.md#11-using-vs-tryfinally).
 
 ---
 
@@ -268,7 +326,7 @@ const adults = people.filter((p) => p.age >= 18);
 const cities = people.flatMap((p) => [p.city, p.city.toLowerCase()]);
 ```
 
-`filter` không hẹp union trừ type predicate — [functions-callbacks.md](functions-callbacks.md) §5.
+TS 5.5+ có thể suy ra type predicate cho callback như `x => x !== undefined`, nên `filter` có thể tự hẹp union. Điều kiện truthiness hoặc guard nghiệp vụ phức tạp không luôn suy ra được — xem [functions-callbacks.md](functions-callbacks.md) §5.
 
 ### 4.2 Aggregate & khi `reduce` **tệ hơn** `for`
 
@@ -321,7 +379,7 @@ people.findLast((p) => p.city === "HN");
 people.findIndex((p) => p.age === 20);
 ```
 
-`find` ≈ FirstOrDefault (`undefined`). “First ném nếu thiếu”: tự `if (!x) throw` — không có `First()` runtime.
+`find` ≈ FirstOrDefault (`undefined`). “First ném nếu thiếu”: kiểm `x === undefined`, vì `0` / `false` / `""` có thể là phần tử hợp lệ. Khi phần tử cũng có thể là `undefined`, dùng index hoặc tagged result để phân biệt thiếu.
 
 ### 4.5 Distinct / group
 
@@ -728,7 +786,7 @@ Top-level `for await` trong ESM module: hợp lệ (TLA) — [async.md](async.md
 
 ### 7.8 Lỗi `next()` reject
 
-Async `next()` reject: `for await` ném — cố `return()` (await). Producer lỗi mạng giữa chừng: catch + abort các request phụ. `return()` reject + body error → `SuppressedError` / aggregate tùy runtime — log `error.cause` / `suppressed`.
+Async `next()` reject: `for await` propagate lỗi, **không tự gọi `return()` trong nhánh này**. Iterator phải tự dọn tài nguyên khi producer lỗi, hoặc consumer dùng `try/finally` để đóng tường minh. Với sync generator yield Promise bị reject, `for await` cũng có thể bỏ qua `finally` của generator; dùng `for...of` + `await value` trong thân khi cần bảo đảm IteratorClose. Lỗi cleanup của vòng lặp thường theo completion rules, không tự tạo `SuppressedError` như ERM.
 
 ---
 
@@ -1033,25 +1091,6 @@ Empty iterable: `for...of` không vào body. `Iterator.concat()` rỗng. `[...em
 
 ---
 
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
 
 ## 9. Khi **không** xây query DSL tùy biến
 
@@ -1176,7 +1215,7 @@ Iterator.concat(a, b, c)
 | ES2024 | `Object.groupBy` / `Map.groupBy` (theo engine) |
 | Iterator Helpers (TC39) | `.map`/`.filter`/`.take`/… trên iterator; `Iterator.from` |
 | **V8 14.6 / Node 26** | `Iterator.concat`; Map upsert (chương collections); helpers ổn định |
-| `Array.fromAsync` | ES2024-ish — có trên Node hiện đại |
+| `Array.fromAsync` | Có trên baseline 26; không phải API fan-out |
 | **TS 7** | `Iterable`/`Iterator`/`AsyncIterable` trong lib |
 
 Baseline: **Node 26** + **TS 7** — dùng iterator helpers + `Iterator.concat` / `Iterator.from` thoải mái trên baseline này.
@@ -1187,7 +1226,6 @@ Async iterator helpers (`.map` trên `AsyncIterator.prototype`) — **không** b
 
 ---
 
----
 
 ## 14. Tài liệu liên quan
 
@@ -1199,3 +1237,5 @@ Async iterator helpers (`.map` trên `AsyncIterator.prototype`) — **không** b
 - [AbortSignal & request context](abort-context.md)
 - [Event loop & concurrency model](event-loop.md) — pull vs push, không block
 - [Phát biểu](statements.md) — `for await`, `using`
+
+- [Stream/iterator cleanup tests](testing.md)

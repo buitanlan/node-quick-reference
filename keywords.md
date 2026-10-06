@@ -6,27 +6,31 @@ Từ khóa và từ khóa ngữ cảnh (contextual) quan trọng của **JavaScr
 
 ## Mục lục
 
-1. [`let` / `const` và TDZ](#1-let--const-và-tdz)
-2. [`var` — function-scope](#2-var--function-scope)
-3. [`class` TDZ & OOP keywords](#3-class-tdz--oop-keywords)
-4. [`function` / `return` / `yield`](#4-function--return--yield)
-5. [`async` / `await`](#5-async--await)
-6. [`import type` / `export type`](#6-import-type--export-type)
-7. [`using` / `await using` + Disposable](#7-using--await-using--disposable)
-8. [`try` / `catch` / `finally` / `throw`](#8-try--catch--finally--throw)
-9. [`enum` / `namespace` vs type strip](#9-enum--namespace-vs-type-strip)
-10. [`debugger` / `with`](#10-debugger--with)
-11. [Điều khiển luồng (keyword-level)](#11-điều-khiển-luồng-keyword-level)
-12. [Toán tử-từ khóa](#12-toán-tử-từ-khóa)
-13. [`true` / `false` / `null` / `undefined`](#13-true--false--null--undefined)
-14. [TypeScript: `type` / `interface` / `is` / `satisfies`](#14-typescript-type--interface--is--satisfies)
-15. [Modifier: `public` / `private` / `#` / `override`](#15-modifier-public--private---override)
-16. [Reserved vs contextual](#16-reserved-vs-contextual)
-17. [Best practices](#17-best-practices)
-18. [Checklist](#18-checklist)
-19. [Cheat sheet](#19-cheat-sheet)
-20. [Version notes](#20-version-notes)
-21. [Tài liệu liên quan](#21-tài-liệu-liên-quan)
+- [1. `let` / `const` và TDZ](#1-let--const-và-tdz)
+- [2. `var` — function-scope](#2-var--function-scope)
+- [3. `class` TDZ & OOP keywords](#3-class-tdz--oop-keywords)
+- [4. `function` / `return` / `yield`](#4-function--return--yield)
+- [5. `async` / `await`](#5-async--await)
+- [6. `import type` / `export type`](#6-import-type--export-type)
+- [7. `using` / `await using` + Disposable](#7-using--await-using--disposable)
+  - [`for (using x of …)`](#for-using-x-of-)
+- [8. `try` / `catch` / `finally` / `throw`](#8-try--catch--finally--throw)
+- [9. `enum` / `namespace` vs type strip](#9-enum--namespace-vs-type-strip)
+- [10. `debugger` / `with`](#10-debugger--with)
+  - [`with` — cấm](#with--cấm)
+- [11. Điều khiển luồng (keyword-level)](#11-điều-khiển-luồng-keyword-level)
+- [12. Toán tử-từ khóa](#12-toán-tử-từ-khóa)
+- [13. `true` / `false` / `null` / `undefined`](#13-true--false--null--undefined)
+- [14. TypeScript: `type` / `interface` / `is` / `satisfies`](#14-typescript-type--interface--is--satisfies)
+- [15. Modifier: `public` / `private` / `#` / `override`](#15-modifier-public--private----override)
+- [16. Reserved vs contextual](#16-reserved-vs-contextual)
+  - [`this` / `super` / `new` — bẫy keyword](#this--super--new--bẫy-keyword)
+  - [`with` statement vs `with` import attributes](#with-statement-vs-with-import-attributes)
+- [17. Best practices](#17-best-practices)
+- [18. Checklist](#18-checklist)
+- [19. Cheat sheet](#19-cheat-sheet)
+- [20. Version notes](#20-version-notes)
+- [21. Tài liệu liên quan](#21-tài-liệu-liên-quan)
 
 ---
 
@@ -997,6 +1001,3 @@ Baseline: **Node 26** + **TS 7**.
 - [nodejs-apis.md](nodejs-apis.md) — `.close()` trên handle khi wrap `using`
 - [iterables-linq.md](iterables-linq.md) — `for...of` / generator / `yield*`
 - [event-loop.md](event-loop.md) — microtask khi `await`
-
-
-

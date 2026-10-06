@@ -2,7 +2,7 @@
 
 Trong Node.js **không có** hàm `Main` bắt buộc như C# / `func main` như Go. Điểm vào do cách **gọi runtime**, trường `package.json` (`main` / `exports` / `bin`), hoặc shebang CLI quyết định.
 
-Baseline: **Node.js 26** (Current; LTS dự kiến Oct 2026) + **TypeScript 7**. Node **24** vẫn Maintenance LTS. Ưu tiên **ESM + TypeScript**; CJS ghi rõ khi cần.
+Baseline: **Node.js 26** (Current; LTS dự kiến Oct 2026) + **TypeScript 7**. Node **24** còn Active LTS tại ngày rà soát; xem [README](README.md). Ưu tiên **ESM + TypeScript**; CJS ghi rõ khi cần.
 
 > **Callout:** Node 26: **type stripping ổn định, mặc định** cho `.ts` — `node file.ts` (không type-check). Chỉ cú pháp **erasable**; `--experimental-transform-types` **đã gỡ**. Prod thường `tsc`/bundler emit JS; CI luôn `tsc --noEmit`.
 
@@ -10,23 +10,39 @@ Baseline: **Node.js 26** (Current; LTS dự kiến Oct 2026) + **TypeScript 7**.
 
 ## Mục lục
 
-1. [Tổng quan entry point](#1-tổng-quan-entry-point)
-2. [Các chế độ entry: strip / tsc / tsx / ESM / CJS / bin](#2-các-chế-độ-entry-strip--tsc--tsx--esm--cjs--bin)
-3. [`process.argv` & `util.parseArgs`](#3-processargv--utilparseargs)
-4. [Exit codes: `process.exit` vs `exitCode`](#4-exit-codes-processexit-vs-exitcode)
-5. [`beforeExit`, `exit`, uncaught vs shutdown](#5-beforeexit-exit-uncaught-vs-shutdown)
-6. [Signal: SIGINT / SIGTERM / SIGHUP — Windows vs POSIX](#6-signal-sigint--sigterm--sighup--windows-vs-posix)
-7. [Top-level await vs `async main()`](#7-top-level-await-vs-async-main)
-8. [`--watch` & reload](#8---watch--reload)
-9. [Environment: `--env-file` vs dotenv](#9-environment---env-file-vs-dotenv)
-10. [Readiness vs liveness](#10-readiness-vs-liveness)
-11. [`cluster` vs single process](#11-cluster-vs-single-process)
-12. [Pitfalls](#12-pitfalls)
-13. [Best practices](#13-best-practices)
-14. [Checklist](#14-checklist)
-15. [Cheat sheet](#15-cheat-sheet)
-16. [Version notes](#16-version-notes)
-17. [Tài liệu liên quan](#17-tài-liệu-liên-quan)
+- [1. Tổng quan entry point](#1-tổng-quan-entry-point)
+- [2. Các chế độ entry: strip / tsc / tsx / ESM / CJS / bin](#2-các-chế-độ-entry-strip--tsc--tsx--esm--cjs--bin)
+  - [2.1 `node file.ts` (type stripping)](#21-node-filets-type-stripping)
+  - [2.2 `tsc` emit rồi `node dist/…`](#22-tsc-emit-rồi-node-dist)
+  - [2.3 `tsx` vs `ts-node` vs strip](#23-tsx-vs-ts-node-vs-strip)
+  - [2.4 ESM vs CJS](#24-esm-vs-cjs)
+  - [2.5 `package.json` `exports` / `bin`](#25-packagejson-exports--bin)
+  - [2.6 Shebang & CLI](#26-shebang--cli)
+  - [2.7 So sánh ba pipeline (quyết định)](#27-so-sánh-ba-pipeline-quyết-định)
+- [3. `process.argv` & `util.parseArgs`](#3-processargv--utilparseargs)
+  - [3.1 `strict`](#31-strict)
+  - [3.2 `tokens: true`](#32-tokens-true)
+- [4. Exit codes: `process.exit` vs `exitCode`](#4-exit-codes-processexit-vs-exitcode)
+- [5. `beforeExit`, `exit`, uncaught vs shutdown](#5-beforeexit-exit-uncaught-vs-shutdown)
+  - [5.1 `beforeExit`](#51-beforeexit)
+  - [5.2 `exit`](#52-exit)
+  - [5.3 Uncaught vs graceful shutdown](#53-uncaught-vs-graceful-shutdown)
+- [6. Signal: SIGINT / SIGTERM / SIGHUP — Windows vs POSIX](#6-signal-sigint--sigterm--sighup--windows-vs-posix)
+  - [6.1 Bảng tín hiệu mở rộng](#61-bảng-tín-hiệu-mở-rộng)
+  - [6.2 `cluster` worker và signal](#62-cluster-worker-và-signal)
+- [7. Top-level await vs `async main()`](#7-top-level-await-vs-async-main)
+- [8. `--watch` & reload](#8---watch--reload)
+- [9. Environment: `--env-file` vs dotenv](#9-environment---env-file-vs-dotenv)
+  - [9.1 `NODE_OPTIONS` & debug](#91-node_options--debug)
+  - [9.2 `--env-file` vs Docker Compose `env_file`](#92---env-file-vs-docker-compose-env_file)
+- [10. Readiness vs liveness](#10-readiness-vs-liveness)
+- [11. `cluster` vs single process](#11-cluster-vs-single-process)
+- [12. Pitfalls](#12-pitfalls)
+- [13. Best practices](#13-best-practices)
+- [14. Checklist](#14-checklist)
+- [15. Cheat sheet](#15-cheat-sheet)
+- [16. Version notes](#16-version-notes)
+- [17. Tài liệu liên quan](#17-tài-liệu-liên-quan)
 
 ---
 
@@ -239,7 +255,7 @@ Chọn:
 
 `--watch` + strip: restart process, không HMR. `tsx watch` tương tự về process, khác transpile.
 
-Dual: `dev` strip, `start` dist — import path **cùng** `.js` (`NodeNext`) để không sửa file khi đổi pipeline.
+Dual: `dev` strip, `start` dist — nguồn import **`.ts`** và bật `rewriteRelativeImportExtensions` để emit thành `.js`. Node strip không remap `.js` sang `.ts`; convention `.js` trong nguồn dành cho pipeline emit hoặc runner có remap.
 
 ---
 
@@ -968,7 +984,7 @@ main().catch((err) => {
 | Dòng / feature | Ghi chú |
 |---|---|
 | **Node 26** (baseline) | Type stripping mặc định; transform-types đã gỡ |
-| Node 24 LTS | Type stripping ổn định (Maintenance LTS) |
+| Node 24 LTS | Type stripping ổn định (lịch LTS ở README) |
 | Node 20.6+ | `--env-file` |
 | Node 18+ | `node --watch`, `node --test` |
 | `util.parseArgs` | Ổn định; `tokens` / `strict` |
@@ -998,3 +1014,6 @@ Exit 0/1/2; stdout data, stderr usage. `bin` shebang + JS emit. `--watch` chỉ 
 - [exceptions.md](exceptions.md) — uncaught / unhandledRejection
 - [tooling.md](tooling.md) — npm scripts, runners, `node --run`
 - [nodejs-apis.md](nodejs-apis.md) — `http`, `util.parseArgs`, `process`
+
+- [Kiểm thử pipeline/CLI](testing.md)
+- [Bảo mật input CLI/env](security.md)

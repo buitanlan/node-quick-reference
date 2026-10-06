@@ -8,31 +8,89 @@ Baseline: **Node.js 26**, **TypeScript 7**, ESM. Abort: [abort-context.md](abort
 
 ## Mục lục
 
-1. [Tổng quan & triết lý](#1-tổng-quan--triết-lý)
-2. [Hệ phân cấp Error & SystemError](#2-hệ-phân-cấp-error--systemerror)
-3. [Stack: `captureStackTrace`, `stackTraceLimit`, `prepareStackTrace`](#3-stack-capturestacktrace-stacktracelimit-preparestacktrace)
-4. [Custom errors](#4-custom-errors)
-5. [AggregateError & cây lỗi](#5-aggregateerror--cây-lỗi)
-6. [`try` / `catch` / `finally`](#6-try--catch--finally)
-7. [Rethrow & `cause`](#7-rethrow--cause)
-8. [Async: rejection, combinators, async stack](#8-async-rejection-combinators-async-stack)
-9. [`unhandledRejection` / `uncaughtException` / `rejectionHandled`](#9-unhandledrejection--uncaughtexception--rejectionhandled)
-10. [Result / union vs `throw`](#10-result--union-vs-throw)
-11. [Never swallow, log một lần, OpenTelemetry attributes](#11-never-swallow-log-một-lần-opentelemetry-attributes)
-12. [Node error codes, `ERR_*`, `util.getSystemErrorMap`](#12-node-error-codes-err_-utilgetsystemerrormap)
-13. [`fetch` / undici: TypeError vs AbortError vs HTTP status](#13-fetch--undici-typeerror-vs-aborterror-vs-http-status)
-14. [Map lỗi → HTTP status](#14-map-lỗi--http-status)
-15. [AbortError / `DOMException` aborted](#15-aborterror--domexception-aborted)
-16. [`using` / Disposable & lỗi khi dispose](#16-using--disposable--lỗi-khi-dispose)
-17. [Worker error vs process chính](#17-worker-error-vs-process-chính)
-18. [`domain` đã chết](#18-domain-đã-chết)
-19. [Testing errors](#19-testing-errors)
-20. [Khi nào KHÔNG dùng `throw`](#20-khi-nào-không-dùng-throw)
-21. [Best practices](#21-best-practices)
-22. [Checklist](#22-checklist)
-23. [Cheat sheet](#23-cheat-sheet)
-24. [Version matrix](#24-version-matrix)
-25. [Tài liệu liên quan](#25-tài-liệu-liên-quan)
+- [1. Tổng quan & triết lý](#1-tổng-quan--triết-lý)
+  - [1.1 Operational vs programmer errors](#11-operational-vs-programmer-errors)
+  - [1.2 Luôn throw `Error` (hoặc subclass)](#12-luôn-throw-error-hoặc-subclass)
+  - [1.3 Hợp đồng theo tầng](#13-hợp-đồng-theo-tầng)
+- [2. Hệ phân cấp Error & SystemError](#2-hệ-phân-cấp-error--systemerror)
+  - [2.1 Thuộc tính quan trọng](#21-thuộc-tính-quan-trọng)
+  - [2.2 Node `SystemError` & errno thường gặp](#22-node-systemerror--errno-thường-gặp)
+    - [Catalog errno hay gặp](#catalog-errno-hay-gặp)
+  - [2.3 `instanceof` & cross-realm](#23-instanceof--cross-realm)
+- [3. Stack: `captureStackTrace`, `stackTraceLimit`, `prepareStackTrace`](#3-stack-capturestacktrace-stacktracelimit-preparestacktrace)
+  - [3.1 `Error.stackTraceLimit`](#31-errorstacktracelimit)
+  - [3.2 `Error.captureStackTrace(target, constructorOpt?)`](#32-errorcapturestacktracetarget-constructoropt)
+  - [3.3 `Error.prepareStackTrace` — cẩn thận](#33-errorpreparestacktrace--cẩn-thận)
+  - [3.4 Async stack traces](#34-async-stack-traces)
+- [4. Custom errors](#4-custom-errors)
+  - [4.1 Class chuẩn với `name`, `code`, `ErrorOptions`](#41-class-chuẩn-với-name-code-erroroptions)
+  - [4.2 Gợi ý thiết kế](#42-gợi-ý-thiết-kế)
+  - [4.3 Prototype / `instanceof` notes](#43-prototype--instanceof-notes)
+- [5. AggregateError & cây lỗi](#5-aggregateerror--cây-lỗi)
+  - [5.1 `AggregateError`](#51-aggregateerror)
+  - [5.2 `Error.cause` vs `AggregateError.errors`](#52-errorcause-vs-aggregateerrorerrors)
+  - [5.3 Duyệt đệ quy — `errors` rồi `cause`](#53-duyệt-đệ-quy--errors-rồi-cause)
+- [6. `try` / `catch` / `finally`](#6-try--catch--finally)
+  - [6.1 Thu hẹp `unknown` trong `catch`](#61-thu-hẹp-unknown-trong-catch)
+  - [6.2 `finally` & `return` / `throw`](#62-finally--return--throw)
+  - [6.3 Phạm vi `try` hẹp](#63-phạm-vi-try-hẹp)
+- [7. Rethrow & `cause`](#7-rethrow--cause)
+  - [7.1 Rethrow nguyên gốc](#71-rethrow-nguyên-gốc)
+  - [7.2 Wrap với `cause` (khuyến nghị khi thêm context)](#72-wrap-với-cause-khuyến-nghị-khi-thêm-context)
+  - [7.3 `formatErr` — in chuỗi cause + aggregate](#73-formaterr--in-chuỗi-cause--aggregate)
+  - [7.4 Đừng mất stack / identity](#74-đừng-mất-stack--identity)
+- [8. Async: rejection, combinators, async stack](#8-async-rejection-combinators-async-stack)
+  - [8.1 `async`/`await` và rejection](#81-asyncawait-và-rejection)
+  - [8.2 Floating promises](#82-floating-promises)
+  - [8.3 Combinators vs lỗi](#83-combinators-vs-lỗi)
+  - [8.4 Anti-pattern: `new Promise(async …)`](#84-anti-pattern-new-promiseasync-)
+  - [8.5 Async stack — thực hành](#85-async-stack--thực-hành)
+- [9. `unhandledRejection` / `uncaughtException` / `rejectionHandled`](#9-unhandledrejection--uncaughtexception--rejectionhandled)
+  - [9.1 `unhandledRejection`](#91-unhandledrejection)
+  - [9.2 `uncaughtException`](#92-uncaughtexception)
+  - [9.3 Fatal shutdown pattern (khuyến nghị service)](#93-fatal-shutdown-pattern-khuyến-nghị-service)
+  - [9.4 `rejectionHandled`](#94-rejectionhandled)
+  - [9.5 Worker không đi vào handler parent](#95-worker-không-đi-vào-handler-parent)
+- [10. Result / union vs `throw`](#10-result--union-vs-throw)
+  - [10.1 Khi nào `throw`](#101-khi-nào-throw)
+  - [10.2 Khi nào Result / discriminated union](#102-khi-nào-result--discriminated-union)
+  - [10.3 Nhất quán biên API](#103-nhất-quán-biên-api)
+- [11. Never swallow, log một lần, OpenTelemetry attributes](#11-never-swallow-log-một-lần-opentelemetry-attributes)
+  - [11.1 Nuốt lỗi](#111-nuốt-lỗi)
+  - [11.2 Log một lần ở biên — structured keys](#112-log-một-lần-ở-biên--structured-keys)
+  - [11.3 OpenTelemetry-style attributes](#113-opentelemetry-style-attributes)
+- [12. Node error codes, `ERR_*`, `util.getSystemErrorMap`](#12-node-error-codes-err_-utilgetsystemerrormap)
+  - [12.1 Hai họ mã](#121-hai-họ-mã)
+  - [12.2 `util.getSystemErrorName` / `Map` / `Message`](#122-utilgetsystemerrorname--map--message)
+  - [12.3 Catalog `ERR_*` mở rộng](#123-catalog-err_-mở-rộng)
+  - [12.4 `ERR_INVALID_ARG_TYPE` / `ERR_MODULE_NOT_FOUND` / `ERR_REQUIRE_ESM` / `ERR_UNKNOWN_FILE_EXTENSION`](#124-err_invalid_arg_type--err_module_not_found--err_require_esm--err_unknown_file_extension)
+  - [12.5 `assert.AssertionError`](#125-assertassertionerror)
+  - [12.6 `process.exitCode` vs `process.exit`](#126-processexitcode-vs-processexit)
+- [13. `fetch` / undici: TypeError vs AbortError vs HTTP status](#13-fetch--undici-typeerror-vs-aborterror-vs-http-status)
+- [14. Map lỗi → HTTP status](#14-map-lỗi--http-status)
+- [15. AbortError / `DOMException` aborted](#15-aborterror--domexception-aborted)
+  - [15.1 Hủy ≠ lỗi vận hành thông thường](#151-hủy--lỗi-vận-hành-thông-thường)
+  - [15.2 `signal` + timeout](#152-signal--timeout)
+  - [15.3 Logging & fatal handlers](#153-logging--fatal-handlers)
+- [16. `using` / Disposable & lỗi khi dispose](#16-using--disposable--lỗi-khi-dispose)
+  - [16.1 Lỗi body + lỗi dispose → `SuppressedError`](#161-lỗi-body--lỗi-dispose--suppressederror)
+  - [16.2 Khi nào KHÔNG dựa `using` nuốt lỗi](#162-khi-nào-không-dựa-using-nuốt-lỗi)
+- [17. Worker error vs process chính](#17-worker-error-vs-process-chính)
+  - [17.1 Serialize lỗi qua clone / IPC](#171-serialize-lỗi-qua-clone--ipc)
+  - [17.2 Diagnostic: `process.report`](#172-diagnostic-processreport)
+- [18. `domain` đã chết](#18-domain-đã-chết)
+  - [18.1 `setUncaughtExceptionCaptureCallback`](#181-setuncaughtexceptioncapturecallback)
+- [19. Testing errors](#19-testing-errors)
+  - [19.1 Nguyên tắc: đừng assert message string](#191-nguyên-tắc-đừng-assert-message-string)
+  - [19.2 Đồng bộ: `assert.throws`](#192-đồng-bộ-assertthrows)
+  - [19.3 Async: `assert.rejects` khớp `code`](#193-async-assertrejects-khớp-code)
+  - [19.4 `AggregateError` & table-driven](#194-aggregateerror--table-driven)
+- [20. Khi nào KHÔNG dùng `throw`](#20-khi-nào-không-dùng-throw)
+- [21. Best practices](#21-best-practices)
+- [22. Checklist](#22-checklist)
+- [23. Cheat sheet](#23-cheat-sheet)
+- [24. Version matrix](#24-version-matrix)
+- [25. Tài liệu liên quan](#25-tài-liệu-liên-quan)
 
 ---
 
@@ -1156,6 +1214,29 @@ await once(rs, "close"); // reject khi 'error' — bắt bằng try/catch
 
 Throw **bên trong** listener `'error'` → có thể `uncaughtException`. Handler chỉ log / forward, không rethrow trừ khi bạn muốn fatal.
 
+### 12.4 `ERR_INVALID_ARG_TYPE` / `ERR_MODULE_NOT_FOUND` / `ERR_REQUIRE_ESM` / `ERR_UNKNOWN_FILE_EXTENSION`
+
+```ts
+import { readFile } from "node:fs/promises";
+
+try {
+  // @ts-expect-error minh họa runtime
+  await readFile(1 as unknown as string);
+} catch (e) {
+  readCode(e); // "ERR_INVALID_ARG_TYPE"
+}
+```
+
+| Code | Khi nào thấy | Xử lý |
+|------|----------------|--------|
+| `ERR_INVALID_ARG_TYPE` | caller truyền sai kiểu vào Node API | programmer error — fail-fast, đừng retry |
+| `ERR_MODULE_NOT_FOUND` | sai path, thiếu package, `exports` chặn | cài dep / sửa specifier; **không** bắt làm 404 HTTP trừ khi đó là user path |
+| `ERR_REQUIRE_ESM` | CJS `require` file `"type": "module"` | đổi `import`, hoặc dual package; Node 22+ có một số `require(esm)` — đừng dựa nếu lib thuần ESM |
+| `ERR_UNKNOWN_FILE_EXTENSION` | `import "./x.ts"` khi runtime không strip; hoặc `.css` không loader | Node 26 strip `.ts`; `.tsx` / `.mts` tùy; bundler cho non-JS |
+| Abort `ABORT_ERR` | `signal` abort giữa API | §15 — không log 5xx |
+
+> `ERR_MODULE_NOT_FOUND` **khác** `ENOENT`: cái trước là resolver ESM/CJS; cái sau là syscall fs. Dynamic `import(userPath)` cần chặn path traversal trước khi map 404.
+
 ### 12.5 `assert.AssertionError`
 
 ```ts
@@ -1194,29 +1275,6 @@ JSON.stringify(new Error("x"), ["message", "name", "stack"]); // vẫn có thể
 ```
 
 Dùng serializer tường minh (`errFields` / `formatErr`), không `JSON.stringify(err)` làm payload HTTP.
-
-### 12.4 `ERR_INVALID_ARG_TYPE` / `ERR_MODULE_NOT_FOUND` / `ERR_REQUIRE_ESM` / `ERR_UNKNOWN_FILE_EXTENSION`
-
-```ts
-import { readFile } from "node:fs/promises";
-
-try {
-  // @ts-expect-error minh họa runtime
-  await readFile(1 as unknown as string);
-} catch (e) {
-  readCode(e); // "ERR_INVALID_ARG_TYPE"
-}
-```
-
-| Code | Khi nào thấy | Xử lý |
-|------|----------------|--------|
-| `ERR_INVALID_ARG_TYPE` | caller truyền sai kiểu vào Node API | programmer error — fail-fast, đừng retry |
-| `ERR_MODULE_NOT_FOUND` | sai path, thiếu package, `exports` chặn | cài dep / sửa specifier; **không** bắt làm 404 HTTP trừ khi đó là user path |
-| `ERR_REQUIRE_ESM` | CJS `require` file `"type": "module"` | đổi `import`, hoặc dual package; Node 22+ có một số `require(esm)` — đừng dựa nếu lib thuần ESM |
-| `ERR_UNKNOWN_FILE_EXTENSION` | `import "./x.ts"` khi runtime không strip; hoặc `.css` không loader | Node 26 strip `.ts`; `.tsx` / `.mts` tùy; bundler cho non-JS |
-| Abort `ABORT_ERR` | `signal` abort giữa API | §15 — không log 5xx |
-
-> `ERR_MODULE_NOT_FOUND` **khác** `ENOENT`: cái trước là resolver ESM/CJS; cái sau là syscall fs. Dynamic `import(userPath)` cần chặn path traversal trước khi map 404.
 
 ---
 
@@ -1399,7 +1457,7 @@ Chi tiết propagation: [abort-context.md](abort-context.md).
 
 ## 16. `using` / Disposable & lỗi khi dispose
 
-Explicit Resource Management: [statements.md](statements.md) §9, [functions-methods.md](functions-methods.md), [keywords.md](keywords.md).
+Explicit Resource Management: [statements.md](statements.md#11-using-vs-tryfinally), [functions-methods.md](functions-methods.md), [keywords.md](keywords.md).
 
 ```ts
 class FileTracker implements Disposable {
@@ -1609,7 +1667,6 @@ Chỉ **một** callback; đăng ký lần hai → `ERR_UNCAUGHT_EXCEPTION_CAPTU
 
 ---
 
----
 
 ## 19. Testing errors
 
@@ -1876,7 +1933,7 @@ await assert.rejects(() => fs.readFile("nope"), { code: "ENOENT" });
 | Node 15+ | unhandled rejection ngày càng “strict” hơn theo mặc định/flag |
 | Node 18+ / hiện đại | `AbortSignal.timeout`, `throwIfAborted`, `AbortSignal.any` |
 | Node 22.12+ / 23.1+ | `util.getSystemErrorMessage` |
-| ERM / ES2024 | `using`, `Symbol.dispose`, `SuppressedError` |
+| Explicit Resource Management | `using`, `Symbol.dispose`, `SuppressedError` |
 | Node 26 (baseline) | `cause`, AggregateError, Abort/`DOMException`, catalog `ERR_*`, `fetch` Undici, strip `.ts` |
 | TypeScript 4.4+ / 7 | `catch` → `unknown` dưới strict / `useUnknownInCatchVariables` |
 | `domain` | historical — không dùng |
@@ -1898,3 +1955,6 @@ await assert.rejects(() => fs.readFile("nope"), { code: "ENOENT" });
 - [Keywords](keywords.md) — `throw` / `try` / `using`
 
 ---
+
+- [Testing runtime/async](testing.md)
+- [Stack, report & log](diagnostics.md)

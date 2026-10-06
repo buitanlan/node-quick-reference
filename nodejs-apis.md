@@ -2,30 +2,77 @@
 
 Tham khảo thực dụng các module lõi — **survey có chiều sâu**, không phải full API dump. Mỗi hotspot đủ để chọn đúng API; chi tiết event loop / abort / async nằm ở chương chuyên biệt.
 
-> **Callout:** Baseline: **Node.js 26** (V8 **14.6**, Undici **8**). Node **24** vẫn Maintenance LTS. Luôn import qua prefix **`node:`**. `http.createServer` vẫn `(req, res)` — **không** có fetch handler ổn định trên `createServer` (xem §5.6).
+> **Callout:** Baseline: **Node.js 26** (V8 **14.6**, Undici **8**). Node **24** còn Active LTS tại ngày rà soát; xem [README](README.md). Luôn import qua prefix **`node:`**. `http.createServer` vẫn `(req, res)` — **không** có fetch handler ổn định trên `createServer` (xem §5.6).
 
 ---
 
 ## Mục lục
 
-1. [Quy ước `node:` imports](#1-quy-ước-node-imports)
-2. [Quyết định: sync vs promises vs streams](#2-quyết-định-sync-vs-promises-vs-streams)
-3. [`fs` / `fs/promises` / `FileHandle` / `using`](#3-fs--fspromises--filehandle--using)
-4. [`path` vs `URL` / `fileURLToPath`](#4-path-vs-url--fileurltopath)
-5. [`http` / `https` + `fetch` (Undici)](#5-http--https--fetch-undici)
-6. [`stream` & backpressure](#6-stream--backpressure)
-7. [`buffer` — `alloc` vs `allocUnsafe`](#7-buffer--alloc-vs-allocunsafe)
-8. [`crypto` vs Web Crypto](#8-crypto-vs-web-crypto)
-9. [`events` — EventEmitter vs EventTarget](#9-events--eventemitter-vs-eventtarget)
-10. [`assert`](#10-assert)
-11. [`process` / `os` / `util`](#11-process--os--util)
-12. [`diagnostics_channel` & `perf_hooks`](#12-diagnostics_channel--perf_hooks)
-13. [Temporal (global)](#13-temporal-global)
-14. [Best practices](#14-best-practices)
-15. [Checklist](#15-checklist)
-16. [Cheat sheet](#16-cheat-sheet)
-17. [Version notes](#17-version-notes)
-18. [Tài liệu liên quan](#18-tài-liệu-liên-quan)
+- [1. Quy ước `node:` imports](#1-quy-ước-node-imports)
+- [2. Quyết định: sync vs promises vs streams](#2-quyết-định-sync-vs-promises-vs-streams)
+- [3. `fs` / `fs/promises` / `FileHandle` / `using`](#3-fs--fspromises--filehandle--using)
+  - [3.1 `FileHandle` — đóng tường minh](#31-filehandle--đóng-tường-minh)
+  - [3.2 `await using` (Explicit Resource Management)](#32-await-using-explicit-resource-management)
+  - [3.3 Streams file vs `readFile`](#33-streams-file-vs-readfile)
+  - [3.4 `opendir` / `readdir`](#34-opendir--readdir)
+  - [3.5 Atomic replacement, durability & race](#35-atomic-replacement-durability--race)
+- [4. `path` vs `URL` / `fileURLToPath`](#4-path-vs-url--fileurltopath)
+  - [4.1 `fileURLToPath` / `pathToFileURL`](#41-fileurltopath--pathtofileurl)
+- [5. `http` / `https` + `fetch` (Undici)](#5-http--https--fetch-undici)
+  - [5.1 Server (`node:http`)](#51-server-nodehttp)
+  - [5.2 Client: `fetch` (Undici 8 trên Node 26)](#52-client-fetch-undici-8-trên-node-26)
+  - [5.3 `Headers`](#53-headers)
+  - [5.4 `duplex` — stream làm request body](#54-duplex--stream-làm-request-body)
+  - [5.5 `dispatcher` (Agent / Pool)](#55-dispatcher-agent--pool)
+  - [5.6 `createServer` vs fetch handler — thực tế Node 26](#56-createserver-vs-fetch-handler--thực-tế-node-26)
+  - [5.7 Khi nào `https.request` / Agent thấp tầng](#57-khi-nào-httpsrequest--agent-thấp-tầng)
+  - [5.8 Client cổ điển `https.get` (khi cần)](#58-client-cổ-điển-httpsget-khi-cần)
+  - [5.9 Server timeout & keep-alive](#59-server-timeout--keep-alive)
+  - [5.10 Redirect, method, body một lần](#510-redirect-method-body-một-lần)
+- [6. `stream` & backpressure](#6-stream--backpressure)
+  - [6.1 Backpressure & `highWaterMark`](#61-backpressure--highwatermark)
+  - [6.2 Async iteration](#62-async-iteration)
+  - [6.3 Web Streams](#63-web-streams)
+  - [6.4 Object mode & encoding](#64-object-mode--encoding)
+  - [6.5 Lỗi trên stream](#65-lỗi-trên-stream)
+  - [6.6 `compose` & `Duplex`](#66-compose--duplex)
+  - [6.7 Default HWM & TCP](#67-default-hwm--tcp)
+  - [6.8 `pipeline` vs `pipe` vs `consume`](#68-pipeline-vs-pipe-vs-consume)
+- [7. `buffer` — `alloc` vs `allocUnsafe`](#7-buffer--alloc-vs-allocunsafe)
+- [8. `crypto` vs Web Crypto](#8-crypto-vs-web-crypto)
+  - [8.1 Web Crypto (`subtle`)](#81-web-crypto-subtle)
+  - [8.2 Timing-safe compare](#82-timing-safe-compare)
+  - [8.3 Key, PEM, `createPrivateKey`](#83-key-pem-createprivatekey)
+  - [8.4 `webcrypto` `crypto.getRandomValues`](#84-webcrypto-cryptogetrandomvalues)
+  - [8.5 Hash stream vs `subtle.digest`](#85-hash-stream-vs-subtledigest)
+- [9. `events` — EventEmitter vs EventTarget](#9-events--eventemitter-vs-eventtarget)
+  - [9.1 So sánh](#91-so-sánh)
+  - [9.2 `error` trên EventEmitter](#92-error-trên-eventemitter)
+- [10. `assert`](#10-assert)
+  - [10.1 API hay dùng](#101-api-hay-dùng)
+- [11. `process` / `os` / `util`](#11-process--os--util)
+  - [11.1 `process`](#111-process)
+  - [11.2 `os`](#112-os)
+  - [11.3 `util` — `styleText`, `parseArgs`, promisify](#113-util--styletext-parseargs-promisify)
+- [12. `diagnostics_channel` & `perf_hooks`](#12-diagnostics_channel--perf_hooks)
+  - [12.1 `diagnostics_channel`](#121-diagnostics_channel)
+  - [12.2 `perf_hooks`](#122-perf_hooks)
+  - [12.3 Không nằm ở chương này](#123-không-nằm-ở-chương-này)
+  - [12.4 `tracingChannel` chi tiết](#124-tracingchannel-chi-tiết)
+- [13. Temporal (global)](#13-temporal-global)
+  - [13.1 Temporal vs `Date` — quyết định nhanh](#131-temporal-vs-date--quyết-định-nhanh)
+  - [13.2 Calendar vs Instant — pitfalls](#132-calendar-vs-instant--pitfalls)
+- [14. Network, dữ liệu & CLI: module còn cần biết](#14-network-dữ-liệu--cli-module-còn-cần-biết)
+  - [14.1 `dns.lookup` vs `dns.resolve`](#141-dnslookup-vs-dnsresolve)
+  - [14.2 `net` / `tls`: framing, timeout và peer](#142-net--tls-framing-timeout-và-peer)
+  - [14.3 `zlib` / `readline`: stream nhưng vẫn cần budget](#143-zlib--readline-stream-nhưng-vẫn-cần-budget)
+  - [14.4 `node:sqlite`: local data, synchronous API](#144-nodesqlite-local-data-synchronous-api)
+  - [14.5 `node:vm` không là security boundary](#145-nodevm-không-là-security-boundary)
+- [15. Best practices](#15-best-practices)
+- [16. Checklist](#16-checklist)
+- [17. Cheat sheet](#17-cheat-sheet)
+- [18. Version notes](#18-version-notes)
+- [19. Tài liệu liên quan](#19-tài-liệu-liên-quan)
 
 ---
 
@@ -173,6 +220,12 @@ await pipeline(
 
 `readdir` với `{ withFileTypes: true }` trả `Dirent` — tránh `stat` từng file nếu chỉ cần `isDirectory()`. `opendir` + `for await` thân thiện thư mục rất lớn (không materialize mảng tên).
 
+### 3.5 Atomic replacement, durability & race
+
+Đổi config/file: ghi temp **cùng directory/filesystem**, đóng/sync theo yêu cầu durability, rồi rename thay target; cleanup temp khi fail. Atomic visibility của rename không đồng nghĩa dữ liệu sống qua crash/power loss; file và directory sync, overwrite behavior/permissions phụ thuộc OS/filesystem. Không khẳng định `copyFile` atomic.
+
+Tránh `access`/`stat` rồi `open` để quyết định tạo mới: dùng `open(path, "wx")` và xử lý `EEXIST`. Chờ xong write trước lần write khác trên cùng handle; signal abort không rollback bytes. Path validation/symlink ở [security.md](security.md#3-filesystem-traversal-symlink-và-toctou). [FS contracts](https://nodejs.org/api/fs.html).
+
 ---
 
 ## 4. `path` vs `URL` / `fileURLToPath`
@@ -314,7 +367,7 @@ Request `headers` trên `IncomingMessage`: `req.headers` (hạ lowercase), `req.
 
 ### 5.4 `duplex` — stream làm request body
 
-WHATWG Fetch: body là `ReadableStream` thì phải khai **`duplex: "half"`** (half-duplex: không vừa gửi vừa đọc response cùng lúc theo kiểu full):
+Node/Undici fetch: body là `ReadableStream`/async iterable thì khai **`duplex: "half"`**. Đây là giá trị option theo Fetch API; Undici có thể vận hành full duplex, nên không suy ra phải gửi hết body mới đọc được response. [Undici duplex](https://github.com/nodejs/undici#requestduplex).
 
 ```ts
 import { Readable } from "node:stream";
@@ -486,9 +539,9 @@ await pipeline(
 
 | Loại | Default `highWaterMark` (thực dụng) |
 |---|---|
-| File / TCP binary | **16 KiB** (16384) |
+| Byte streams mặc định hiện đại | 64 KiB trên non-Windows; 16 KiB Windows; subclass/options có thể khác |
 | `objectMode: true` | **16** objects |
-| `fs.createReadStream({ highWaterMark })` | Đặt 64KiB–256KiB khi disk tuần tự lớn |
+| `fs.createReadStream` | Mặc định 64 KiB riêng; đo trước khi đổi |
 
 Tăng HWM: ít syscall, **nhiều RAM** / latency burst. Giảm: RAM thấp, nhiều vòng loop. Đo; đừng copy số thần thoại.
 
@@ -593,6 +646,14 @@ const t = compose(
 
 `Readable.from(iterable)` / `Readable.fromWeb`. Generator `async function*` + `from` = backpressure theo iteration.
 
+### 6.7 Default HWM & TCP
+
+Socket HWM theo defaults/options của runtime; xem `readableHighWaterMark` / `writableHighWaterMark`, không ghim 16 KiB cho mọi OS. Push quá nhanh không đọc `write() === false` làm buffer phình. `pipeline` quản lý backpressure. [Defaults](https://nodejs.org/api/stream.html#streamgetdefaulthighwatermarkobjectmode).
+
+`cork()` / `uncork()` gộp write nhỏ (TCP) — tối ưu tinh; đo trước.
+
+`stringDecoder` khi cắt UTF-8 giữa chunk — `setEncoding("utf8")` trên readable xử lý đa số; binary protocol giữ Buffer.
+
 ### 6.8 `pipeline` vs `pipe` vs `consume`
 
 | Cách | Destroy khi lỗi | AbortSignal | Nên |
@@ -605,14 +666,6 @@ const t = compose(
 `error` trên EE không listener → throw. `pipeline` gắn handler. `unpipe` giữa chừng dễ leak — hủy = `destroy(err)`.
 
 Web `pipeTo(writable, { signal, preventAbort })` — khác Node `pipe`. Bridge `fromWeb` rồi `pipeline` khi mix.
-
-### 6.7 Default HWM & TCP
-
-Socket `highWaterMark` 16KiB mỗi chiều. Push quá nhanh không đọc `write() === false` → buffer nội bộ phình (memory). Proxy/pipe tay **phải** tôn trọng drain. `pipeline` làm hộ.
-
-`cork()` / `uncork()` gộp write nhỏ (TCP) — tối ưu tinh; đo trước.
-
-`stringDecoder` khi cắt UTF-8 giữa chunk — `setEncoding("utf8")` trên readable xử lý đa số; binary protocol giữ Buffer.
 
 ---
 
@@ -725,6 +778,23 @@ Dùng subtle khi share thuật toán với browser. Node `createHash` / `createH
 
 `globalThis.crypto` trên Node = WebCrypto; **không** phải `import crypto from "node:crypto"` (module còn `createHash`, certificates, …).
 
+### 8.2 Timing-safe compare
+
+```ts
+import { timingSafeEqual } from "node:crypto";
+
+function safeEqual(a: string, b: string) {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ba.length !== bb.length) return false;
+  return timingSafeEqual(ba, bb);
+}
+```
+
+Độ dài khác nhau vẫn leak qua early return — cân nhắc hash rồi so sánh digest cùng length khi threat model nghiêm.
+
+`timingSafeEqual` **throw** nếu length khác — check trước.
+
 ### 8.3 Key, PEM, `createPrivateKey`
 
 ```ts
@@ -758,23 +828,6 @@ Cùng CSPRNG family với `randomBytes`. Browser-share: `getRandomValues`. Node 
 `createHmac` key: `Buffer` / string. Key string encoding mặc định utf8 — hex key phải `Buffer.from(hex, "hex")`. Sai encoding → chữ ký lệch im lặng với peer.
 
 `KeyObject` `export({ type: "pkcs8", format: "pem" })` — đừng log. `timingSafeEqual` cho digest cùng length sau hash.
-
-### 8.2 Timing-safe compare
-
-```ts
-import { timingSafeEqual } from "node:crypto";
-
-function safeEqual(a: string, b: string) {
-  const ba = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ba.length !== bb.length) return false;
-  return timingSafeEqual(ba, bb);
-}
-```
-
-Độ dài khác nhau vẫn leak qua early return — cân nhắc hash rồi so sánh digest cùng length khi threat model nghiêm.
-
-`timingSafeEqual` **throw** nếu length khác — check trước.
 
 ---
 
@@ -1042,39 +1095,6 @@ OpenTelemetry / APM có thể subscribe cùng kênh. **Không** tự dựng dist
 
 Subscribe **sớm** (boot) — publish trước subscribe = miss.
 
-### 12.4 `tracingChannel` chi tiết
-
-```ts
-import { tracingChannel } from "node:diagnostics_channel";
-
-const tc = tracingChannel("my-app:handler");
-
-tc.subscribe({
-  start(msg) {
-    void msg;
-  },
-  end(msg) {
-    void msg;
-  },
-  asyncStart(msg) {
-    void msg;
-  },
-  asyncEnd(msg) {
-    void msg;
-  },
-  error(msg) {
-    void msg;
-  },
-});
-
-tc.traceSync(() => doWork());
-await tc.tracePromise(() => doWorkAsync());
-```
-
-Tên kênh ổn định để APM subscribe. `traceCallback` cho API `(err, result)`. Không log PII trên channel production.
-
-`perf_hooks` `PerformanceObserver` `entryTypes: ["measure", "gc", "http"]` — `http` entry tùy bật; GC observer **đắt**. `monitorEventLoopDelay` resolution thấp (ms) = ít overhead hơn 1ms.
-
 ### 12.2 `perf_hooks`
 
 ```ts
@@ -1120,6 +1140,39 @@ Dùng cho benchmark nhẹ / latency span nội bộ. Tracing phân tán đầy �
 | Hủy request / ALS | [abort-context.md](abort-context.md) |
 | Microtask / phases | [event-loop.md](event-loop.md) |
 | Entry / signals / parseArgs sâu | [main-function.md](main-function.md) |
+
+### 12.4 `tracingChannel` chi tiết
+
+```ts
+import { tracingChannel } from "node:diagnostics_channel";
+
+const tc = tracingChannel("my-app:handler");
+
+tc.subscribe({
+  start(msg) {
+    void msg;
+  },
+  end(msg) {
+    void msg;
+  },
+  asyncStart(msg) {
+    void msg;
+  },
+  asyncEnd(msg) {
+    void msg;
+  },
+  error(msg) {
+    void msg;
+  },
+});
+
+tc.traceSync(() => doWork());
+await tc.tracePromise(() => doWorkAsync());
+```
+
+Tên kênh ổn định để APM subscribe. `traceCallback` cho API `(err, result)`. Không log PII trên channel production.
+
+`perf_hooks` `PerformanceObserver` `entryTypes: ["measure", "gc", "http"]` — `http` entry tùy bật; GC observer **đắt**. `monitorEventLoopDelay` resolution thấp (ms) = ít overhead hơn 1ms.
 
 ---
 
@@ -1179,7 +1232,31 @@ JSON: `toJSON()` trên Temporal objects — round-trip `from()`. `Date.toISOStri
 
 ---
 
-## 14. Best practices
+## 14. Network, dữ liệu & CLI: module còn cần biết
+
+### 14.1 `dns.lookup` vs `dns.resolve`
+
+`lookup` dùng OS name resolution (hosts/NSS và libuv threadpool); `resolve*` truy vấn DNS và không dùng cùng pool đó. Hai cách có thể trả kết quả khác nhau; đổi API không chỉ là tối ưu. Cache/TTL, address family và DNS rebinding cần policy riêng. [DNS implementation](https://nodejs.org/api/dns.html#implementation-considerations).
+
+### 14.2 `net` / `tls`: framing, timeout và peer
+
+TCP là byte stream, một `data` chunk không tương ứng một message. Framing theo length/delimiter cần giới hạn size và xử lý chunk bị chia/gộp. `socket.setTimeout` chỉ emit idle timeout, không tự đóng: handler phải `end`/`destroy`. Đặt deadline tổng riêng và tôn trọng `write() === false`. TLS giữ certificate/hostname verification; `secureConnect` không thay authorization nghiệp vụ. [Net](https://nodejs.org/api/net.html#socketsettimeouttimeout-callback), [TLS](https://nodejs.org/api/tls.html).
+
+### 14.3 `zlib` / `readline`: stream nhưng vẫn cần budget
+
+Compression async tranh libuv pool; dùng `pipeline` và giới hạn output bytes khi decompress để chống expansion bomb. HWM không hard cap tổng output. `readline.createInterface` hỗ trợ `for await`, nhưng line khổng lồ vẫn tốn RAM và interface cần đóng khi break/error; không coi API line reader là input validator. [Zlib](https://nodejs.org/api/zlib.html#threadpool-usage-and-performance-considerations), [Readline](https://nodejs.org/api/readline.html).
+
+### 14.4 `node:sqlite`: local data, synchronous API
+
+`node:sqlite` được thêm ở 22.5.0; RC từ 25.7.0, **không gắn nhãn stable cho Node 26**. `DatabaseSync`/`StatementSync` block thread đang gọi: query nặng nên ở worker hoặc chọn adapter async phù hợp. Prepared statement dùng bound parameters; dynamic identifier vẫn allowlist. SQLite INTEGER có thể vượt safe integer JS: dùng `setReadBigInts(true)` khi hợp đồng cần. Giữ transaction ngắn, đặt busy policy và đóng DB; không giữ transaction xuyên await network. [SQLite docs](https://nodejs.org/api/sqlite.html).
+
+### 14.5 `node:vm` không là security boundary
+
+Context giúp tách global environment cho code được tin cậy; không có bảo đảm chống malicious code. Worker chia isolate nhưng cùng process. Chọn OS/process/container isolation theo threat model và xem [security.md](security.md#7-permission-model-isolation-và-supply-chain). [VM contract](https://nodejs.org/api/vm.html).
+
+---
+
+## 15. Best practices
 
 1. Luôn `node:` prefix; ưu tiên `*/promises` và `pipeline`.
 2. Client HTTP: `fetch` + `AbortSignal` + `res.ok`; stream body → `duplex: "half"`; pool → `dispatcher`.
@@ -1199,7 +1276,7 @@ JSON: `toJSON()` trên Temporal objects — round-trip `from()`. `Date.toISOStri
 
 ---
 
-## 15. Checklist
+## 16. Checklist
 
 ```text
 □ import node:… ; promises subpath khi có
@@ -1223,7 +1300,7 @@ JSON: `toJSON()` trên Temporal objects — round-trip `from()`. `Date.toISOStri
 
 ---
 
-## 16. Cheat sheet
+## 17. Cheat sheet
 
 ```ts
 import fs from "node:fs/promises";
@@ -1265,11 +1342,11 @@ assert.equal(1 + 1, 2);
 
 `Buffer.alloc` mặc định; `allocUnsafe` chỉ fill hết. `createServer(req,res)` không fetch handler core. Duplex `"half"` khi stream body `fetch`.
 
-`FileHandle` luôn `close` / `await using`. HWM 16KiB binary / 16 object.
+`FileHandle` luôn `close` / `await using`. HWM là threshold, không RAM cap; kiểm default theo OS/subclass.
 
 ---
 
-## 17. Version notes
+## 18. Version notes
 
 | Nền | Liên quan |
 |---|---|
@@ -1278,7 +1355,7 @@ assert.equal(1 + 1, 2);
 | Node 20.6+ / 22+ | `util.parseArgs` ổn định; `styleText` |
 | Node 22–24 | type stripping experimental → ổn định dần |
 | **Node 26** | V8 **14.6**, Undici **8**, **Temporal** default, `Iterator.concat`, type stripping ổn định, gỡ `--experimental-transform-types` |
-| Node 24 | Maintenance LTS song song giai đoạn chuyển; Temporal **không** cùng default |
+| Node 24 | LTS theo lịch trong README; Temporal **không** cùng default |
 | `FileHandle` asyncDispose | `await using` trên dòng hiện đại |
 | `http.serve` fetch | **Không** baseline — proposal/PR, không dùng như API ổn định |
 
@@ -1286,7 +1363,7 @@ Baseline tài liệu: **Node 26** + **TS 7** (`@types/node@^26`).
 
 ---
 
-## 18. Tài liệu liên quan
+## 19. Tài liệu liên quan
 
 - [Lập trình bất đồng bộ](async.md)
 - [AbortSignal & request context](abort-context.md)
@@ -1299,3 +1376,7 @@ Baseline tài liệu: **Node 26** + **TS 7** (`@types/node@^26`).
 - [Phát biểu](statements.md) — `using` / `await using`
 - [exceptions.md](exceptions.md) — assert vs throw
 - [decorators.md](decorators.md) — không nằm built-in runtime
+
+- [Core API integration tests](testing.md)
+- [Trust/resource boundaries](security.md)
+- [Profiling & reports](diagnostics.md)

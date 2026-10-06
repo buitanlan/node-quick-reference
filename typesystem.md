@@ -2,37 +2,82 @@
 
 JavaScript là ngôn ngữ **dynamic** tại runtime (kiểu gắn với *giá trị*). TypeScript thêm lớp **static types** bị xóa khi biên dịch / type-strip — không tồn tại trên V8. Tài liệu này tập trung **TypeScript 7** chạy trên **Node.js 26** (ESM ưu tiên). Mục tiêu: tham chiếu thực dụng, không phải tutorial nhập môn.
 
-> Baseline: **TypeScript 7** (compiler Go) + **Node.js 26** (type stripping ổn định). Node **24** vẫn Maintenance LTS trong giai đoạn chuyển. TS 7: `strict` mặc định **true**; `moduleResolution: "node"` / `node10` / `classic` → **error**.
+> Baseline: **TypeScript 7** (compiler Go) + **Node.js 26** (type stripping ổn định). Node **24** còn Active LTS tại ngày rà soát; lịch chuyển Maintenance ở [README](README.md). TS 7: `strict` mặc định **true**; `moduleResolution: "node"` / `node10` / `classic` → **error**.
 
 ---
 
 ## Mục lục
 
-1. [Runtime types (JS) vs static types (TS)](#1-runtime-types-js-vs-static-types-ts)
-2. [Primitive types](#2-primitive-types)
-3. [`object`, functions, arrays](#3-object-functions-arrays)
-4. [Tuples](#4-tuples)
-5. [Enums vs const objects / unions](#5-enums-vs-const-objects--unions)
-6. [`any` / `unknown` / `never` / `void`](#6-any--unknown--never--void)
-7. [Union, intersection, literal types](#7-union-intersection-literal-types)
-8. [Type aliases vs interfaces](#8-type-aliases-vs-interfaces)
-9. [Narrowing: predicates vs asserts vs `satisfies`](#9-narrowing-predicates-vs-asserts-vs-satisfies)
-10. [Generics: constraints, `const` type params, `NoInfer`](#10-generics-constraints-const-type-params-noinfer)
-11. [Mapped, conditional, `infer`, template literal types](#11-mapped-conditional-infer-template-literal-types)
-12. [Structural typing, freshness, branded types](#12-structural-typing-freshness-branded-types)
-13. [Variance: methods vs functions](#13-variance-methods-vs-functions)
-14. [Strictness flags & TS 7 defaults](#14-strictness-flags--ts-7-defaults)
-15. [`satisfies` vs `as const` vs annotation](#15-satisfies-vs-as-const-vs-annotation)
-16. [Type stripping & `erasableSyntaxOnly`](#16-type-stripping--erasablesyntaxonly)
-17. [Declaration merging, module augmentation, `this` types](#17-declaration-merging-module-augmentation-this-types)
-18. [Assignability / widen / narrow](#18-assignability--widen--narrow)
-19. [Worked examples: `typeof` duality](#19-worked-examples-typeof-duality)
-20. [Khi nào KHÔNG dùng](#20-khi-nào-không-dùng)
-21. [Best practices](#21-best-practices)
-22. [Checklist](#22-checklist)
-23. [Cheat sheet](#23-cheat-sheet)
-24. [Version matrix](#24-version-matrix)
-25. [Tài liệu liên quan](#25-tài-liệu-liên-quan)
+- [1. Runtime types (JS) vs static types (TS)](#1-runtime-types-js-vs-static-types-ts)
+- [2. Primitive types](#2-primitive-types)
+  - [2.1 Bảng `typeof` runtime (đủ cho Node)](#21-bảng-typeof-runtime-đủ-cho-node)
+  - [2.2 `number`, NaN, `Object.is`, boxed `Number`](#22-number-nan-objectis-boxed-number)
+  - [2.3 `bigint` mixing](#23-bigint-mixing)
+  - [2.4 `null` vs `undefined`](#24-null-vs-undefined)
+  - [2.5 `symbol` & well-known symbols](#25-symbol--well-known-symbols)
+- [3. `object`, functions, arrays](#3-object-functions-arrays)
+  - [3.1 `Record` & index signatures](#31-record--index-signatures)
+- [4. Tuples](#4-tuples)
+- [5. Enums vs const objects / unions](#5-enums-vs-const-objects--unions)
+- [6. `any` / `unknown` / `never` / `void`](#6-any--unknown--never--void)
+- [7. Union, intersection, literal types](#7-union-intersection-literal-types)
+  - [7.1 Discriminated unions](#71-discriminated-unions)
+- [8. Type aliases vs interfaces](#8-type-aliases-vs-interfaces)
+  - [8.1 Declaration merging](#81-declaration-merging)
+  - [8.2 Collision khi merge](#82-collision-khi-merge)
+- [9. Narrowing: predicates vs asserts vs `satisfies`](#9-narrowing-predicates-vs-asserts-vs-satisfies)
+  - [9.1 Type predicate (`x is T`)](#91-type-predicate-x-is-t)
+  - [9.2 Assertion function (`asserts`)](#92-assertion-function-asserts)
+  - [9.3 `satisfies` (không hẹp runtime, không predicate)](#93-satisfies-không-hẹp-runtime-không-predicate)
+  - [9.4 Bảng quyết định](#94-bảng-quyết-định)
+- [10. Generics: constraints, `const` type params, `NoInfer`](#10-generics-constraints-const-type-params-noinfer)
+  - [10.1 Constraints, defaults, `keyof`](#101-constraints-defaults-keyof)
+  - [10.2 `const` type parameters (TS 5.0+)](#102-const-type-parameters-ts-50)
+  - [10.3 `NoInfer<T>` (TS 5.4+)](#103-noinfer-ts-54)
+  - [10.4 Variance ngắn](#104-variance-ngắn)
+  - [10.5 Instantiation expressions & `import()` types](#105-instantiation-expressions--import-types)
+  - [10.6 Recursive types](#106-recursive-types)
+- [11. Mapped, conditional, `infer`, template literal types](#11-mapped-conditional-infer-template-literal-types)
+  - [11.1 Mapped types & template literal key remapping](#111-mapped-types--template-literal-key-remapping)
+  - [11.2 Conditional types & distributive](#112-conditional-types--distributive)
+  - [11.3 `infer` trong tuples](#113-infer-trong-tuples)
+  - [11.4 Template literal types](#114-template-literal-types)
+  - [11.5 TS 7: template inference theo code point](#115-ts-7-template-inference-theo-code-point)
+- [12. Structural typing, freshness, branded types](#12-structural-typing-freshness-branded-types)
+  - [12.1 Excess property check vs freshness](#121-excess-property-check-vs-freshness)
+  - [12.2 Class private → gần nominal](#122-class-private--gần-nominal)
+  - [12.3 Branded / nominal patterns + `unique symbol`](#123-branded--nominal-patterns--unique-symbol)
+- [13. Variance: methods vs functions](#13-variance-methods-vs-functions)
+- [14. Strictness flags & TS 7 defaults](#14-strictness-flags--ts-7-defaults)
+  - [TS 7 — defaults cứng](#ts-7--defaults-cứng)
+- [15. `satisfies` vs `as const` vs annotation](#15-satisfies-vs-as-const-vs-annotation)
+  - [15.1 `as const` không freeze object hay alias](#151-as-const-không-freeze-object-hay-alias)
+- [16. Type stripping & `erasableSyntaxOnly`](#16-type-stripping--erasablesyntaxonly)
+- [17. Declaration merging, module augmentation, `this` types](#17-declaration-merging-module-augmentation-this-types)
+  - [17.1 Ba cơ chế dễ nhầm](#171-ba-cơ-chế-dễ-nhầm)
+  - [17.2 Ambient declarations](#172-ambient-declarations)
+  - [17.3 `this` parameter, polymorphic `this`, callback](#173-this-parameter-polymorphic-this-callback)
+- [18. Assignability / widen / narrow](#18-assignability--widen--narrow)
+  - [Widen vs narrow](#widen-vs-narrow)
+  - [Bảng gán hay gặp](#bảng-gán-hay-gặp)
+  - [18.1 Function assignability: optional, rest, `void`](#181-function-assignability-optional-rest-void)
+  - [18.2 Overload assignability (rút)](#182-overload-assignability-rút)
+  - [18.3 Optional property vs `| undefined`](#183-optional-property-vs--undefined)
+- [19. Worked examples: `typeof` duality](#19-worked-examples-typeof-duality)
+  - [19.1 Giá trị vs kiểu](#191-giá-trị-vs-kiểu)
+  - [19.2 Narrowing: runtime `typeof` dẫn type `typeof`](#192-narrowing-runtime-typeof-dẫn-type-typeof)
+  - [19.3 Bẫy: `typeof null`, boxed, class](#193-bẫy-typeof-null-boxed-class)
+  - [19.4 Import type vs typeof module](#194-import-type-vs-typeof-module)
+  - [19.5 CFA không xuyên closure](#195-cfa-không-xuyên-closure)
+  - [19.6 `in` vs optional vs index signature](#196-in-vs-optional-vs-index-signature)
+  - [19.7 Utility types — khi nào dùng](#197-utility-types--khi-nào-dùng)
+  - [19.8 Empty types](#198-empty-types)
+- [20. Khi nào KHÔNG dùng](#20-khi-nào-không-dùng)
+- [21. Best practices](#21-best-practices)
+- [22. Checklist](#22-checklist)
+- [23. Cheat sheet](#23-cheat-sheet)
+- [24. Version matrix](#24-version-matrix)
+- [25. Tài liệu liên quan](#25-tài-liệu-liên-quan)
 
 ---
 
@@ -93,7 +138,7 @@ const z: null = null;
 
 ### 2.1 Bảng `typeof` runtime (đủ cho Node)
 
-`typeof` luôn trả **một trong 7 chuỗi**: `"undefined"` | `"boolean"` | `"number"` | `"bigint"` | `"string"` | `"symbol"` | `"object"` | `"function"`. Không có `"null"`, `"array"`, `"class"`.
+`typeof` luôn trả **một trong 8 chuỗi**: `"undefined"` | `"boolean"` | `"number"` | `"bigint"` | `"string"` | `"symbol"` | `"object"` | `"function"`. Không có `"null"`, `"array"`, `"class"`.
 
 | Biểu thức | `typeof` | Ghi chú |
 | --- | --- | --- |
@@ -1114,6 +1159,17 @@ type Parts = Split<"a.b.c", ".">; // ["a", "b", "c"]
 
 > Đừng thay schema runtime bằng template types: chúng chỉ kiểm tra chuỗi **đã biết lúc compile**. `string` rộng (`req.url`) không hẹp thành `` `/users/${string}` `` nếu không parse.
 
+### 11.5 TS 7: template inference theo code point
+
+TS 7 tách `infer` từng ký tự của template literal theo Unicode code point, thay vì UTF-16 code unit như compiler cũ:
+
+```ts
+type HeadTail<S extends string> = S extends `${infer H}${infer T}` ? [H, T] : never;
+type Example = HeadTail<"😀abc">; // TS 7: ["😀", "abc"]
+```
+
+Runtime `"😀".length` vẫn là 2 và indexing vẫn theo code unit. Code point chưa phải grapheme (emoji ghép/dấu kết hợp); generic parser cần type test khi nâng compiler. [TS 7 changes](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/).
+
 ---
 
 ## 12. Structural typing, freshness, branded types
@@ -1405,7 +1461,7 @@ const cfg = {
   port: 3000,
   host: "localhost",
 } satisfies Config;
-// cfg.port là 3000 (literal), không bị widen thành string | number
+// cfg.port là number; không bị thay thành toàn bộ union string | number
 
 const bad = {
   port: 3000,
@@ -1417,7 +1473,7 @@ const bad = {
 | --- | --- | --- | --- | --- |
 | `const x: Config = {...}` | ✓ | ✗ (widen) | ✗ | ✗ |
 | `const x = {...} as Config` | ✗ | tùy | ✗ | **có** |
-| `const x = {...} satisfies Config` | ✓ | ✓ | ✗ | ✗ |
+| `const x = {...} satisfies Config` | ✓ | tùy contextual type | ✗ | ✗ |
 | `{...} as const` | ✗ (không bound) | ✓ | ✓ | ✗ |
 | `as const satisfies Config` | ✓ | ✓ | ✓ | ✗ |
 
@@ -1431,21 +1487,34 @@ t1.primary; // string — mất "#00f"
 
 const t2 = { primary: "#00f", radius: 4 } as Theme;
 t2.primary; // string
-const t2lie = { primary: 1, radius: 4 } as Theme; // không lỗi!
+// Assertion vẫn bị từ chối nếu hai kiểu không đủ giao nhau:
+// const t2lie = { primary: 1, radius: 4 } as Theme; // lỗi
 
 const t3 = { primary: "#00f", radius: 4 } satisfies Theme;
-t3.primary; // "#00f"
+t3.primary; // string — property mutable vẫn widen
 
 const t4 = { primary: "#00f", radius: 4 } as const satisfies Theme;
 t4.radius; // 4
 // t4.radius = 8; // lỗi readonly
 ```
 
-- `as Config` có thể **nới** hoặc nói dối checker; `satisfies` bắt thiếu/sai key mà không mất literal.
+- `as Config` có thể che sai lệch mà checker cho phép; `satisfies` kiểm tra assignability và giữ kiểu của biểu thức sau contextual typing. Dùng `as const satisfies Config` khi cần literal và readonly. [TS 4.9](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html#the-satisfies-operator).
 - Pattern mạnh: bảng route, theme token, enum-like maps, openAPI path constants.
 - `satisfies` trên hàm: `(x) satisfies (n: number) => string` hiếm — thường annotate.
 
 **Khi nào KHÔNG dùng `as const`:** object cần mutate; mảng cần `push`. **Khi nào KHÔNG dùng annotation `T`:** bảng literal cần key hẹp (dùng `satisfies`). **Khi nào KHÔNG dùng `as T`:** gần như luôn — trừ sau validate / brand.
+
+### 15.1 `as const` không freeze object hay alias
+
+```ts
+const mutable: number[] = [1];
+const wrapped = { values: mutable } as const;
+mutable.push(2);          // vẫn hợp lệ
+wrapped.values.push(3);   // reference vẫn là number[], không readonly tuple
+// wrapped.values = [];  // lỗi: property readonly
+```
+
+Const assertion giữ literal/readonly của literal expression, không biến toàn bộ object graph đã tồn tại thành immutable. `Readonly<T>` cũng shallow; `Object.freeze` chỉ freeze object trực tiếp ở runtime. Dữ liệu ngoài process cần validation, không dùng `satisfies` làm validator. [TS const assertions](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-3-4.html#const-assertions).
 
 ---
 
@@ -1476,7 +1545,8 @@ node src/app.ts   # Node 26: strip types ổn định, không type-check
 - `namespace` / `module` có runtime code
 - Parameter properties (`constructor(private x: string)`)
 - `import =` / `export =`
-- Decorators (nếu emit metadata / transform) — xem [decorators.md](decorators.md)
+
+Decorators là trường hợp riêng: `erasableSyntaxOnly` không chặn `@dec`, nhưng **Node 26 không parse decorator** và không transform chúng. Cần pipeline emit; xem [decorators.md](decorators.md).
 
 ```ts
 // OK strip
@@ -1505,10 +1575,10 @@ class C {
 | `constructor(private x: T)` | ✗ | còn `private` là syntax lỗi JS |
 | `namespace A { export const x = 1 }` | ✗ | không phải JS |
 | `import type` | ✓ | xóa |
-| Stage 3 decorator | tùy emit | thường cần `tsc` — [decorators.md](decorators.md) |
+| Stage 3 decorator | cho phép | parser error; cần `tsc` emit — [decorators.md](decorators.md) |
 
 - Production phổ biến: `tsc` emit + `node dist/...`; CI luôn `tsc --noEmit`.
-- Dev script erasable: `node src/index.ts` hợp lệ khi bám `erasableSyntaxOnly`.
+- Dev strip cần cú pháp erasable và phần JS còn lại được parser Node hỗ trợ; `erasableSyntaxOnly` không kiểm hết giới hạn runtime, nhất là decorator.
 - Node **bỏ qua** `tsconfig.json` khi chạy — `paths` / JSX transform không có phép màu.
 
 > `erasableSyntaxOnly` là lưới **compiler**; Node strip là lưới **runtime**. Bật cả hai. Chi tiết: [tsconfig.md](tsconfig.md).
@@ -1909,10 +1979,10 @@ function hasOwn<K extends PropertyKey>(
 
 ```ts
 type T0 = Omit<{ a: 1 } | { b: 2 }, "a">;
-// phân phối: { } | { b: 2 }  — không phải “bỏ a khỏi union gộp”
+// T0 = {}: keyof union không có key chung, built-in Omit không phân phối.
 ```
 
-`Omit` trên union **phân phối** từng thành viên. Muốn gộp trước: `Omit<A & B, "a">` hoặc bọc.
+`Pick` / `Omit` built-in trên union không tự phân phối: chỉ giữ các key chung từ `keyof (A | B)`. Muốn giữ từng nhánh, dùng conditional type với naked type parameter: `type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never`.
 
 ### 19.8 Empty types
 
@@ -2001,7 +2071,7 @@ const e: EmptyObj = {};
 | “Không bao giờ” | `never` + `assertNever` |
 | Map key hữu hạn | `Record<"a" \| "b", V>` hoặc const object |
 | Enum erasable | `as const` + `(typeof O)[keyof typeof O]` |
-| Giữ literal + check shape | `satisfies` |
+| Giữ literal + check shape | `as const satisfies T` |
 | Readonly sâu literal | `as const` / `as const satisfies T` |
 | Đổi shape type-level | mapped + key remapping `` as `on${…}` `` |
 | Bắt type từ pattern | conditional + `infer` |
@@ -2046,9 +2116,9 @@ const cfg = { port: 3000, host: "localhost" } as const satisfies Record<
 | **TS 6 → 7** | default `strict: true`; `moduleResolution` `node`/`node10`/`classic` **error**; compiler Go (TS 7) |
 | **ES / Node** | ESM-first; `NodeNext` |
 | **Node 22.6+** | type stripping (experimental → dần ổn định) |
-| **Node 24** | Maintenance LTS; strip ổn định (nhánh 24.x gần đây) |
+| **Node 24** | Active LTS tại 2026-10-06; strip ổn định từ 24.12.0 |
 | **Node 26** | strip **ổn định** mặc định; **gỡ** `--experimental-transform-types` |
-| **ES2024 / ERM** | `Symbol.dispose` / `using` — [statements.md](statements.md) |
+| **Explicit Resource Management** | `Symbol.dispose` / `using` — [statements.md](statements.md) |
 
 ---
 
@@ -2066,3 +2136,6 @@ const cfg = { port: 3000, host: "localhost" } as const satisfies Record<
 - [Decorators & Metadata](decorators.md)
 - [Exception / Error](exceptions.md)
 - [Tooling](tooling.md)
+
+- [Type tests & consumer contracts](testing.md)
+- [Runtime validation ở biên](security.md)

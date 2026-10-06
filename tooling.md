@@ -2,31 +2,57 @@
 
 Package managers, scripts, lockfiles, semver, ESLint/Prettier, và runners TypeScript trên baseline **Node.js 26** + **TypeScript 7**.
 
-> **Callout:** Chọn **một** package manager cho cả repo và commit **lockfile**. pnpm mặc định **isolated** `node_modules` (không hoist lung tung). Node **24** vẫn Maintenance LTS nếu chưa nâng. Xem [tsconfig.md](tsconfig.md).
+> **Callout:** Chọn **một** package manager cho cả repo và commit **lockfile**. pnpm mặc định **isolated** `node_modules` (không hoist lung tung). Node **24** còn Active LTS tại ngày rà soát; xem [README](README.md). Xem [tsconfig.md](tsconfig.md).
 
 ---
 
 ## Mục lục
 
-1. [`package.json` cốt lõi](#1-packagejson-cốt-lõi)
-2. [Scripts & `node --run`](#2-scripts--node---run)
-3. [`engines` & phiên bản Node](#3-engines--phiên-bản-node)
-4. [Dependencies & semver](#4-dependencies--semver)
-5. [Lockfiles & isolated installs](#5-lockfiles--isolated-installs)
-6. [`npx` vs `pnpm dlx`](#6-npx-vs-pnpm-dlx)
-7. [Workspaces (monorepo)](#7-workspaces-monorepo)
-8. [So sánh npm vs pnpm vs yarn](#8-so-sánh-npm-vs-pnpm-vs-yarn)
-9. [Corepack](#9-corepack)
-10. [TypeScript runners: strip / tsx / ts-node / tsc](#10-typescript-runners-strip--tsx--ts-node--tsc)
-11. [Watch: nodemon / `--watch` / tsx](#11-watch-nodemon----watch--tsx)
-12. [ESLint flat config & Prettier](#12-eslint-flat-config--prettier)
-13. [`npm audit` vs `overrides`](#13-npm-audit-vs-overrides)
-14. [CI matrix Node 24/26](#14-ci-matrix-node-2426)
-15. [Best practices](#15-best-practices)
-16. [Checklist](#16-checklist)
-17. [Cheat sheet](#17-cheat-sheet)
-18. [Version notes](#18-version-notes)
-19. [Tài liệu liên quan](#19-tài-liệu-liên-quan)
+- [1. `package.json` cốt lõi](#1-packagejson-cốt-lõi)
+- [2. Scripts & `node --run`](#2-scripts--node---run)
+  - [2.1 `node --run`](#21-node---run)
+  - [2.2 `node --test` (built-in)](#22-node---test-built-in)
+- [3. `engines` & phiên bản Node](#3-engines--phiên-bản-node)
+  - [3.1 `engineStrict` pnpm/npm](#31-enginestrict-pnpmnpm)
+- [4. Dependencies & semver](#4-dependencies--semver)
+  - [4.1 Semver thực dụng cho app vs lib](#41-semver-thực-dụng-cho-app-vs-lib)
+  - [4.2 Peer, optional, bundled](#42-peer-optional-bundled)
+  - [4.3 Catalog / workspace protocol](#43-catalog--workspace-protocol)
+- [5. Lockfiles & isolated installs](#5-lockfiles--isolated-installs)
+  - [5.1 Isolated vs hoisted](#51-isolated-vs-hoisted)
+  - [5.2 `package-lock.json` v2/v3 vs pnpm](#52-package-lockjson-v2v3-vs-pnpm)
+- [6. `npx` vs `pnpm dlx`](#6-npx-vs-pnpm-dlx)
+  - [6.1 Bảng lệnh thường ngày](#61-bảng-lệnh-thường-ngày)
+  - [6.2 `dlx` cache & bảo mật](#62-dlx-cache--bảo-mật)
+- [7. Workspaces (monorepo)](#7-workspaces-monorepo)
+  - [7.1 Ranh giới package](#71-ranh-giới-package)
+- [8. So sánh npm vs pnpm vs yarn](#8-so-sánh-npm-vs-pnpm-vs-yarn)
+- [9. Corepack](#9-corepack)
+  - [9.1 Corepack trên CI & Windows](#91-corepack-trên-ci--windows)
+  - [9.2 `.npmrc` / `pnpm-workspace.yaml`](#92-npmrc--pnpm-workspaceyaml)
+  - [9.3 `pnpm audit` ignore & GHSA](#93-pnpm-audit-ignore--ghsa)
+- [10. TypeScript runners: strip / tsx / ts-node / tsc](#10-typescript-runners-strip--tsx--ts-node--tsc)
+  - [10.1 `ts-node` ESM checklist (nếu buộc)](#101-ts-node-esm-checklist-nếu-buộc)
+- [11. Watch: nodemon / `--watch` / tsx](#11-watch-nodemon----watch--tsx)
+  - [11.1 nodemon config](#111-nodemon-config)
+- [12. ESLint flat config & Prettier](#12-eslint-flat-config--prettier)
+  - [12.1 `eslint.config.js` sâu hơn](#121-eslintconfigjs-sâu-hơn)
+  - [12.2 Prettier ignore & conflict](#122-prettier-ignore--conflict)
+  - [12.3 `node --run` vs lint script](#123-node---run-vs-lint-script)
+- [13. `npm audit` vs `overrides`](#13-npm-audit-vs-overrides)
+  - [13.1 `overrides` (npm) / `pnpm.overrides`](#131-overrides-npm--pnpmoverrides)
+  - [13.2 `pnpm.overrides` vs npm `overrides` nesting](#132-pnpmoverrides-vs-npm-overrides-nesting)
+- [14. CI matrix Node 24/26](#14-ci-matrix-node-2426)
+  - [14.1 Supply chain tối thiểu](#141-supply-chain-tối-thiểu)
+  - [14.2 Publish & Docker (tóm tắt)](#142-publish--docker-tóm-tắt)
+  - [14.3 Matrix khi nào **không** cần 24](#143-matrix-khi-nào-không-cần-24)
+  - [14.4 Cache pnpm store](#144-cache-pnpm-store)
+  - [14.5 `engines` trên CI](#145-engines-trên-ci)
+- [15. Best practices](#15-best-practices)
+- [16. Checklist](#16-checklist)
+- [17. Cheat sheet](#17-cheat-sheet)
+- [18. Version notes](#18-version-notes)
+- [19. Tài liệu liên quan](#19-tài-liệu-liên-quan)
 
 ---
 
@@ -65,6 +91,7 @@ Package managers, scripts, lockfiles, semver, ESLint/Prettier, và runners TypeS
 Trường quan trọng khác: `exports`, `imports`, `bin`, `files` (publish). Chi tiết module: [modules-packages.md](modules-packages.md).
 
 ```bash
+# Node 26: cài riêng Corepack đã ghim phiên bản trước bước này
 corepack enable
 ```
 
@@ -149,7 +176,7 @@ describe("sum", () => {
 ```
 
 - Chỉ là **metadata** trừ khi bật `engine-strict` (npm) / setting tương đương (`pnpm` `engineStrict`).
-- CI nên dùng đúng major baseline (**26**); job phụ trên **24** Maintenance LTS nếu còn hỗ trợ khách cũ.
+- CI nên dùng đúng major baseline (**26**); job phụ trên **24** LTS nếu còn hỗ trợ khách cũ.
 - Range `>=24` trên lib: consumer 24+; app nội bộ: ghim `>=26 <27` hoặc `26.x`.
 - **Không** thay `os`/`cpu` cho native addon — dùng `optionalDependencies` + fail mềm.
 
@@ -162,6 +189,18 @@ describe("sum", () => {
 Volta / fnm / asdf đọc file này. Docker: `FROM node:26-bookworm` khớp `engines`. Lệch CI 24 vs `engines: >=26` → fail muộn trên máy user.
 
 `engine-strict=true` trong `.npmrc` (dev) bắt install sai version. Prod image đã ghim tag — vẫn giữ `engines` cho `npm` local.
+
+### 3.1 `engineStrict` pnpm/npm
+
+```ini
+engine-strict=true
+```
+
+npm `.npmrc`; pnpm `engineStrict: true` trong workspace yaml (v10+) hoặc `.npmrc`. Dev Node 22 trên repo `engines: >=26` → **fail install** — đúng. CI setup-node **trước** install.
+
+`packageManager` field sai version pnpm: Corepack abort. Không `corepack disable` để “cho xong”.
+
+`engines.pnpm` + Corepack: thừa nhưng documentation. `packageManager` là nguồn version tool; `engines.pnpm` bắt `>=` lỏng. Khớp số major.
 
 ---
 
@@ -257,6 +296,22 @@ Serverless (Lambda) đôi khi **không** symlink → bundle hoặc `nodeLinker=h
 
 Yarn Berry: PnP hoặc `nodeLinker: node-modules`. Chọn một; document.
 
+### 5.2 `package-lock.json` v2/v3 vs pnpm
+
+Không commit cả `package-lock.json` **và** `pnpm-lock.yaml`. Xóa lock tool không dùng. `package.json` + một lock.
+
+`pnpm import` từ npm lock khi migrate — review tree. `shamefully-hoist` tạm để xanh, rồi khai phantom, rồi tắt hoist.
+
+`public-hoist-pattern[]=*eslint*` — chỉ tool phẳng. Pattern càng rộng càng gần npm.
+
+`neverBuiltDependencies` / `onlyBuiltDependencies` (pnpm): chặn `postinstall` compile native bất ngờ — supply chain. Allowlist `esbuild`, `sharp` khi cần.
+
+`ignoredBuiltDependencies` (tên tùy bản): tương tự. Review `pnpm install` log “Running lifecycle scripts”. `ignore-scripts=true` CI + chạy script cần **tường minh** (esbuild binary).
+
+`pnpm config list` / `npm config list` debug registry. `shamefully-hoist` chỉ khi tool gãy isolated — ghi README ngày gỡ.
+
+`pnpm install --prod` image runtime. `pnpm fetch` + offline CI (store). `shamefully-hoist` + serverless no-symlink: `nodeLinker=hoisted` lúc deploy, không đổi laptop nếu không cần.
+
 ---
 
 ## 6. `npx` vs `pnpm dlx`
@@ -305,24 +360,6 @@ Yarn: `yarn dlx` tương tự. Đừng xen `npx` trong script pnpm trừ khi c�
 
 `npx --yes` bỏ prompt — nguy hiểm script copy-paste. Review package name typosquat.
 
-### 5.2 `package-lock.json` v2/v3 vs pnpm
-
-Không commit cả `package-lock.json` **và** `pnpm-lock.yaml`. Xóa lock tool không dùng. `package.json` + một lock.
-
-`pnpm import` từ npm lock khi migrate — review tree. `shamefully-hoist` tạm để xanh, rồi khai phantom, rồi tắt hoist.
-
-`public-hoist-pattern[]=*eslint*` — chỉ tool phẳng. Pattern càng rộng càng gần npm.
-
-`neverBuiltDependencies` / `onlyBuiltDependencies` (pnpm): chặn `postinstall` compile native bất ngờ — supply chain. Allowlist `esbuild`, `sharp` khi cần.
-
-`ignoredBuiltDependencies` (tên tùy bản): tương tự. Review `pnpm install` log “Running lifecycle scripts”. `ignore-scripts=true` CI + chạy script cần **tường minh** (esbuild binary).
-
-`pnpm config list` / `npm config list` debug registry. `shamefully-hoist` chỉ khi tool gãy isolated — ghi README ngày gỡ.
-
-`pnpm install --prod` image runtime. `pnpm fetch` + offline CI (store). `shamefully-hoist` + serverless no-symlink: `nodeLinker=hoisted` lúc deploy, không đổi laptop nếu không cần.
-
----
-
 ## 7. Workspaces (monorepo)
 
 ```json
@@ -367,7 +404,7 @@ Root `private: true`. Package con publish: version + `exports` riêng.
 
 | | **npm** | **pnpm** | **yarn** |
 |---|---|---|---|
-| Đi kèm Node | Có | Corepack / cài riêng | Corepack / cài riêng |
+| Đi kèm Node | npm theo distribution | Cài riêng; Corepack không bundled Node 26 | Cài riêng; Corepack không bundled Node 26 |
 | `node_modules` | Hoist cổ điển | Content-addressable + symlinks — **strict** hơn | Berry: PnP hoặc `node_modules` |
 | Disk / tốc độ | Ổn | Thường tiết kiệm disk | Nhanh; PnP khác biệt lớn |
 | Monorepo | Workspaces | Rất mạnh (`filter`) | Mạnh (Berry) |
@@ -380,17 +417,18 @@ Thực tế: **pnpm** phổ biến monorepo; **npm** đủ app đơn; **yarn** f
 
 ## 9. Corepack
 
-Corepack (đi kèm Node, **experimental** trên nhiều dòng — vẫn dùng rộng) đọc `"packageManager": "pnpm@9.15.0"` và chạy **đúng** bản pnpm/yarn.
+Corepack được bundled từ Node 14.19 đến trước 25; **Node 26 không kèm Corepack**. Cài riêng phiên bản được team ghim, hoặc dùng installer/action của package manager. Corepack đọc `packageManager` để chọn pnpm/yarn; field này không tự cài shim. [Corepack distribution](https://github.com/nodejs/corepack#corepack).
 
 ```bash
+# Node 26: cài riêng Corepack đã ghim phiên bản trước bước này
 corepack enable
 corepack prepare pnpm@9.15.0 --activate
 ```
 
 - Ghim version tool → CI = laptop.
 - npm **không** bị Corepack chặn mặc định (shim npm tắt) — vẫn có thể `npm i` nhầm trong repo pnpm. Team: document “chỉ pnpm”; CI chỉ `pnpm`.
-- `corepack enable` cần quyền ghi cạnh binary `node` (Windows/Unix). Image CI: `corepack enable` trước install.
-- Node 26: theo dõi docs Corepack (policy experimental / enable). Không giả định luôn bật sẵn.
+- `corepack enable` cần Corepack đã cài và quyền ghi shim cạnh binary (hoặc `--install-directory` phù hợp). CI có thể dùng action pnpm và không cần Corepack.
+- Node 26: cài Corepack riêng trước `corepack enable`, hoặc dùng pnpm setup; pin phiên bản installer trong image/CI.
 
 ```json
 { "packageManager": "pnpm@9.15.0+sha256-…" }
@@ -403,18 +441,19 @@ Hash tùy chọn (pin integrity). Đổi version: sửa field + lockfile, PR m�
 ### 9.1 Corepack trên CI & Windows
 
 ```yaml
+# Điều kiện: image đã cài phiên bản Corepack được ghim (Node 26 không bundled).
 - run: corepack enable
 - run: corepack prepare pnpm@9.15.0 --activate
 - run: pnpm --version   # phải khớp packageManager
 ```
 
-Windows: `corepack enable` cần quyền (Developer Mode / admin) nếu không ghi được shim cạnh `node.exe`. Chocolatey/fnm path khác nhau — CI GitHub `setup-node` + corepack ổn hơn máy lệch PATH.
+Windows: nếu không ghi được shim cạnh `node.exe`, dùng `--install-directory` trong thư mục user có quyền ghi và đưa vào PATH; không mặc định cần Developer Mode/admin. Giữ một nguồn cài pnpm để tránh shim xung đột.
 
 Tắt: `COREPACK_ENABLE_NETWORK=0` (policy air-gap) — phải `prepare` trước. Signature: theo dõi docs Corepack khi verify bản pnpm.
 
 Không commit `pnpm.exe` vào repo. Không `npm i -g pnpm` **sau** corepack (đè shim).
 
-Nếu Node bản CI **chưa** ship Corepack như kỳ vọng: action `pnpm/action-setup` ghim version — vẫn ghi `packageManager` cho laptop.
+Node 26 không ship Corepack. Trên CI, `pnpm/action-setup` đọc `packageManager` và cài pnpm trước `setup-node` cache; laptop dùng Corepack đã cài riêng hoặc installer tương thích.
 
 ### 9.2 `.npmrc` / `pnpm-workspace.yaml`
 
@@ -438,30 +477,12 @@ pnpm audit filter theo advisory id (GHSA), không phải mọi CVE string. `audi
 
 `minimumReleaseAge` (pnpm): trì hoãn version mới N phút — giảm malware “latest”. Kết hợp Renovate `stabilityDays`.
 
-### 13.2 `pnpm.overrides` vs npm `overrides` nesting
-
-npm `overrides` hỗ trợ lồng `"foo": { ".": "1.0.0", "bar": "2" }`. pnpm `overrides` string/selector (`foo@1>bar`) — **cú pháp khác**. Copy JSON npm vào `pnpm.overrides` có thể **không** parse. Đọc docs tool đang dùng.
-
-Yarn `resolutions` khác nữa. Một lockfile, một syntax.
-
-### 10.1 `ts-node` ESM checklist (nếu buộc)
-
-`ts-node --esm` / `TS_NODE_TRANSPILE_ONLY=1` — bỏ typecheck (trùng tsx). `module: NodeNext` + `ts-node` `esm: true` trong `"ts-node"` key `tsconfig` — dễ lệch version. **Khuyến nghị:** đừng thêm; migrate tsx/strip.
-
-`swc` compiler ts-node: nhanh, **không** typecheck, decorator SWC ≠ tsc 1-1.
-
-### 11.1 nodemon config
-
-`nodemon.json` `watch`/`ext`/`exec`. Trùng `node --watch` thì bỏ nodemon. `legacyWatch` (polling) trên Docker Desktop volume Windows — CPU. Prefer `tsx watch` trong container nếu polling bắt buộc.
-
----
-
 ## 10. TypeScript runners: strip / tsx / ts-node / tsc
 
 | Cách | Lệnh ý tưởng | Ghi chú |
 |---|---|---|
 | Node type stripping | `node src/app.ts` | Chỉ **erasable** TS; Node 26 **không** còn `--experimental-transform-types` |
-| `tsx` | `tsx src/app.ts` / `tsx watch` | Dev UX; transpile nhanh — cần khi enum/decorators/param props |
+| `tsx` | `tsx src/app.ts` / `tsx watch` | Dev transpile; không typecheck, kiểm decorator mode/metadata theo transformer |
 | `ts-node` | `ts-node src/app.ts` | Compiler TS/SWC; ESM + `NodeNext` dễ lệch |
 | `tsc` emit | `tsc && node dist/app.js` | Production rõ; TS 7 (Go) full build ~8–12× nhanh hơn |
 
@@ -476,12 +497,18 @@ Khuyến nghị tsconfig strip-oriented: `erasableSyntaxOnly` + `verbatimModuleS
 **TypeScript 7 tooling:**
 
 - CLI: `--checkers`, `--builders`, `--singleThreaded`; `--watch` cải thiện.
-- Programmatic API ổn định ~**7.1**; eslint/plugin cần API cũ → bridge **`@typescript/typescript6`**.
+- TS 7.0 chưa ship compiler API. Tool cần API dùng bridge TS 6 cho đến khi tool hỗ trợ API/version mới thực tế; kế hoạch 7.1 không là bảo đảm ổn định. Xem [tsconfig bridge](tsconfig.md#32-cli-native-và-tool-cần-compiler-api).
 - Packages: `typescript@^7`, `@types/node@^26`; có thể `@tsconfig/node26`.
 
 `ts-node` + `"type": "module"`: thường `ts-node --esm` / loader — friction cao. Team mới: **strip hoặc tsx**, không thêm ts-node trừ legacy.
 
 Prod: **`node dist/*.js`**. Đừng `tsx` trên image user.
+
+### 10.1 `ts-node` ESM checklist (nếu buộc)
+
+`ts-node --esm` / `TS_NODE_TRANSPILE_ONLY=1` — bỏ typecheck (trùng tsx). `module: NodeNext` + `ts-node` `esm: true` trong `"ts-node"` key `tsconfig` — dễ lệch version. **Khuyến nghị:** đừng thêm; migrate tsx/strip.
+
+`swc` compiler ts-node: nhanh, **không** typecheck, decorator SWC ≠ tsc 1-1.
 
 ---
 
@@ -503,6 +530,10 @@ tsx watch src/index.ts
 Nhiều team thay nodemon bằng **`tsx watch`** hoặc `node --watch`. `nodemon` vẫn hữu ích khi watch nhiều loại file / lệnh phức tạp.
 
 `--watch-path`, `--watch-preserve-output`: [main-function.md](main-function.md) §8. Không dùng watch trên prod.
+
+### 11.1 nodemon config
+
+`nodemon.json` `watch`/`ext`/`exec`. Trùng `node --watch` thì bỏ nodemon. `legacyWatch` (polling) trên Docker Desktop volume Windows — CPU. Prefer `tsx watch` trong container nếu polling bắt buộc.
 
 ---
 
@@ -656,6 +687,12 @@ Ghi **lý do** (CVE, issue) trong PR. Gỡ override khi parent bump. Test sau ov
 
 Dependabot/Renovate: lockfile + PR; vẫn review. `minimumReleaseAge` (pnpm) trì hoãn version mới — supply chain.
 
+### 13.2 `pnpm.overrides` vs npm `overrides` nesting
+
+npm `overrides` hỗ trợ lồng `"foo": { ".": "1.0.0", "bar": "2" }`. pnpm `overrides` string/selector (`foo@1>bar`) — **cú pháp khác**. Copy JSON npm vào `pnpm.overrides` có thể **không** parse. Đọc docs tool đang dùng.
+
+Yarn `resolutions` khác nữa. Một lockfile, một syntax.
+
 ---
 
 ## 14. CI matrix Node 24/26
@@ -672,12 +709,14 @@ jobs:
       matrix:
         node: [26, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false # version lấy từ packageManager trong package.json
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
-      - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
@@ -690,7 +729,7 @@ jobs:
 - Cache pnpm store; `frozen-lockfile` **bắt buộc**.
 - Luôn `tsc --noEmit` dù dev dùng tsx/strip.
 
-`setup-node` `cache: pnpm` cần pnpm trên PATH (corepack enable trước **hoặc** action pnpm). Thứ tự: checkout → corepack/pnpm → setup-node cache → install.
+`setup-node` `cache: pnpm` cần pnpm đã có trên PATH: checkout → pnpm/action-setup → setup-node cache → frozen install. Cache store không thay install và không cache `node_modules`. Ghim action SHA khi policy yêu cầu và dùng runner đáp ứng version của action. [setup-node](https://github.com/actions/setup-node), [pnpm setup](https://github.com/pnpm/action-setup), [checkout](https://github.com/actions/checkout).
 
 Windows/macOS matrix: native addon; JS thuần Ubuntu đủ.
 
@@ -748,7 +787,7 @@ Lib `>=24`: test 24 **và** 26. Feature 26-only: runtime check `process.versions
 ### 14.4 Cache pnpm store
 
 ```yaml
-- uses: actions/setup-node@v4
+- uses: actions/setup-node@v7
   with:
     node-version: ${{ matrix.node }}
     cache: pnpm
@@ -766,20 +805,6 @@ Monorepo lockfile root. `cache: npm` sai nếu pnpm. Restore miss: vẫn `--froz
 ```
 
 Hoặc `engine-strict` lúc install. Matrix 24 khi `engines` `>=24` — comment trong YAML **tại sao** còn 24 (khách LTS). Gỡ job 24 khi drop support, bump `engines` **cùng PR**.
-
-### 3.1 `engineStrict` pnpm/npm
-
-```ini
-engine-strict=true
-```
-
-npm `.npmrc`; pnpm `engineStrict: true` trong workspace yaml (v10+) hoặc `.npmrc`. Dev Node 22 trên repo `engines: >=26` → **fail install** — đúng. CI setup-node **trước** install.
-
-`packageManager` field sai version pnpm: Corepack abort. Không `corepack disable` để “cho xong”.
-
-`engines.pnpm` + Corepack: thừa nhưng documentation. `packageManager` là nguồn version tool; `engines.pnpm` bắt `>=` lỏng. Khớp số major.
-
----
 
 ## 15. Best practices
 
@@ -822,6 +847,7 @@ npm `.npmrc`; pnpm `engineStrict: true` trong workspace yaml (v10+) hoặc `.npm
 ## 17. Cheat sheet
 
 ```bash
+# Node 26: cài riêng Corepack đã ghim phiên bản trước bước này
 corepack enable
 pnpm install --frozen-lockfile
 pnpm typecheck
@@ -853,7 +879,7 @@ pnpm audit
 
 `pnpm deploy` Docker isolated. `overrides` gỡ khi parent bump. `eslint-config-prettier` cuối config. `tsx` dev, `tsc` prod, strip chỉ erasable.
 
-`corepack enable` trước `pnpm i` trên CI. `npx @latest` cấm CI. `peerDependencies` pnpm nghiêm hơn npm 7 auto-install.
+Node 26: cài riêng Corepack rồi enable, hoặc dùng pnpm setup trước frozen install. Không dùng `@latest` trong CI cần reproducibility; kiểm version và lockfile.
 
 `workspace:` protocol rewrite lúc publish. `optionalDependencies` fail mềm native. `bundledDependencies` hiếm.
 
@@ -875,7 +901,7 @@ Husky `prepare` tối giản. `prepublishOnly` typecheck+build. Không `postinst
 | Node 22+ | `node --run` |
 | Node 22–24 | type stripping experimental → ổn định |
 | **Node 26** | strip mặc định/ổn định; gỡ transform-types; V8 14.6 |
-| **TS 7** | compiler Go; flags `--checkers`/`--builders`; API ~7.1 |
+| **TS 7.0** | CLI native Go; chưa ship API; tool API dùng bridge TS 6 |
 | ESLint 9 | flat config |
 | pnpm | isolated default; `dlx`; `overrides` |
 | Corepack | `packageManager`; enable tường minh |
@@ -898,3 +924,6 @@ Baseline: **Node 26** + **TS 7**.
 - [Decorators & Metadata](decorators.md) — không chạy trên strip
 - [Entry point & chạy chương trình](main-function.md)
 - [exceptions.md](exceptions.md) — fail process / uncaught trên script CI
+
+- [CI, coverage & type tests](testing.md)
+- [Supply chain](security.md)

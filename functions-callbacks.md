@@ -8,23 +8,72 @@ Trong JavaScript/TypeScript, hàm là **giá trị first-class**: gán biến, t
 
 ## Mục lục
 
-1. [First-class functions](#1-first-class-functions)
-2. [Callback Node-style (err-first) vs Promises](#2-callback-node-style-err-first-vs-promises)
-3. [Kiểu hàm trong TypeScript](#3-kiểu-hàm-trong-typescript)
-4. [Callable interface & construct signature](#4-callable-interface--construct-signature)
-5. [Predicates & type guards](#5-predicates--type-guards)
-6. [Generic functions](#6-generic-functions)
-7. [Higher-order, curry nhẹ](#7-higher-order-curry-nhẹ)
-8. [Variance & `strictFunctionTypes`](#8-variance--strictfunctiontypes)
-9. [Overloads vs union params](#9-overloads-vs-union-params)
-10. [Closure & capturing](#10-closure--capturing)
-11. [Lambda / arrow như callback](#11-lambda--arrow-như-callback)
-12. [EventEmitter — pointer](#12-eventemitter--pointer)
-13. [Best practices](#13-best-practices)
-14. [Checklist](#14-checklist)
-15. [Cheat sheet](#15-cheat-sheet)
-16. [Version notes](#16-version-notes)
-17. [Tài liệu liên quan](#17-tài-liệu-liên-quan)
+- [1. First-class functions](#1-first-class-functions)
+  - [1.1 Identity / map types (HOF ở tầng type)](#11-identity--map-types-hof-ở-tầng-type)
+- [2. Callback Node-style (err-first) vs Promises](#2-callback-node-style-err-first-vs-promises)
+  - [2.1 Error-first callback (di sản Node)](#21-error-first-callback-di-sản-node)
+  - [2.2 Hợp đồng `err`: `null` vs `undefined`](#22-hợp-đồng-err-null-vs-undefined)
+  - [2.3 Callback **once** vs maybe-once](#23-callback-once-vs-maybe-once)
+  - [2.4 Promise / async-await (khuyến nghị)](#24-promise--async-await-khuyến-nghị)
+  - [2.5 `util.promisify` & symbol tùy biến](#25-utilpromisify--symbol-tùy-biến)
+  - [2.6 So sánh](#26-so-sánh)
+  - [2.7 Typed err-first (khi bắt buộc)](#27-typed-err-first-khi-bắt-buộc)
+  - [2.8 EventEmitter vs callback (một kết quả)](#28-eventemitter-vs-callback-một-kết-quả)
+  - [2.9 Gọi callback đồng bộ vs microtask](#29-gọi-callback-đồng-bộ-vs-microtask)
+  - [2.10 Callback arity & `fn.length`](#210-callback-arity--fnlength)
+- [3. Kiểu hàm trong TypeScript](#3-kiểu-hàm-trong-typescript)
+  - [3.1 Function type expression](#31-function-type-expression)
+  - [3.2 Optional / rest](#32-optional--rest)
+  - [3.3 `void` vs `undefined`](#33-void-vs-undefined)
+  - [3.4 Union của function types](#34-union-của-function-types)
+  - [3.5 `this` trên function type](#35-this-trên-function-type)
+- [4. Callable interface & construct signature](#4-callable-interface--construct-signature)
+  - [4.1 Call signature](#41-call-signature)
+  - [4.2 Construct signature](#42-construct-signature)
+  - [4.3 Call vs construct](#43-call-vs-construct)
+  - [4.4 `typeof fn` vs `(...args) => R`](#44-typeof-fn-vs-args--r)
+- [5. Predicates & type guards](#5-predicates--type-guards)
+  - [5.1 `filter` + guard vs boolean](#51-filter--guard-vs-boolean)
+  - [5.2 Unsound guards](#52-unsound-guards)
+  - [5.3 Discriminated union > ad-hoc guard](#53-discriminated-union--ad-hoc-guard)
+  - [5.4 `asserts` vs `x is T`](#54-asserts-vs-x-is-t)
+- [6. Generic functions](#6-generic-functions)
+  - [6.1 Constraints](#61-constraints)
+  - [6.2 Generic function type](#62-generic-function-type)
+  - [6.3 Inference](#63-inference)
+  - [6.4 Callback generic & inference fail](#64-callback-generic--inference-fail)
+- [7. Higher-order, curry nhẹ](#7-higher-order-curry-nhẹ)
+  - [7.1 Wrapper timed](#71-wrapper-timed)
+  - [7.2 Partial application / curry nhẹ](#72-partial-application--curry-nhẹ)
+  - [7.3 `once` / `memoize` — pitfalls](#73-once--memoize--pitfalls)
+  - [7.4 Debounce / throttle (sketch)](#74-debounce--throttle-sketch)
+- [8. Variance & `strictFunctionTypes`](#8-variance--strictfunctiontypes)
+  - [8.1 Ý tưởng](#81-ý-tưởng)
+  - [8.2 Bảng variance (function types)](#82-bảng-variance-function-types)
+  - [8.3 Method syntax vs function syntax trong object type](#83-method-syntax-vs-function-syntax-trong-object-type)
+  - [8.4 Thực dụng](#84-thực-dụng)
+  - [8.5 Optional / rest params & assignability](#85-optional--rest-params--assignability)
+  - [8.6 Ghi chú `strictBindCallApply`](#86-ghi-chú-strictbindcallapply)
+- [9. Overloads vs union params](#9-overloads-vs-union-params)
+  - [9.1 Union params — đơn giản khi behavior cùng shape](#91-union-params--đơn-giản-khi-behavior-cùng-shape)
+  - [9.2 Overload — khi return/type phụ thuộc đối số](#92-overload--khi-returntype-phụ-thuộc-đối-số)
+  - [9.3 Khi nào chọn gì (decision table)](#93-khi-nào-chọn-gì-decision-table)
+  - [9.4 Overload vs conditional](#94-overload-vs-conditional)
+  - [9.5 Overload matching thực tế](#95-overload-matching-thực-tế)
+- [10. Closure & capturing](#10-closure--capturing)
+  - [10.1 Module-level closure](#101-module-level-closure)
+  - [10.2 Loop capture](#102-loop-capture)
+  - [10.3 Memory](#103-memory)
+  - [10.4 Callback queues & stale closure](#104-callback-queues--stale-closure)
+- [11. Lambda / arrow như callback](#11-lambda--arrow-như-callback)
+- [12. EventEmitter — pointer](#12-eventemitter--pointer)
+  - [12.1 `on` / `once` / `off` / `addListener`](#121-on--once--off--addlistener)
+  - [12.2 `"error"` đặc biệt](#122-error-đặc-biệt)
+- [13. Best practices](#13-best-practices)
+- [14. Checklist](#14-checklist)
+- [15. Cheat sheet](#15-cheat-sheet)
+- [16. Version notes](#16-version-notes)
+- [17. Tài liệu liên quan](#17-tài-liệu-liên-quan)
 
 ---
 
@@ -232,6 +281,10 @@ const text = await readFile("a.txt", "utf8");
 
 Nhiều API Node đã có bản Promise (`node:fs/promises`, `fetch`, …). Prefer **Promise + async/await** cho code mới.
 
+`node:util` còn `types.isAsyncFunction` / `isPromise` — **không** dùng cho control flow nghiệp vụ (engine-specific, dễ gãy với thenable). Type guard tay (`typeof then === "function"`) cũng không đủ; prefer `await` assimilate.
+
+---
+
 ### 2.5 `util.promisify` & symbol tùy biến
 
 `promisify(fn)` giả định **đối số cuối** là err-first callback; trả function bỏ callback, return `Promise`. Không phải hàm → throw. Sai convention (callback giữa, continuation-passing khác) → Promise treo hoặc hành vi lạ.
@@ -270,6 +323,10 @@ Chi tiết combinators → [async.md](async.md) §8.
 `promisify` trên hàm **đã** trả Promise: vẫn inject callback cuối trừ khi có `.custom` — dễ double-then. Detect: nếu API có cả callback overload và Promise overload (nhiều Node builtin), **gọi bản Promise** (`fs.promises`) chứ đừng `promisify` bản callback.
 
 Nhiều giá trị: `cb(null, a, b)` → `promisify` chỉ fulfill `a`. Custom trả tuple `[a, b]` nếu caller cần cả hai.
+
+Symbol well-known liên quan hàm: `Symbol.toStringTag` trên callable object; `promisify.custom` = `Symbol.for("nodejs.util.promisify.custom")`. Không invent symbol riêng trừ khi document rõ.
+
+---
 
 ### 2.6 So sánh
 
@@ -317,6 +374,38 @@ ee.on("error", …);
 
 `stream.Readable` vừa iterable-async vừa emitter — không thay bằng một callback `cb(err, allChunks)` trừ khi đã buffer hết (tốn RAM). Backpressure → [iterables-linq.md](iterables-linq.md), [nodejs-apis.md](nodejs-apis.md).
 
+### 2.9 Gọi callback đồng bộ vs microtask
+
+Err-first callback sync có thể gây reentrancy. Promise handlers luôn chạy qua microtask; bản thân Promise có thể settle đồng bộ. API có hợp đồng async cần giữ callback async cả cache-hit và cache-miss. Xem [event-loop.md](event-loop.md).
+
+`process.nextTick(cb)` đói I/O nếu lặp — không dùng làm “debounce”.
+
+HOF `memoize` sync: lần 1 throw, lần 2 retry — chọn explicit. Promise memoize: cache in-flight `Map<K, Promise<V>>` + xóa khi reject.
+
+### 2.10 Callback arity & `fn.length`
+
+Err-first: `cb.length === 2` không đảm bảo (arrow rest, default). Node **không** nhìn `length` để quyết định overload luôn — `fs.readFile` nhìn số arg runtime. Wrap: đừng tin `cb.length` để “có error handler”. Truyền luôn `(err, value)`.
+
+`Function.prototype.call.length === 1` (thisArg). Không liên quan số param hàm đích.
+
+Mặc định EventEmitter không await/catch Promise listener. `captureRejections: true` gắn rejection handler rồi chuyển sang `captureRejectionSymbol` hoặc event `error`; vẫn phải xử lý error và tránh error listener async gây vòng rejection. Có thể bọc task bằng `.catch` khi không dùng option. [Capture rejections](https://nodejs.org/api/events.html#capture-rejections-of-promises).
+
+`once(ee, "e", { signal })` hủy chờ khi abort — [abort-context.md](abort-context.md).
+
+`callbackify` chuyển rejection sang `cb(reason)`; falsy reason được bọc bằng Error có code `ERR_FALSY_VALUE_REJECTION` và `.reason`, truthy reason không nhất thiết là Error. Hàm async throw sync cũng thành rejection. Callback tự throw là lỗi riêng ở turn gọi callback. [callbackify](https://nodejs.org/api/util.html#utilcallbackifyoriginal).
+
+`util.promisify` + `fs.exists` (deprecated) là ví dụ custom symbol lịch sử — dùng `fs.promises.access` / `stat` thay `exists`.
+
+`queueMicrotask(() => cb(null, cached))` khi wrap sync cache thành “async callback” để không reentrant. Đừng `setTimeout(0)` trừ khi muốn macrotask (chậm hơn, khác thứ tự). Chi tiết queue: [event-loop.md](event-loop.md).
+
+Variance `err`: producer gọi `cb(err: unknown)` đòi handler chấp nhận `unknown`. Handler `(err: Error) => void` **quá hẹp** (contra) — hẹp bằng type guard trong body, không hẹp chữ ký callback.
+
+`this` trong err-first: Node gọi bare. Class method `this.read = this.read.bind(this)` trước đưa vào `fs` style. Arrow field: xem [functions-methods.md](functions-methods.md).
+
+`domain` module (legacy) không phải cách bind callback trên Node 26 — bỏ. `AsyncLocalStorage` cho request context, không thay `this`.
+
+`unhandledRejection` từ listener `async` trên EventEmitter: bọc `.catch` hoặc chuyển Promise API. Đừng im lặng nuốt trừ khi log.
+
 ---
 
 ## 3. Kiểu hàm trong TypeScript
@@ -349,7 +438,7 @@ const ok: Effect = () => 1; // cho phép — caller kiểu void bỏ qua return
 - `void` ở return của callback: “caller không dùng giá trị trả về”.
 - Public API đồng bộ nên dùng kiểu cụ thể / `undefined` nếu caller cần giá trị.
 - `() => undefined` **không** nhận `() => 1` chặt như `void` (tùy `strictNullChecks`).
-- Promise callback: `() => Promise<void>` vẫn có thể return Promise\<number\> vì Promise covariant… **không** — Promise là invariant/covariant theo vị trí; `Promise<number>` gán `Promise<void>` thường OK vì `number` → không dùng. Listener async trả Promise bị discard → unhandled rejection nếu reject. Fire-and-forget: void-wrap `void promise` hoặc `.catch`.
+- `() => void` cho phép callback trả giá trị bị bỏ qua, kể cả Promise. Nhưng `() => Promise<void>` **không** nhận `() => Promise<number>`: quy tắc discard return không đi sâu vào generic Promise. `void promise` không xử lý rejection; fire-and-forget cần `.catch` theo policy.
 
 ### 3.4 Union của function types
 
@@ -418,6 +507,10 @@ type DateCtor = {
 
 Class TS emit cả hai nếu `class` — `typeof MyClass` là construct type. Arrow **không** construct. Mixin / DI: nhận `new (...args: A) => T` chứ không `(...args: A) => T`.
 
+`Function.prototype[Symbol.hasInstance]` tùy biến `instanceof` — hiếm; đừng dùng để nhận diện callback. Nhận diện “thenable”: chỉ khi assimilate Promise, không phải type guard an toàn.
+
+---
+
 ### 4.4 `typeof fn` vs `(...args) => R`
 
 `typeof greet` lấy chữ ký thực (overload, `this`, generic). Alias `type G = (name: string) => string` **bỏ** overload. Prefer `typeof` khi wrap đúng một hàm có sẵn (`Parameters<typeof fs.readFile>` — overload phức tạp, đôi khi cần helper).
@@ -463,7 +556,7 @@ Dùng predicate có tên thay anonymous trong hot filter khi tái sử dụng / 
 
 ```ts
 const mixed: Array<string | number> = ["a", 1];
-mixed.filter((x) => typeof x === "string"); // vẫn (string|number)[] — boolean không hẹp
+mixed.filter((x) => typeof x === "string"); // TS 5.5+: string[] nhờ inferred predicate
 mixed.filter((x): x is string => typeof x === "string"); // string[]
 ```
 
@@ -801,6 +894,14 @@ Hàm **ít param hơn** gán được vào kiểu nhiều param (param extra b�
 
 `void` return: `(x: number) => number` gán `(x: number) => void` (bỏ return). Ngược lại không nếu caller dùng giá trị.
 
+### 8.6 Ghi chú `strictBindCallApply`
+
+TS `strictBindCallApply` (trong `strict`): `fn.call`/`apply`/`bind` kiểm tra list đối số. Tắt flag để “cho qua” `apply(null, unknown[])` — đừng; annotate tuple. `this` param mismatch bắt ở `call`. Liên quan [functions-methods.md](functions-methods.md) §8.
+
+Callback Node `(err, v) => void` gán vào `(err: Error | null, v?: T) => void` — `err` variance: listener hẹp hơn (`ErrnoException`) **không** an toàn nếu producer gửi `Error` thường — dùng `unknown` rồi hẹp. Xem §8.
+
+`noUncheckedIndexedAccess` làm `args[0]` optional khi wrap rest — annotate tuple generic `A extends unknown[]`.
+
 ---
 
 ## 9. Overloads vs union params
@@ -1136,68 +1237,4 @@ Baseline: **Node 26** + **TS 7**.
 - [Tập hợp & Generics](collections-generics.md) — `getOrInsertComputed`, variance Array/Map
 - [Event loop & concurrency model](event-loop.md)
 
-`node:util` còn `types.isAsyncFunction` / `isPromise` — **không** dùng cho control flow nghiệp vụ (engine-specific, dễ gãy với thenable). Type guard tay (`typeof then === "function"`) cũng không đủ; prefer `await` assimilate.
-
-`Function.prototype[Symbol.hasInstance]` tùy biến `instanceof` — hiếm; đừng dùng để nhận diện callback. Nhận diện “thenable”: chỉ khi assimilate Promise, không phải type guard an toàn.
-
-Symbol well-known liên quan hàm: `Symbol.toStringTag` trên callable object; `promisify.custom` = `Symbol.for("nodejs.util.promisify.custom")`. Không invent symbol riêng trừ khi document rõ.
-
-### 17.1 Ghi chú `strictBindCallApply`
-
-TS `strictBindCallApply` (trong `strict`): `fn.call`/`apply`/`bind` kiểm tra list đối số. Tắt flag để “cho qua” `apply(null, unknown[])` — đừng; annotate tuple. `this` param mismatch bắt ở `call`. Liên quan [functions-methods.md](functions-methods.md) §8.
-
-Callback Node `(err, v) => void` gán vào `(err: Error | null, v?: T) => void` — `err` variance: listener hẹp hơn (`ErrnoException`) **không** an toàn nếu producer gửi `Error` thường — dùng `unknown` rồi hẹp. Xem §8.
-
-`noUncheckedIndexedAccess` làm `args[0]` optional khi wrap rest — annotate tuple generic `A extends unknown[]`.
-
-### Gọi callback đồng bộ vs microtask
-
-Err-first **sync** `cb(null, v)` trước khi hàm return: caller chưa gán handler / stack reentrant. Node convention: I/O callback **async** (kể cả cache hit thường `queueMicrotask` / `setImmediate` tùy API). API mới: Promise luôn async settle (microtask). Tự viết: đừng `cb()` sync nếu document “async continuation” — [event-loop.md](event-loop.md).
-
-`process.nextTick(cb)` đói I/O nếu lặp — không dùng làm “debounce”.
-
-HOF `memoize` sync: lần 1 throw, lần 2 retry — chọn explicit. Promise memoize: cache in-flight `Map<K, Promise<V>>` + xóa khi reject.
-
-### Callback arity & `fn.length`
-
-Err-first: `cb.length === 2` không đảm bảo (arrow rest, default). Node **không** nhìn `length` để quyết định overload luôn — `fs.readFile` nhìn số arg runtime. Wrap: đừng tin `cb.length` để “có error handler”. Truyền luôn `(err, value)`.
-
-`Function.prototype.call.length === 1` (thisArg). Không liên quan số param hàm đích.
-
-Listener async: `ee.on("e", async () => { await x; })` — reject **không** tới `error` event. Bọc try/catch hoặc `void task().catch`. Đây là lý do Promise-first rõ hơn EE cho one-shot I/O.
-
-`once(ee, "e", { signal })` hủy chờ khi abort — [abort-context.md](abort-context.md).
-
-`callbackify` wrap async: rejection `cb(err)` — `err` phải `Error` instance một số path Node (warning nếu không). Throw sync trong asyncFn → reject → cb. Không gọi cb hai lần.
-
-`util.promisify` + `fs.exists` (deprecated) là ví dụ custom symbol lịch sử — dùng `fs.promises.access` / `stat` thay `exists`.
-
-`queueMicrotask(() => cb(null, cached))` khi wrap sync cache thành “async callback” để không reentrant. Đừng `setTimeout(0)` trừ khi muốn macrotask (chậm hơn, khác thứ tự). Chi tiết queue: [event-loop.md](event-loop.md).
-
-Variance `err`: producer gọi `cb(err: unknown)` đòi handler chấp nhận `unknown`. Handler `(err: Error) => void` **quá hẹp** (contra) — hẹp bằng type guard trong body, không hẹp chữ ký callback.
-
-`this` trong err-first: Node gọi bare. Class method `this.read = this.read.bind(this)` trước đưa vào `fs` style. Arrow field: xem [functions-methods.md](functions-methods.md).
-
-`domain` module (legacy) không phải cách bind callback trên Node 26 — bỏ. `AsyncLocalStorage` cho request context, không thay `this`.
-
-`unhandledRejection` từ listener `async` trên EventEmitter: bọc `.catch` hoặc chuyển Promise API. Đừng im lặng nuốt trừ khi log.
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
+- [Mocks, async cleanup & contracts](testing.md)

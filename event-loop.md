@@ -8,26 +8,54 @@ Baseline: **Node.js 26**. Mô hình cốt lõi ổn định qua các major; hi�
 
 ## Mục lục
 
-1. [Node “single-threaded” nghĩa là gì?](#1-node-single-threaded-nghĩa-là-gì)
-2. [Call stack & task queues](#2-call-stack--task-queues)
-3. [Microtasks](#3-microtasks)
-4. [`process.nextTick` vs Promise job queue](#4-processnexttick-vs-promise-job-queue)
-5. [Phases libuv (ASCII)](#5-phases-libuv-ascii)
-6. [Pending vs poll vs close](#6-pending-vs-poll-vs-close)
-7. [`setTimeout(0)` không phải next tick](#7-settimeout0-không-phải-next-tick)
-8. [`setImmediate` trong vs ngoài I/O](#8-setimmediate-trong-vs-ngoài-io)
-9. [Timer coalescing & delay tối thiểu](#9-timer-coalescing--delay-tối-thiểu)
-10. [Thứ tự thực tế (ví dụ)](#10-thứ-tự-thực-tế-ví-dụ)
-11. [libuv threadpool & `UV_THREADPOOL_SIZE`](#11-libuv-threadpool--uv_threadpool_size)
-12. [Đo lag: delay histogram, ELU, `--trace-sync-io`](#12-đo-lag-delay-histogram-elu---trace-sync-io)
-13. [CPU offload: sync vs async I/O vs worker](#13-cpu-offload-sync-vs-async-io-vs-worker)
-14. [Node vs browser event loop](#14-node-vs-browser-event-loop)
-15. [So sánh nhanh API lên lịch](#15-so-sánh-nhanh-api-lên-lịch)
-16. [Best practices](#16-best-practices)
-17. [Checklist](#17-checklist)
-18. [Cheat sheet](#18-cheat-sheet)
-19. [Version notes](#19-version-notes)
-20. [Tài liệu liên quan](#20-tài-liệu-liên-quan)
+- [1. Node “single-threaded” nghĩa là gì?](#1-node-single-threaded-nghĩa-là-gì)
+- [2. Call stack & task queues](#2-call-stack--task-queues)
+- [3. Microtasks](#3-microtasks)
+- [4. `process.nextTick` vs Promise job queue](#4-processnexttick-vs-promise-job-queue)
+  - [4.1 Drain đệ quy — I/O không chạy](#41-drain-đệ-quy--io-không-chạy)
+  - [4.2 Khi `nextTick` còn hợp lý](#42-khi-nexttick-còn-hợp-lý)
+  - [4.3 Mix tick + Promise (drain)](#43-mix-tick--promise-drain)
+- [5. Phases libuv (ASCII)](#5-phases-libuv-ascii)
+  - [5.1 Gate libuv: timers sau poll](#51-gate-libuv-timers-sau-poll)
+- [6. Pending vs poll vs close](#6-pending-vs-poll-vs-close)
+  - [6.1 Poll](#61-poll)
+  - [6.2 Pending callbacks](#62-pending-callbacks)
+  - [6.3 Close callbacks](#63-close-callbacks)
+  - [6.4 `'end'` / `'finish'` / `'close'` / `'error'`](#64-end--finish--close--error)
+- [7. `setTimeout(0)` không phải next tick](#7-settimeout0-không-phải-next-tick)
+- [8. `setImmediate` trong vs ngoài I/O](#8-setimmediate-trong-vs-ngoài-io)
+  - [8.1 Ngoài I/O — không đáng tin](#81-ngoài-io--không-đáng-tin)
+  - [8.2 Trong I/O callback — immediate thường trước](#82-trong-io-callback--immediate-thường-trước)
+- [9. Timer coalescing & delay tối thiểu](#9-timer-coalescing--delay-tối-thiểu)
+  - [9.1 Drift `setInterval`](#91-drift-setinterval)
+- [10. Thứ tự thực tế (ví dụ)](#10-thứ-tự-thực-tế-ví-dụ)
+  - [10.1 `nextTick` bên trong I/O (poll)](#101-nexttick-bên-trong-io-poll)
+  - [10.2 Poll timeout (chờ I/O)](#102-poll-timeout-chờ-io)
+- [11. libuv threadpool & `UV_THREADPOOL_SIZE`](#11-libuv-threadpool--uv_threadpool_size)
+  - [11.1 Contention recipes (fs + crypto)](#111-contention-recipes-fs--crypto)
+  - [11.2 Công thức thực dụng](#112-công-thức-thực-dụng)
+- [12. Đo lag: delay histogram, ELU, `--trace-sync-io`](#12-đo-lag-delay-histogram-elu---trace-sync-io)
+  - [12.1 Sync & CPU nặng](#121-sync--cpu-nặng)
+  - [12.2 `monitorEventLoopDelay` — đọc số đúng](#122-monitoreventloopdelay--đọc-số-đúng)
+  - [12.3 `eventLoopUtilization`](#123-eventlooputilization)
+  - [12.4 Đọc số production (ví dụ)](#124-đọc-số-production-ví-dụ)
+  - [12.5 `--trace-sync-io`](#125---trace-sync-io)
+- [13. CPU offload: sync vs async I/O vs worker](#13-cpu-offload-sync-vs-async-io-vs-worker)
+  - [13.1 Walkthrough một request HTTP](#131-walkthrough-một-request-http)
+  - [13.2 `ref` / `unref` (timer, immediate, socket, worker)](#132-ref--unref-timer-immediate-socket-worker)
+- [14. Node vs browser event loop](#14-node-vs-browser-event-loop)
+  - [14.1 Microtask checkpoint](#141-microtask-checkpoint)
+- [15. So sánh nhanh API lên lịch](#15-so-sánh-nhanh-api-lên-lịch)
+  - [15.1 Myths](#151-myths)
+  - [15.2 Recipe yield / block](#152-recipe-yield--block)
+  - [15.3 Addon C++ & threadpool](#153-addon-c--threadpool)
+  - [15.4 Cây quyết định lên lịch](#154-cây-quyết-định-lên-lịch)
+  - [15.5 `close` vs `finish` vs unref — CLI vs server](#155-close-vs-finish-vs-unref--cli-vs-server)
+- [16. Best practices](#16-best-practices)
+- [17. Checklist](#17-checklist)
+- [18. Cheat sheet](#18-cheat-sheet)
+- [19. Version notes](#19-version-notes)
+- [20. Tài liệu liên quan](#20-tài-liệu-liên-quan)
 
 ---
 
@@ -240,6 +268,10 @@ Mô hình tham khảo Node (libuv). Giữa / quanh mỗi phase: **nextTick rồi
 | 6 | **close callbacks** | `socket.on('close')`, `server.close` | Cleanup handle |
 
 > Đừng phụ thuộc thứ tự siêu tinh tế trừ khi đã đo đúng ngữ cảnh (trong/ngoài I/O). Spec HTML/browser **không** có các phase này — §14.
+
+### 5.1 Gate libuv: timers sau poll
+
+Từ libuv 1.45 (Node 20), loop chạy timers sau poll thay vì cả trước và sau poll. Diagram là mô hình phase, không bảo đảm thứ tự timeout/immediate ở entry: vẫn có initial timer pass vì compatibility. Trong callback I/O, `setImmediate` được vào check trước timer vừa lên lịch. Kiểm hành vi trên runtime được support, không dùng thứ tự tranh chấp làm giao thức. [Node event loop guide](https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick).
 
 ---
 
@@ -930,7 +962,7 @@ node --trace-sync-io app.js
 | Dòng | Ghi chú |
 |---|---|
 | **Node 26** (baseline) | Phases / nextTick / microtask ổn định; đo bằng `perf_hooks` |
-| Node 24 LTS | Cùng mô hình cốt lõi (Maintenance LTS) |
+| Node 24 LTS | Cùng mô hình cốt lõi (lịch LTS ở README) |
 | `monitorEventLoopDelay` | Histogram delay (**ns**) |
 | `eventLoopUtilization` | ELU 0..1 — idle/active |
 | `--trace-sync-io` | Sync I/O sau khi loop start |
@@ -948,3 +980,5 @@ Semantics phases ít breaking giữa major; chỗ hay sai là giả định time
 - [Worker Threads & Child Process](threading.md)
 - [Node.js built-ins](nodejs-apis.md)
 - [Exception / Error](exceptions.md)
+
+- [CPU, lag & memory diagnostics](diagnostics.md)

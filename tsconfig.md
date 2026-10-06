@@ -8,25 +8,51 @@
 
 ## Mục lục
 
-1. [Vai trò `tsconfig.json`](#1-vai-trò-tsconfigjson)
-2. [Skeleton khuyến nghị (Node ESM)](#2-skeleton-khuyến-nghị-node-esm)
-3. [TS 7 defaults & breaking](#3-ts-7-defaults--breaking)
-4. [`module` / `moduleResolution` / thuật toán NodeNext](#4-module--moduleresolution--thuật-toán-nodenext)
-5. [`target`, `lib`, `skipLibCheck`, JSX](#5-target-lib-skiplibcheck-jsx)
-6. [`strict` và an toàn kiểu](#6-strict-và-an-toàn-kiểu)
-7. [`verbatimModuleSyntax`](#7-verbatimmodulesyntax)
-8. [`erasableSyntaxOnly` — danh sách cấm](#8-erasablesyntaxonly--danh-sách-cấm)
-9. [`noEmit` / emit / `outDir`](#9-noemit--emit--outdir)
-10. [Ba cách chạy TypeScript trên Node](#10-ba-cách-chạy-typescript-trên-node)
-11. [`@types/node`](#11-typesnode)
-12. [Path aliases vs runtime](#12-path-aliases-vs-runtime)
-13. [Project references, `composite`, incremental](#13-project-references-composite-incremental)
-14. [`tsconfig.build.json` split](#14-tsconfigbuildjson-split)
-15. [Best practices](#15-best-practices)
-16. [Checklist](#16-checklist)
-17. [Cheat sheet](#17-cheat-sheet)
-18. [Version notes](#18-version-notes)
-19. [Tài liệu liên quan](#19-tài-liệu-liên-quan)
+- [1. Vai trò `tsconfig.json`](#1-vai-trò-tsconfigjson)
+- [2. Skeleton khuyến nghị (Node ESM)](#2-skeleton-khuyến-nghị-node-esm)
+- [3. TS 7 defaults & breaking](#3-ts-7-defaults--breaking)
+  - [3.1 Mặc định cần ghim khi migration](#31-mặc-định-cần-ghim-khi-migration)
+  - [3.2 CLI native và tool cần compiler API](#32-cli-native-và-tool-cần-compiler-api)
+- [4. `module` / `moduleResolution` / thuật toán NodeNext](#4-module--moduleresolution--thuật-toán-nodenext)
+  - [4.1 Algorithm (rút gọn — khớp Node)](#41-algorithm-rút-gọn--khớp-node)
+  - [4.2 Ví dụ resolve `exports` types](#42-ví-dụ-resolve-exports-types)
+- [5. `target`, `lib`, `skipLibCheck`, JSX](#5-target-lib-skiplibcheck-jsx)
+  - [5.1 `lib` thực dụng Node 26](#51-lib-thực-dụng-node-26)
+  - [5.2 `skipLibCheck` vs `maxNodeModuleJsDepth`](#52-skiplibcheck-vs-maxnodemodulejsdepth)
+- [6. `strict` và an toàn kiểu](#6-strict-và-an-toàn-kiểu)
+  - [6.1 Tắt từng flag? (không khuyến nghị)](#61-tắt-từng-flag-không-khuyến-nghị)
+  - [6.2 IsolatedDeclarations / declaration emit (tóm tắt)](#62-isolateddeclarations--declaration-emit-tóm-tắt)
+  - [6.3 Lỗi TS 7 thường gặp khi nâng](#63-lỗi-ts-7-thường-gặp-khi-nâng)
+  - [6.4 `files`, `include`, `exclude`, `extends`](#64-files-include-exclude-extends)
+  - [6.5 `customConditions` & `resolvePackageJsonExports`](#65-customconditions--resolvepackagejsonexports)
+  - [6.6 `allowImportingTsExtensions`](#66-allowimportingtsextensions)
+  - [6.7 `moduleDetection` & `forceConsistentCasingInFileNames`](#67-moduledetection--forceconsistentcasinginfilenames)
+- [7. `verbatimModuleSyntax`](#7-verbatimmodulesyntax)
+- [8. `erasableSyntaxOnly` — danh sách cấm](#8-erasablesyntaxonly--danh-sách-cấm)
+  - [8.1 Ví dụ cấm / được](#81-ví-dụ-cấm--được)
+  - [8.2 `isolatedModules` (bổ sung)](#82-isolatedmodules-bổ-sung)
+  - [8.3 Bảng “cấm” in ra compiler](#83-bảng-cấm-in-ra-compiler)
+  - [8.4 Parameter properties — rewrite](#84-parameter-properties--rewrite)
+- [9. `noEmit` / emit / `outDir`](#9-noemit--emit--outdir)
+- [10. Ba cách chạy TypeScript trên Node](#10-ba-cách-chạy-typescript-trên-node)
+  - [10.1 Node type stripping](#101-node-type-stripping)
+  - [10.2 `tsc` emit](#102-tsc-emit)
+  - [10.3 `tsx` (dev)](#103-tsx-dev)
+- [11. `@types/node`](#11-typesnode)
+- [12. Path aliases vs runtime](#12-path-aliases-vs-runtime)
+  - [12.1 `paths` + `NodeNext` — vì sao vẫn đỏ runtime](#121-paths--nodenext--vì-sao-vẫn-đỏ-runtime)
+- [13. Project references, `composite`, incremental](#13-project-references-composite-incremental)
+  - [13.1 Incremental](#131-incremental)
+  - [13.2 Thứ tự reference & `prepend` (đừng)](#132-thứ-tự-reference--prepend-đừng)
+- [14. `tsconfig.build.json` split](#14-tsconfigbuildjson-split)
+  - [14.1 `tsconfig.eslint.json`](#141-tsconfigeslintjson)
+  - [14.2 `rootDir` computed vs khai](#142-rootdir-computed-vs-khai)
+  - [14.3 `noEmit` trên CLI vs file](#143-noemit-trên-cli-vs-file)
+- [15. Best practices](#15-best-practices)
+- [16. Checklist](#16-checklist)
+- [17. Cheat sheet](#17-cheat-sheet)
+- [18. Version notes](#18-version-notes)
+- [19. Tài liệu liên quan](#19-tài-liệu-liên-quan)
 
 ---
 
@@ -36,7 +62,7 @@
 - Editor đọc `tsconfig` cho IntelliSense.
 - Không thay `package.json` `"type"` — module runtime vẫn do Node quyết định.
 
-Nhiều file: `tsconfig.json` (base / editor), `tsconfig.build.json` (emit), `tsconfig.eslint.json` (scope lint). `extends` chuỗi — option con **ghi đè**; `include` **không** inherit như nghĩ — file con phải khai `include` nếu không dùng mặc định.
+Nhiều file: `tsconfig.json` (base/editor), `tsconfig.build.json` (emit), `tsconfig.eslint.json` (lint). `extends` kế thừa options và `files`/`include`/`exclude` nếu file con không khai lại; khai ở con thay toàn bộ trường tương ứng, không concat. Relative path tính theo file config nơi khai báo; `references` không được kế thừa.
 
 `tsc -p tsconfig.json` chọn project. Không `-p` → tìm `tsconfig.json` gần CWD.
 
@@ -92,8 +118,8 @@ TS 7 (và 6.0 language defaults) **cứng** hơn 5.x:
 | `esModuleInterop: false` / `alwaysStrict: false` | **Error** (chỉ còn `true`) |
 | `module` `amd` / `umd` / `system` / `none` | Loại khỏi đường Node hiện đại |
 | Ngữ nghĩa ngôn ngữ | Gần parity **6.0** |
-| Compiler | Go ~8–12× full build; `--checkers` / `--builders` / `--singleThreaded` |
-| Programmatic API | Ổn định khoảng **7.1**; tool cũ → `@typescript/typescript6` |
+| Compiler | Native Go; tốc độ phụ thuộc project/hardware, đo bằng workload thật |
+| Programmatic API | **7.0 chưa ship API**; API mới được dự kiến cho 7.1, cần kiểm tool/version thực tế |
 
 Migrate:
 
@@ -112,7 +138,26 @@ App bundler (Vite): `moduleResolution: "bundler"` + `module: "preserve"` / `esne
 
 Tạm `"strict": false` khi nâng — **issue/TODO**; đừng để mặc định mới “tắt im”.
 
-`baseUrl` thay đổi trên dòng 6/7 (một số combo cấm / `paths` cần `./` prefix) — đọc error TS5108, đừng giữ `baseUrl: "."` mù. Runtime vẫn **không** honor `paths` — §12.
+TS 7 loại `baseUrl`: bỏ option và chuyển giá trị `paths` thành đường tương đối từ tsconfig, ví dụ `"@app/*": ["./src/app/*"]`. `paths` vẫn chỉ giúp checker; Node dùng `#imports` hoặc loader tương thích. Xem [TS 6 migration](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html).
+
+### 3.1 Mặc định cần ghim khi migration
+
+TS 7 mặc định `module: esnext`, `strict: true`, `noUncheckedSideEffectImports: true`, `rootDir: "./"` và `types: []`. Khai `types: ["node"]` cho Node globals; test globals cần liệt kê riêng hoặc import. `rootDir` quyết định cấu trúc emit, không giới hạn tập file như `include`. Ghim target/lib theo runtime được support thay vì để nâng compiler âm thầm đổi output. [TS 6 migration](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html), [TS 7 release](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/).
+
+### 3.2 CLI native và tool cần compiler API
+
+Tool import `typescript` (linter/codegen/framework compiler) cần API tương thích, không chỉ binary `tsc`. Ví dụ bridge theo hướng dẫn TS 7:
+
+```json
+{
+  "devDependencies": {
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}
+```
+
+Alias native cung cấp `tsc`, compatibility package cung cấp API TS 6 và `tsc6`. Xác nhận binary bằng `tsc --version`, kiểm peer dependency của tool và cấu hình editor/LSP riêng. Không suy ra tool đã dùng checker 7 từ version CLI. [Side-by-side guidance](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/).
 
 ---
 
@@ -154,7 +199,49 @@ Emit ESM vs CJS: `import` vs `require` condition có thể khác `.d.ts` / `.d.c
 
 `module` vs `moduleResolution`: `module` = **emit** (CJS `require` vs ESM `import`); `moduleResolution` = **cách tìm file**. `NodeNext` gợi ý cặp khớp; đừng `module: CommonJS` + `moduleResolution: NodeNext` trừ khi hiểu dual.
 
-`rewriteRelativeImportExtensions`: nguồn `from "./a.ts"` → emit `./a.js`. Strip `node a.ts`: Node không rewrite import `.ts` trong graph trừ khi chạy từng file — **ưu tiên viết `.js` specifier** cho ESM Node.
+`rewriteRelativeImportExtensions`: nguồn `from "./a.ts"` → emit `./a.js`. Chạy trực tiếp bằng Node strip phải import file `.ts` đang có trên đĩa; Node không đổi `./a.js` thành `./a.ts`. Quy tắc `.js` trong nguồn chỉ dùng cho pipeline emit hoặc runner có resolution riêng.
+
+### 4.2 Ví dụ resolve `exports` types
+
+Package:
+
+```json
+{
+  "exports": {
+    ".": {
+      "import": "./esm/index.js",
+      "require": "./cjs/index.js"
+    }
+  }
+}
+```
+
+**Thiếu** `"types"` → `NodeNext` có thể không tìm `.d.ts` cạnh `main`. Sửa:
+
+```json
+{
+  "exports": {
+    ".": {
+      "types": "./esm/index.d.ts",
+      "import": "./esm/index.js",
+      "require": {
+        "types": "./cjs/index.d.cts",
+        "default": "./cjs/index.js"
+      }
+    }
+  }
+}
+```
+
+`customConditions` không thay `"types"` đầu. `traceResolution` log “Matched 'types' condition”.
+
+File `.d.cts` cho CJS types (`export =` **cấm** nếu erasable trên **nguồn**; `.d.cts` emit từ `.cts`). Dual: `index.d.ts` ESM, `index.d.cts` CJS. `typesVersions` **không** cứu khi có `exports`.
+
+`disableSourceOfProjectReferenceRedirect` ảnh hưởng eslint-type-aware monorepo — thống nhất với editor.
+
+`parserOptions.projectService` (typescript-eslint): tự tìm tsconfig — vẫn cần `include` đủ. `EXPERIMENTAL_useProjectService` tên cũ — theo docs plugin **đúng bản**.
+
+> **Callout:** Một `tsconfig` vừa `noEmit` vừa quên `build` `-p` khác → ship nhầm / không có `dist`. Hai file, hai script, CI chạy cả hai.
 
 ---
 
@@ -346,7 +433,7 @@ Khi bật, TypeScript **cấm** cú pháp không xóa sạch bằng strip (handb
 | `import a = require()` | `import` ESM / `createRequire` | Emit `require` helper |
 | `export =` | `export default` / named | CJS export |
 | `<Type>expr` assertion | `expr as Type` | JSX / parse; không erasable cùng kiểu `as` |
-| **Decorators `@dec`** | HOF hoặc tắt flag + tsc/tsx | Runtime — [decorators.md](decorators.md) |
+| Decorators `@dec` | Compiler flag cho phép; **Node strip không parse** | Chạy `tsc` emit / runner tương thích |
 
 **Được:** `type` / `interface` / `as` / `satisfies` / generics / `import type`.
 
@@ -356,7 +443,7 @@ Node 26 **không** `--experimental-transform-types` — enum **không** “tự 
 
 CI: bật flag trên `tsconfig` mà `dev` dùng strip. Pipeline `tsc` emit **có thể** tắt `erasableSyntaxOnly` nếu cố dùng enum — **đừng** mix: một nhánh strip, một nhánh enum.
 
-> **Callout:** `erasableSyntaxOnly` **FORBIDS decorators**. Không có “decorator type-only”. Chọn HOF hoặc emit.
+> **Callout:** `erasableSyntaxOnly` không chặn decorator. CI phải kiểm chương trình bằng runner thực tế; chỉ `tsc --noEmit` không chứng minh Node parse được toàn bộ JS còn lại.
 
 ### 8.1 Ví dụ cấm / được
 
@@ -368,7 +455,8 @@ class P { constructor(public x: number) {} }
 import fs = require("node:fs");
 export = P;
 const n = <number>1;
-class C { @logged m() {} }
+// Decorator: compiler flag cho phép, nhưng Node strip không chạy được
+// class C { @logged m() {} }
 
 // ĐƯỢC
 const E = { A: "A", B: "B" } as const;
@@ -386,13 +474,13 @@ import type { User as U } from "./u.js";
 
 ### 8.2 `isolatedModules` (bổ sung)
 
-`isolatedModules: true` (transpile từng file — esbuild/tsx): cấm `const enum` re-export type không `type`, v.v. **Khác** `erasableSyntaxOnly` nhưng chồng lên. Strip + tsx: bật cả hai hợp lý.
+`isolatedModules: true` kiểm giới hạn của transform từng file, gồm re-export type cần `type` và ambient const enum; không cấm mọi const enum thông thường. Khác `erasableSyntaxOnly`; chọn theo transpiler/strip đang dùng.
 
 `preserveValueImports` đã thay bằng `verbatimModuleSyntax` — đừng flag cũ.
 
 ### 8.3 Bảng “cấm” in ra compiler
 
-TS error khi `erasableSyntaxOnly`: parameter property highlight trên `public x`. Enum: toàn bộ `enum` block. Decorator: `@` trên class/member. `export =` trên file CJS-style.
+TS error khi `erasableSyntaxOnly`: parameter property, enum, `export =` và `<T>x`. Decorator không bị flag này chặn; parser Node mới từ chối khi chạy strip.
 
 Sửa **cú pháp**, không “cast cho xong”. `as const` object **không** phải enum runtime (`Object.values` khác).
 
@@ -723,50 +811,6 @@ Nếu không set `rootDir`, TS lấy common root của `include` — thêm `test
 
 `listEmittedFiles` lúc build — so với `files` npm pack. `pretty: false` CI.
 
-### 4.2 Ví dụ resolve `exports` types
-
-Package:
-
-```json
-{
-  "exports": {
-    ".": {
-      "import": "./esm/index.js",
-      "require": "./cjs/index.js"
-    }
-  }
-}
-```
-
-**Thiếu** `"types"` → `NodeNext` có thể không tìm `.d.ts` cạnh `main`. Sửa:
-
-```json
-{
-  "exports": {
-    ".": {
-      "types": "./esm/index.d.ts",
-      "import": "./esm/index.js",
-      "require": {
-        "types": "./cjs/index.d.cts",
-        "default": "./cjs/index.js"
-      }
-    }
-  }
-}
-```
-
-`customConditions` không thay `"types"` đầu. `traceResolution` log “Matched 'types' condition”.
-
-File `.d.cts` cho CJS types (`export =` **cấm** nếu erasable trên **nguồn**; `.d.cts` emit từ `.cts`). Dual: `index.d.ts` ESM, `index.d.cts` CJS. `typesVersions` **không** cứu khi có `exports`.
-
-`disableSourceOfProjectReferenceRedirect` ảnh hưởng eslint-type-aware monorepo — thống nhất với editor.
-
-`parserOptions.projectService` (typescript-eslint): tự tìm tsconfig — vẫn cần `include` đủ. `EXPERIMENTAL_useProjectService` tên cũ — theo docs plugin **đúng bản**.
-
-> **Callout:** Một `tsconfig` vừa `noEmit` vừa quên `build` `-p` khác → ship nhầm / không có `dist`. Hai file, hai script, CI chạy cả hai.
-
----
-
 ## 15. Best practices
 
 1. `NodeNext` + `"type": "module"` khi chọn ESM.
@@ -780,7 +824,7 @@ File `.d.cts` cho CJS types (`export =` **cấm** nếu erasable trên **nguồn
 9. Tách `tsconfig.build.json`; `composite` + `tsc -b` monorepo.
 10. `incremental` + gitignore buildinfo; cache CI có chủ đích.
 11. `skipLibCheck` app; đừng tưởng nó skip `src`.
-12. Tooling API cũ → bridge cho tới ~TS 7.1.
+12. Tooling cần API → bridge TS 6, kiểm lại khi tool hỗ trợ API mới thực tế.
 13. Không `moduleResolution` `node10` / `target es5` — TS 7 error.
 
 ---
@@ -791,7 +835,7 @@ File `.d.cts` cho CJS types (`export =` **cấm** nếu erasable trên **nguồn
 □ "type": "module" (nếu ESM)
 □ module / moduleResolution: NodeNext
 □ strict (default true) + verbatimModuleSyntax
-□ Strip? erasableSyntaxOnly + noEmit + tránh non-erasable (kể cả decorator)
+□ Strip? erasableSyntaxOnly + noEmit; kiểm runner thật, đặc biệt decorator không được flag chặn
 □ Emit? tsconfig.build.json: outDir + declaration nếu publish
 □ typescript@^7, @types/node@^26
 □ lib khớp target; không DOM thừa
@@ -832,7 +876,7 @@ node src/index.ts
 | Option | Việc |
 |---|---|
 | `NodeNext` | ESM/CJS theo package.json + đuôi |
-| `erasableSyntaxOnly` | Khớp Node strip; cấm enum/decorator/… |
+| `erasableSyntaxOnly` | Chặn enum/param props/…; không chặn decorator hay kiểm runtime syntax |
 | `verbatimModuleSyntax` | `import type` tường minh |
 | `noEmit` | Typecheck-only |
 | `composite` | Project references |
@@ -840,7 +884,7 @@ node src/index.ts
 | `paths` | Chỉ TS — **không** Node |
 | `lib` vs `target` | Typings vs emit |
 
-`NodeNext` = thuật toán Node; `paths` không runtime; `erasableSyntaxOnly` cấm enum/decorator/param props/`export =`/`import =`/`<>`. TS 7: `strict` true, `node10`/`es5` error. Tách `tsconfig.build.json`.
+`NodeNext` = thuật toán Node; `paths` không runtime. `erasableSyntaxOnly` chặn enum/param props/import-export assignment/assertion `<>`; decorator cần kiểm runner riêng. TS 7: khai rõ strict/module/target/types/rootDir; tách `tsconfig.build.json`.
 
 `skipLibCheck` không skip `src`. `lib` vs `target` vs runtime. `composite` + `tsc -b` monorepo. `incremental` `.tsbuildinfo` gitignore. `customConditions` cần `--conditions` Node nếu runtime.
 
@@ -854,7 +898,7 @@ node src/index.ts
 | TS 5.5+ | `isolatedDeclarations` (theo dõi) |
 | TS 5.8+ | `erasableSyntaxOnly` |
 | **TS 6–7** | `strict` default; cấm `node10` / `es5`; compiler Go (7) |
-| **TS 7** | API ~7.1; `--checkers` / `--builders` |
+| **TS 7.0** | CLI native, chưa ship API; flags parallel có stability riêng |
 | Node 22.6+ | type stripping experimental |
 | **Node 26** | strip ổn định; không transform-types |
 | `@types/node` | major khớp Node |
@@ -863,13 +907,13 @@ node src/index.ts
 
 `verbatimModuleSyntax` + `erasableSyntaxOnly` = strip. `paths` ≠ runtime.
 
-`include`/`exclude` không inherit như `compilerOptions`. `tsc -b --clean` khi cache bẩn. `@tsconfig/node26` làm base.
+`files`/`include`/`exclude` kế thừa nếu con không khai lại; mảng ở con thay thế mảng base. `tsc -b --clean` khi cache bẩn; `tsc --showConfig` để kiểm config thực tế.
 
 `types: ["node"]` hạn chế auto `@types/*`. `declaration` + `files: ["dist"]` khớp path `exports`.
 
 `module` vs `moduleResolution` cặp `NodeNext`. Không `DOM` lib trên server. `skipLibCheck: true` app. `noImplicitOverride` class. `forceConsistentCasingInFileNames`.
 
-Editor “Use Workspace Version” TypeScript 7. `isolatedModules` + strip/tsx. `allowImportingTsExtensions` chỉ noEmit/bundler. `resolvePackageJsonExports` giữ bật.
+Editor dùng TypeScript 7 qua tích hợp LSP/native của editor; kiểm version diagnostics riêng với CLI. `allowImportingTsExtensions` dùng với noEmit/emitDeclarationOnly hoặc `rewriteRelativeImportExtensions`; `resolvePackageJsonExports` giữ bật.
 
 `emitDeclarationOnly` khi JS do bundler. `sourceMap` prod debug. `tsconfig.eslint.json` include test + config JS.
 
@@ -898,3 +942,6 @@ Baseline: **Node 26** + **TS 7**.
 - [Node.js built-ins](nodejs-apis.md)
 - [exceptions.md](exceptions.md) — `useUnknownInCatchVariables`
 - [Hàm & Method](functions-methods.md) — `using` / lib Disposable
+
+- [Type tests và output validation](testing.md)
+- [Compiler benchmark](diagnostics.md)

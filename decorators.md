@@ -2,27 +2,49 @@
 
 Stage 3 JS decorators, legacy `experimentalDecorators`, và ranh giới metadata trên **TypeScript 7**.
 
-> **Callout:** Baseline: **TS 7**. Decorators chuẩn (TC39 Stage 3) là hướng mặc định cho code mới; `experimentalDecorators` chỉ còn cho codebase / framework legacy (NestJS cũ, TypeORM kiểu cũ, …). **`erasableSyntaxOnly` cấm decorator** trong workflow strip. OOP class: [oop.md](oop.md). Strip-types: [tsconfig.md](tsconfig.md).
+> **Callout:** Baseline: **TS 7**. Chọn decorator Stage 3 hoặc legacy `experimentalDecorators` theo hợp đồng framework. Node 26 type stripping không parse decorator; `erasableSyntaxOnly` không phát hiện giới hạn này. Dùng pipeline emit và kiểm tra JS thực tế. Xem [oop.md](oop.md) và [tsconfig.md](tsconfig.md).
 
 ---
 
 ## Mục lục
 
-1. [Hai “thế giới” decorator](#1-hai-thế-giới-decorator)
-2. [Bật decorator trong TypeScript](#2-bật-decorator-trong-typescript)
-3. [Stage 3 — semantics theo kind](#3-stage-3--semantics-theo-kind)
-4. [Thứ tự evaluate / apply & initializer](#4-thứ-tự-evaluate--apply--initializer)
-5. [`context.addInitializer` & init wrappers](#5-contextaddinitializer--init-wrappers)
-6. [Metadata Stage 3 vs `Reflect.metadata`](#6-metadata-stage-3-vs-reflectmetadata)
-7. [Legacy `experimentalDecorators`](#7-legacy-experimentaldecorators)
-8. [`erasableSyntaxOnly` FORBIDS decorators](#8-erasablesyntaxonly-forbids-decorators)
-9. [Khi nào dùng HOF thay decorator](#9-khi-nào-dùng-hof-thay-decorator)
-10. [So sánh nhanh & lựa chọn](#10-so-sánh-nhanh--lựa-chọn)
-11. [Best practices](#11-best-practices)
-12. [Checklist](#12-checklist)
-13. [Cheat sheet](#13-cheat-sheet)
-14. [Version notes](#14-version-notes)
-15. [Tài liệu liên quan](#15-tài-liệu-liên-quan)
+- [1. Hai “thế giới” decorator](#1-hai-thế-giới-decorator)
+- [2. Bật decorator trong TypeScript](#2-bật-decorator-trong-typescript)
+  - [Node type stripping — caution](#node-type-stripping--caution)
+- [3. Stage 3 — semantics theo kind](#3-stage-3--semantics-theo-kind)
+  - [3.1 Class decorator](#31-class-decorator)
+  - [3.2 Method decorator](#32-method-decorator)
+  - [3.3 Field decorator](#33-field-decorator)
+  - [3.4 Getter / setter](#34-getter--setter)
+  - [3.5 Auto-accessor (`accessor`)](#35-auto-accessor-accessor)
+  - [3.6 `context.access`](#36-contextaccess)
+  - [3.7 Static vs instance, private](#37-static-vs-instance-private)
+  - [3.8 Factory vs decorator function](#38-factory-vs-decorator-function)
+  - [3.9 Subclass & wrap](#39-subclass--wrap)
+- [4. Thứ tự evaluate / apply & initializer](#4-thứ-tự-evaluate--apply--initializer)
+  - [4.1 Thứ tự trên class](#41-thứ-tự-trên-class)
+  - [4.2 Initializer vs wrapper](#42-initializer-vs-wrapper)
+- [5. `context.addInitializer` & init wrappers](#5-contextaddinitializer--init-wrappers)
+- [6. Metadata Stage 3 vs `Reflect.metadata`](#6-metadata-stage-3-vs-reflectmetadata)
+  - [6.1 Stage 3 `context.metadata`](#61-stage-3-contextmetadata)
+  - [6.2 `reflect-metadata` (legacy)](#62-reflect-metadata-legacy)
+  - [6.3 Ví dụ ý tưởng (legacy)](#63-ví-dụ-ý-tưởng-legacy)
+  - [6.4 Registry tường minh (không Reflect)](#64-registry-tường-minh-không-reflect)
+- [7. Legacy `experimentalDecorators`](#7-legacy-experimentaldecorators)
+- [8. Decorator, type stripping và compiler flags](#8-decorator-type-stripping-và-compiler-flags)
+  - [8.1 Chọn cấu hình theo framework](#81-chọn-cấu-hình-theo-framework)
+  - [8.2 Kiểm tra workflow thực tế](#82-kiểm-tra-workflow-thực-tế)
+  - [8.3 `context.metadata` vs `Symbol.metadata`](#83-contextmetadata-vs-symbolmetadata)
+  - [8.4 Metadata không phải runtime validation](#84-metadata-không-phải-runtime-validation)
+- [9. Khi nào dùng HOF thay decorator](#9-khi-nào-dùng-hof-thay-decorator)
+  - [9.1 Composition HOF](#91-composition-hof)
+  - [9.2 Pitfalls decorator (tóm tắt)](#92-pitfalls-decorator-tóm-tắt)
+- [10. So sánh nhanh & lựa chọn](#10-so-sánh-nhanh--lựa-chọn)
+- [11. Best practices](#11-best-practices)
+- [12. Checklist](#12-checklist)
+- [13. Cheat sheet](#13-cheat-sheet)
+- [14. Version notes](#14-version-notes)
+- [15. Tài liệu liên quan](#15-tài-liệu-liên-quan)
 
 ---
 
@@ -35,12 +57,12 @@ Stage 3 JS decorators, legacy `experimentalDecorators`, và ranh giới metadata
 | `emitDecoratorMetadata` | **không** đi kèm như legacy | thường + `reflect-metadata` |
 | Parameter decorator | **Không** 1-1 | Có `(target, key, index)` |
 | Nest/TypeORM cũ | Thường **không** drop-in | Có |
-| `erasableSyntaxOnly` | **Cấm** (runtime syntax) | **Cấm** |
+| `erasableSyntaxOnly` | Compiler cho phép decorator; Node strip không parse `@` | Tương tự, cần pipeline emit |
 | Khuyến nghị code mới | **Có** (nếu không strip-only) | Chỉ khi framework yêu cầu |
 
 Chúng **không tương thích API** — không trộn hai chế độ trong cùng mental model, cùng file, cùng `tsconfig`.
 
-Stage 3 decorator là **đề xuất JS**: sau emit (target ≥ ES2022, `experimentalDecorators: false`) syntax `@dec` còn trong JS nếu engine hỗ trợ; TypeScript **không** hạ xuống helper kiểu legacy `__decorate`. Legacy **luôn** emit helper / `Reflect`.
+TypeScript emit decorator Stage 3 bằng helpers như `__esDecorate` / `__runInitializers`; legacy dùng `__decorate` và có thể `__metadata`. `target: ES2022` không giữ nguyên `@dec` trong JS đầu ra. [TypeScript 5.0](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html#decorators).
 
 > **Callout:** Bật `experimentalDecorators: true` → **tắt** Stage 3 trong compiler. Không “cả hai cùng lúc”.
 
@@ -78,7 +100,7 @@ Từ TS 5.0+, decorator chuẩn được hỗ trợ khi **không** bật `experi
 
 ### Node type stripping — caution
 
-> Decorator **không erasable**. Node 26 chỉ strip types; **đã gỡ** `--experimental-transform-types`. Với `erasableSyntaxOnly` / `node file.ts`, decorator **bị cấm / không chạy đúng như transpile**. Production: `tsc` emit hoặc bundler / `tsx`.
+> Node 26 không hỗ trợ cú pháp decorator trong `node file.ts`: parser error. `erasableSyntaxOnly` chỉ chặn một nhóm cú pháp TypeScript cần emit riêng; flag này cho phép decorator và không bảo đảm chương trình chạy được bằng strip. Production: `tsc` emit hoặc transpiler đã kiểm tra tương thích.
 
 Kể cả V8 parse được Stage 3 native: đó là **JS engine**, không phải “strip biến decorator thành JS”. Workflow strip **không** phải chỗ gắn Nest/DI. Xem §8.
 
@@ -282,6 +304,30 @@ Return object có thể gồm `get`, `set`, `init` — thiếu key = giữ mặc
 
 `accessor` **không** phải Stage 3 “bắt buộc” cho mọi field — syntax riêng; decorator `kind: "accessor"`.
 
+### 3.6 `context.access`
+
+Stage 3 cung cấp `context.access` (`get` / `set` / `has` tùy kind) để decorator đọc/ghi **không** hard-code tên private — hữu ích wrap field/accessor.
+
+```ts
+function bound<This, A extends unknown[], R>(
+  value: (this: This, ...a: A) => R,
+  context: ClassMethodDecoratorContext<This>,
+) {
+  const { name, addInitializer } = context;
+  addInitializer(function (this: This) {
+    const fn = (this as Record<PropertyKey, unknown>)[name as PropertyKey];
+    if (typeof fn === "function") {
+      (this as Record<PropertyKey, unknown>)[name as PropertyKey] = fn.bind(this);
+    }
+  });
+  return value;
+}
+```
+
+(Pattern bind-on-construct; cân nhắc arrow field / bind trong ctor — [functions-methods.md](functions-methods.md).)
+
+Luôn kiểm `context.kind` trước khi giả định `access.set` tồn tại.
+
 ### 3.7 Static vs instance, private
 
 `context.static === true` trên `static m()` / `static field`. Initializer static chạy **một lần** khi class evaluate xong — không mỗi `new`.
@@ -319,30 +365,6 @@ class Jobs {
 Wrapper method trên **base** không tự áp lên method override ở subclass trừ khi subclass cũng `@` hoặc gọi `super`. Class decorator replace constructor: `extends` subclass vẫn `extends` **giá trị sau decorate** nếu `@` trên base trước khi `class Child extends Base` — thứ tự khai báo file quan trọng.
 
 Field init wrapper **không** chạy lại khi gán `this.name = "x"` sau construct — chỉ giá trị khởi tạo. Muốn trap gán → `accessor`.
-
-### 3.6 `context.access`
-
-Stage 3 cung cấp `context.access` (`get` / `set` / `has` tùy kind) để decorator đọc/ghi **không** hard-code tên private — hữu ích wrap field/accessor.
-
-```ts
-function bound<This, A extends unknown[], R>(
-  value: (this: This, ...a: A) => R,
-  context: ClassMethodDecoratorContext<This>,
-) {
-  const { name, addInitializer } = context;
-  addInitializer(function (this: This) {
-    const fn = (this as Record<PropertyKey, unknown>)[name as PropertyKey];
-    if (typeof fn === "function") {
-      (this as Record<PropertyKey, unknown>)[name as PropertyKey] = fn.bind(this);
-    }
-  });
-  return value;
-}
-```
-
-(Pattern bind-on-construct; cân nhắc arrow field / bind trong ctor — [functions-methods.md](functions-methods.md).)
-
-Luôn kiểm `context.kind` trước khi giả định `access.set` tồn tại.
 
 ---
 
@@ -394,18 +416,13 @@ class T {
 // eval A, eval B, apply B, apply A
 ```
 
-### 4.1 Thứ tự trên class (rút gọn spec)
+### 4.1 Thứ tự trên class
 
-Khi **đánh giá class**:
+Tách ba thời điểm: evaluate expression, apply decorator, chạy initializer. Expression decorator class được evaluate trước expression của member; member còn xen kẽ computed property names theo source. Member decorators được apply trước class decorators. Trong một stack, apply từ dưới lên.
 
-1. Evaluate decorator expressions của **từng member** (method/field/getter/setter/accessor — instance rồi static theo nhóm spec; debug tinh vi thì đọc spec, đừng đoán).
-2. Apply member decorators (reverse per-stack).
-3. Evaluate **class** decorator expressions LTR.
-4. Apply class decorators RTL.
-5. Chạy **static** initializers + `addInitializer` static.
-6. Khi `new`: instance fields + instance `addInitializer`.
+Initializer instance chạy khi `new`; initializer static/class chạy khi định nghĩa class. Vị trí cụ thể phụ thuộc kind (method, field, accessor), nên kiểm bằng một trace nhỏ khi logic cần thứ tự chính xác. Không gộp thành quy tắc ‘instance trước static’ cho mọi bước.
 
-“Member rồi class” — class decorator thấy member **đã** wrap.
+---
 
 ### 4.2 Initializer vs wrapper
 
@@ -614,81 +631,33 @@ Prototype mutate legacy dễ đụng subclass. Stage 3 wrap per-function rõ hơ
 
 ---
 
-## 8. `erasableSyntaxOnly` FORBIDS decorators
+## 8. Decorator, type stripping và compiler flags
 
-`erasableSyntaxOnly` (TS 5.8+, TS 7) **cấm cú pháp TS có runtime emit** — khớp Node type stripping (Amaro): chỉ xóa type, **không** sinh JS mới.
+`erasableSyntaxOnly` chặn enum, namespace có runtime code, parameter properties, import/export assignment và assertion dạng `<T>x`. **Decorators không nằm trong danh sách đó**: cả Stage 3 và legacy có thể được typecheck khi bật flag. Điều này không thay đổi khả năng parse của Node. [TSConfig](https://www.typescriptlang.org/tsconfig/erasableSyntaxOnly.html), [Node TypeScript](https://nodejs.org/api/typescript.html#typescript-features).
 
-Danh sách cấm chính (handbook `erasableSyntaxOnly`):
-
-| Cấm | Thay |
-|---|---|
-| `enum` / `const enum` | `as const` object + type |
-| `namespace` / `module` runtime | ES modules |
-| Parameter properties `constructor(public x)` | Field tường minh |
-| `import a = require()` / `export =` | ESM `import`/`export` |
-| `<>` type assertion | `as` |
-| **Decorators `@dec`** | **HOF** hoặc tắt flag + `tsc`/`tsx` |
-
-Decorator **không** type-only: `@logged` còn lại sau khi xóa `number` — đó là **runtime**. Node 26 **đã gỡ** `--experimental-transform-types` → không transpile decorator lúc `node file.ts`.
-
-TS với `erasableSyntaxOnly: true`: **error** trên decorator (cùng họ non-erasable). Đó là **cố ý** — không phải bug editor.
-
-| Workflow | Decorator | `emitDecoratorMetadata` |
+| Workflow | Decorator | Metadata |
 |---|---|---|
-| `tsc` emit, **không** erasableSyntaxOnly | OK (Stage 3 hoặc legacy) | legacy only |
-| `tsx` / bundler | Thường transpile | tùy tool |
-| `node file.ts` strip | **Không** — không transpile | **Không** emit |
-| `erasableSyntaxOnly: true` | TS **cấm** | N/A |
+| `node file.ts` | Parser error trên Node 26 | Không emit |
+| `tsc --noEmit` + `erasableSyntaxOnly` | Có thể xanh | Không tạo JS |
+| `tsc` emit, Stage 3 | Helpers Stage 3 | `context.metadata` cần `Symbol.metadata` runtime |
+| `tsc` emit, legacy | `experimentalDecorators: true` | `emitDecoratorMetadata` + `reflect-metadata` nếu cần |
+| `tsx` / bundler | Theo transpiler và cấu hình | Kiểm tra riêng; không suy từ typecheck |
 
-Với app mới không Nest: Stage 3 + metadata tường minh (`WeakMap`) **và** pipeline **emit** — hoặc **không decorator** (HOF) để giữ strip.
+### 8.1 Chọn cấu hình theo framework
 
-> **Callout:** Không tắt `erasableSyntaxOnly` “cho xong” rồi quên CI strip. Chọn **một** pipeline: strip-only (cấm decorator) **hoặc** tsc/tsx (decorator OK).
+Stage 3: omit hoặc `experimentalDecorators: false`, không bật `emitDecoratorMetadata`. Legacy: `experimentalDecorators: true`; bật metadata chỉ khi framework cần. `erasableSyntaxOnly` có thể giữ bật ở cả hai, nhưng không dùng như lệnh cấm decorator.
 
-`verbatimModuleSyntax` **không** cấm decorator — chỉ import/export. Hai flag thường bật cùng cho strip; decorator vẫn cấm vì `erasableSyntaxOnly`.
+### 8.2 Kiểm tra workflow thực tế
 
-### 8.1 `experimentalDecorators` vs Stage 3 — tsconfig
-
-| Flag | Stage 3 | Legacy |
-|---|---|---|
-| `experimentalDecorators` | `false` / omit | `true` |
-| `emitDecoratorMetadata` | bỏ | `true` + `reflect-metadata` |
-| `target` | ≥ ES2022 | theo framework |
-| `erasableSyntaxOnly` | **false** (nếu dùng `@`) | **false** |
-
-Không `"experimentalDecorators": false` **và** Nest param decorator — Nest không chạy. README một dòng: “Stage 3” hoặc “legacy Nest”.
-
-`useDefineForClassFields` với legacy decorator field: historically lệch — Nest docs. Stage 3 + target cao: field JS chuẩn.
-
-### 8.2 Strip + decorator — kịch bản
-
-| Dev | CI | Prod | Decorator? |
-|---|---|---|---|
-| `node --watch src/index.ts` | `tsc --noEmit` + `erasableSyntaxOnly` | `node dist` | **Không** |
-| `tsx watch` | `tsc --noEmit` **không** erasable | `tsc` emit | Stage 3 OK |
-| Nest `tsx`/`tsc` | `experimentalDecorators` | `tsc` emit | Legacy OK |
-| Mix strip local + Nest CI | — | — | **Vỡ** |
-
-Chọn hàng **một** dòng cho repo. Không “strip thứ Hai, Nest thứ Ba”.
+Repo chạy strip cần lint/kiểm tra cú pháp riêng để loại decorator, rồi chạy entry và test bằng chính `node`. Repo có decorator cần emit và test JS đã build. Khi chọn `tsx` dev, thử decorator/DI/metadata bằng runner đó; typecheck xanh không chứng minh metadata được emit.
 
 ### 8.3 `context.metadata` vs `Symbol.metadata`
 
-Khi runtime hỗ trợ, class sau decorator có `Ctor[Symbol.metadata]` (object shared). Polyfill/TS emit tùy `target` — **không** giả định có trên mọi Node 24. Node 26 + types: kiểm tra `Symbol.metadata in Ctor`.
+TypeScript tạo metadata khi runtime có `Symbol.metadata`; polyfill phải load trước khi class được evaluate. Metadata của subclass có thể kế thừa từ base: phân biệt own/inherited key khi đọc. Registry `WeakMap` với token tường minh giúp tránh phụ thuộc proposal metadata.
 
-Đọc metadata **sau** class evaluate — không trong factory trước apply.
+### 8.4 Metadata không phải runtime validation
 
-WeakMap registry **portable** hơn Symbol.metadata khi dual-support 24.
-
-### 8.4 `emitDecoratorMetadata` types không phải validation
-
-`design:paramtypes` = **hàm constructor** còn lại sau emit (`String`, `Object` cho interface). `interface User` → `Object`. Generic → mất. **Không** dùng làm runtime schema. Zod/Valibot cho input. DI token: `InjectionToken` tường minh, không tin `typeof`.
-
-`emitDecoratorMetadata` **không** emit cho Stage 3. Bật cả hai flag + Stage 3 syntax = metadata **trống** kiểu Nest. Legacy class decorator `(target) => {}` mới có `design:*`.
-
-HOF `withInject` **không** đọc paramtypes — truyền dependency lúc gọi `makeUserService({ db })`. Rõ test, strip-friendly.
-
-`experimentalDecorators` + `erasableSyntaxOnly` **cùng true** → decorator error (erasable thắng “cấm”). Nest repo: **tắt** `erasableSyntaxOnly`, **không** `node file.ts` entry.
-
-`tsx` transpile decorator **không** bảo đảm 1-1 `tsc` Stage 3 — library publish: `tsc`. App nội bộ: chấp nhận tsx dev nếu CI `tsc --noEmit` cùng `experimentalDecorators` flag.
+Legacy `design:paramtypes` chỉ chứa constructor còn lại sau emit; interface/generic mất thông tin. Stage 3 không emit các key `design:*`. Validate input bằng schema hoặc guard đầy đủ; truyền DI token tường minh khi không có constructor đại diện.
 
 ---
 
@@ -759,7 +728,7 @@ Thứ tự `compose` (phải → trái apply) **cùng tinh thần** apply decora
 2. Wrap `async` lên method sync — caller không `await` → unhandled rejection.
 3. `addInitializer` async — **không** được; class/`new` sync.
 4. Legacy + Stage 3 cùng `tsconfig` — compiler một chế độ.
-5. `erasableSyntaxOnly` + `@` → error; tắt flag nhưng vẫn `node file.ts` → SyntaxError / không như Nest emit.
+5. Chỉ typecheck xanh với `erasableSyntaxOnly` rồi chạy `node file.ts` có decorator → SyntaxError; cần emit và chạy output thật.
 6. Metadata `design:paramtypes` tin như runtime type — **erase**.
 7. Decorator trên `accessor` vs `field` — kind khác, API khác.
 8. Test “có metadata” không test behavior.
@@ -775,7 +744,7 @@ Thứ tự `compose` (phải → trái apply) **cùng tinh thần** apply decora
 | Chỉ logging/wrap method trên class | Stage 3 method **hoặc** HOF |
 | Wrap hàm module | **HOF** |
 | DI theo kiểu emit | Framework + (thường) legacy; hoặc DI không decorator |
-| Node strip / `erasableSyntaxOnly` | **Cấm decorator** — HOF / tsc |
+| Node strip | Parser chưa hỗ trợ decorator; dùng HOF hoặc emit |
 | Quan sát gán field sau init | `accessor` + Stage 3 |
 | Metadata không Reflect | `WeakMap` + `addInitializer` |
 
@@ -788,7 +757,7 @@ Thứ tự `compose` (phải → trái apply) **cùng tinh thần** apply decora
 3. Factory rõ (`@retry(3)`), không magic global lúc evaluate.
 4. Không phụ thuộc `emitDecoratorMetadata` cho bảo mật / boundary — kiểu erase lúc runtime.
 5. Stage 3: generic `This` / `Args` để giữ type-safe wrappers.
-6. `erasableSyntaxOnly` / strip → **không** decorator; HOF hoặc đổi pipeline emit.
+6. Node strip → tránh `@`; `erasableSyntaxOnly` không bắt lỗi này. Chọn HOF hoặc pipeline emit.
 7. Prefer HOF khi decorator chỉ để “cho đẹp” trên một hàm.
 8. Test behavior của wrapper, không chỉ “có gắn decorator”.
 9. `addInitializer` sync, nhẹ; I/O ở method.
@@ -805,7 +774,7 @@ Thứ tự `compose` (phải → trái apply) **cùng tinh thần** apply decora
 □ Không trộn mental model hai thế giới
 □ target ≥ ES2022 (hoặc runtime đủ) cho Stage 3
 □ Nest/TypeORM? legacy + reflect-metadata + emitDecoratorMetadata
-□ Strip-types / erasableSyntaxOnly? KHÔNG decorator — HOF hoặc tsc
+□ Chạy strip? Loại decorator bằng policy/lint và kiểm runtime; flag erasable không đủ
 □ Prod: tsc hoặc bundler — không kỳ vọng node file.ts chạy decorator
 □ Hiểu evaluate LTR / apply RTL / initializer vs wrapper
 □ addInitializer chỉ side-effect sync
@@ -851,7 +820,7 @@ const withLog = <A extends unknown[], R>(fn: (...a: A) => R) =>
 // tsconfig legacy Nest-like
 // { "experimentalDecorators": true, "emitDecoratorMetadata": true }
 
-// tsconfig strip — cấm decorator
+// Node strip không parse decorator; flag dưới đây không tự cấm @
 // { "erasableSyntaxOnly": true, "verbatimModuleSyntax": true }
 ```
 
@@ -863,7 +832,7 @@ const withLog = <A extends unknown[], R>(fn: (...a: A) => R) =>
 | Dev strip-only | **HOF, không decorator** |
 | Registry | `addInitializer` + WeakMap |
 
-Stage 3 + `target` ES2022+; legacy chỉ khi framework bắt. `erasableSyntaxOnly` **FORBIDS** `@`.
+Stage 3 và legacy đều cần transform trên Node 26; `erasableSyntaxOnly` cho phép `@`, parser Node strip thì không.
 
 HOF khi một hàm; decorator khi nhiều member class + emit pipeline. `addInitializer` sync; evaluate LTR, apply RTL.
 
@@ -879,7 +848,7 @@ Registry `WeakMap` + `addInitializer` thay `Reflect.metadata` khi không Nest.
 |---|---|
 | TS cũ | `experimentalDecorators`, `emitDecoratorMetadata` |
 | TS 5.0+ | Stage 3 decorators khi tắt experimental |
-| TS 5.8+ | `erasableSyntaxOnly` — **cấm** decorator / enum / param props |
+| TS 5.8+ | `erasableSyntaxOnly` chặn enum/param props; **không chặn decorator** |
 | TC39 | Decorators Stage 3; metadata proposal theo dõi riêng (`Symbol.metadata`) |
 | **TS 7** | Parity decorator với 5/6; compiler Go nhanh hơn; `erasableSyntaxOnly` giữ |
 | **Node 26** | Strip-types ổn định; **không** transform decorator; gỡ `--experimental-transform-types` |
@@ -898,3 +867,5 @@ Baseline: **Node 26** + **TS 7**.
 - [Hàm & Method](functions-methods.md) — `this`, bind
 - [Entry point & chạy chương trình](main-function.md) — strip vs tsc
 - [exceptions.md](exceptions.md) — đừng tin metadata như runtime type
+
+- [Test output/pipeline thực tế](testing.md)

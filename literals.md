@@ -1,6 +1,6 @@
 # Literal
 
-**Literal** là giá trị viết trực tiếp trong mã nguồn. JavaScript/TypeScript hỗ trợ literal cho số, `bigint`, chuỗi, boolean, `null`/`undefined`, regex, template, cũng như object/array literal. TypeScript bổ sung `as const`, literal types, và cầu nối với union hẹp. Baseline: **ES2024+ trên Node 26**, **TypeScript 7**.
+**Literal** là giá trị viết trực tiếp trong mã nguồn. JavaScript/TypeScript hỗ trợ literal cho số, `bigint`, chuỗi, boolean, `null`, regex, template, cũng như object/array literal. `undefined` là identifier của global binding, không phải literal. TypeScript bổ sung `as const`, literal types, và cầu nối với union hẹp. Baseline: **ES2024+ trên Node 26**, **TypeScript 7**.
 
 > Thời gian: chuỗi ngày (`"2026-07-29"`) nên parse qua **`Temporal.PlainDate.from(...)`** trên Node 26 khi cần lịch/timezone nghiêm — xem [nodejs-apis.md](nodejs-apis.md) §13. Không dùng `new Date(string)` làm nguồn sự thật. Temporal **không** có cú pháp literal riêng trong ngôn ngữ; ISO string + factory là cầu nối literals-adjacent.
 
@@ -8,28 +8,36 @@
 
 ## Mục lục
 
-1. [Tổng quan](#1-tổng-quan)
-2. [Number literals](#2-number-literals)
-3. [Tiền tố `0o` / `0x` / `0b`](#3-tiền-tố-0o--0x--0b)
-4. [BigInt (`n`) vs Number](#4-bigint-n-vs-number)
-5. [Numeric separators `_`](#5-numeric-separators-)
-6. [String literals & escape](#6-string-literals--escape)
-7. [Template literals](#7-template-literals)
-8. [Tagged templates: cooked vs raw](#8-tagged-templates-cooked-vs-raw)
-9. [Template injection](#9-template-injection)
-10. [Boolean, `null`, `undefined`](#10-boolean-null-undefined)
-11. [Regular expression literals](#11-regular-expression-literals)
-12. [Object literals: shorthand, computed, `__proto__`](#12-object-literals-shorthand-computed-__proto__)
-13. [Array literals & trailing commas](#13-array-literals--trailing-commas)
-14. [`as const` & bảng widen](#14-as-const--bảng-widen)
-15. [JSON vs JS literals](#15-json-vs-js-literals)
-16. [Temporal (literals-adjacent)](#16-temporal-literals-adjacent)
-17. [Bẫy thường gặp](#17-bẫy-thường-gặp)
-18. [Best practices](#18-best-practices)
-19. [Checklist](#19-checklist)
-20. [Cheat sheet](#20-cheat-sheet)
-21. [Version notes](#21-version-notes)
-22. [Tài liệu liên quan](#22-tài-liệu-liên-quan)
+- [1. Tổng quan](#1-tổng-quan)
+- [2. Number literals](#2-number-literals)
+- [3. Tiền tố `0o` / `0x` / `0b`](#3-tiền-tố-0o--0x--0b)
+- [4. BigInt (`n`) vs Number](#4-bigint-n-vs-number)
+- [5. Numeric separators `_`](#5-numeric-separators-_)
+- [6. String literals & escape](#6-string-literals--escape)
+- [7. Template literals](#7-template-literals)
+- [8. Tagged templates: cooked vs raw](#8-tagged-templates-cooked-vs-raw)
+  - [8.1 Cooked vs raw](#81-cooked-vs-raw)
+- [9. Template injection](#9-template-injection)
+- [10. Boolean, `null`, `undefined`](#10-boolean-null-undefined)
+- [11. Regular expression literals](#11-regular-expression-literals)
+  - [11.1 `lastIndex` + flag `g`](#111-lastindex--flag-g)
+  - [11.2 Sticky `y`](#112-sticky-y)
+  - [11.3 Unicode `u` vs sets `v`](#113-unicode-u-vs-sets-v)
+  - [11.4 Regex động: `RegExp.escape`](#114-regex-động-regexpescape)
+- [12. Object literals: shorthand, computed, `__proto__`](#12-object-literals-shorthand-computed-__proto__)
+  - [12.1 Shorthand & computed keys](#121-shorthand--computed-keys)
+  - [12.2 `__proto__` — ngữ nghĩa đặc biệt](#122-__proto__--ngữ-nghĩa-đặc-biệt)
+- [13. Array literals & trailing commas](#13-array-literals--trailing-commas)
+- [14. `as const` & bảng widen](#14-as-const--bảng-widen)
+  - [14.1 Bảng widen](#141-bảng-widen)
+- [15. JSON vs JS literals](#15-json-vs-js-literals)
+- [16. Temporal (literals-adjacent)](#16-temporal-literals-adjacent)
+- [17. Bẫy thường gặp](#17-bẫy-thường-gặp)
+- [18. Best practices](#18-best-practices)
+- [19. Checklist](#19-checklist)
+- [20. Cheat sheet](#20-cheat-sheet)
+- [21. Version notes](#21-version-notes)
+- [22. Tài liệu liên quan](#22-tài-liệu-liên-quan)
 
 ---
 
@@ -531,7 +539,7 @@ JSON: `true`/`false`/`null` hợp lệ; `undefined` **không** phải JSON token
 ```ts
 const re = /ab+c/gi;
 const re2 = new RegExp("ab+c", "gi");
-const dyn = new RegExp(escapeRegExp(userInput), "u");
+const dyn = new RegExp(RegExp.escape(userInput), "u"); // Node 26; xem §11.4
 ```
 
 | Khía cạnh | Literal `/.../` | `new RegExp(...)` |
@@ -596,7 +604,7 @@ tok.exec("12-34"); // ["34"]
 
 | Flag | Vai trò |
 |------|---------|
-| `u` | Unicode code point; `\p{...}`; `.` không khớp surrogate lẻ |
+| `u` | Unicode code point; `\p{...}`; `.` đọc surrogate pair như một code point, vẫn có thể khớp lone surrogate |
 | `v` | Unicode **sets** (ES2024 / V8 hiện đại): lồng class, `&&`, `--`, `\q{...}` |
 
 ```ts
@@ -629,6 +637,16 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 ```
+
+### 11.4 Regex động: `RegExp.escape`
+
+```js
+const input = "a+b (x)";
+const exact = new RegExp(`^${RegExp.escape(input)}$`, "u");
+console.log(exact.test(input)); // true; input được coi là literal text
+```
+
+Node 26 có `RegExp.escape`; với runtime cũ kiểm API hoặc polyfill đúng spec. Nó xử lý cả leading character/punctuator/Unicode context, không chỉ thêm backslash cho vài metacharacter. Escape không giới hạn CPU của pattern tùy ý và không bảo vệ ReDoS nếu vẫn cho user chọn pattern. [API semantics](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/escape), [security](security.md).
 
 ---
 
@@ -1056,3 +1074,5 @@ Baseline repo: **Node 26** + **TS 7**.
 - [statements.md](statements.md) — declaration, destructuring, object literal vs block
 - [nodejs-apis.md](nodejs-apis.md) — Temporal, JSON, Buffer
 - [exceptions.md](exceptions.md) — ném khi `JSON.parse` / `JSON.stringify` BigInt
+
+- [Regex/input budgets](security.md)

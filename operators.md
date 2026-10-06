@@ -6,30 +6,33 @@ Tham chiếu toán tử theo **ECMAScript hiện đại** (Node **26**) và ghi 
 
 ## Mục lục
 
-1. [Tổng quan & nguyên tắc](#1-tổng-quan--nguyên-tắc)
-2. [Bảng ưu tiên đầy đủ](#2-bảng-ưu-tiên-đầy-đủ)
-3. [Số học & `**` kết hợp phải](#3-số-học--kết-hợp-phải)
-4. [Bảng coercion `==`](#4-bảng-coercion-)
-5. [`===` vs `Object.is`](#5--vs-objectis)
-6. [Logic: `!` `&&` `||`](#6-logic------)
-7. [`??` vs `||`](#7--vs-)
-8. [`?.` short-circuit vs `&&`](#8--short-circuit-vs-)
-9. [Gán & gán hợp](#9-gán--gán-hợp)
-10. [Spread & rest `...`](#10-spread--rest-)
-11. [Bitwise signed 32 & `>>>`](#11-bitwise-signed-32--)
-12. [Comma, `void 0`, `?:`, grouping](#12-comma-void-0--grouping)
-13. [`typeof` — bảng kết quả](#13-typeof--bảng-kết-quả)
-14. [`in` vs `Object.hasOwn`](#14-in-vs-objecthasown)
-15. [`instanceof` + realms](#15-instanceof--realms)
-16. [`delete` configurable](#16-delete-configurable)
-17. [`new`, `new.target`](#17-new-newtarget)
-18. [TypeScript: `as`, `satisfies`, `is`, `!`, `keyof`, `typeof`](#18-typescript-as-satisfies-is--keyof-typeof)
-19. [Bẫy thường gặp](#19-bẫy-thường-gặp)
-20. [Best practices](#20-best-practices)
-21. [Checklist](#21-checklist)
-22. [Cheat sheet](#22-cheat-sheet)
-23. [Version notes](#23-version-notes)
-24. [Tài liệu liên quan](#24-tài-liệu-liên-quan)
+- [1. Tổng quan & nguyên tắc](#1-tổng-quan--nguyên-tắc)
+- [2. Bảng ưu tiên đầy đủ](#2-bảng-ưu-tiên-đầy-đủ)
+- [3. Số học & `**` kết hợp phải](#3-số-học---kết-hợp-phải)
+- [4. Bảng coercion `==`](#4-bảng-coercion-)
+- [5. `===` vs `Object.is`](#5--vs-objectis)
+- [6. Logic: `!` `&&` `||`](#6-logic---)
+- [7. `??` vs `||`](#7--vs-)
+- [8. `?.` short-circuit vs `&&`](#8--short-circuit-vs-)
+- [9. Gán & gán hợp](#9-gán--gán-hợp)
+- [10. Spread & rest `...`](#10-spread--rest-)
+- [11. Bitwise signed 32 & `>>>`](#11-bitwise-signed-32--)
+- [12. Comma, `void 0`, `?:`, grouping](#12-comma-void-0--grouping)
+  - [`void 0`](#void-0)
+- [13. `typeof` — bảng kết quả](#13-typeof--bảng-kết-quả)
+- [14. `in` vs `Object.hasOwn`](#14-in-vs-objecthasown)
+- [15. `instanceof` + realms](#15-instanceof--realms)
+- [16. `delete` configurable](#16-delete-configurable)
+- [17. `new`, `new.target`](#17-new-newtarget)
+  - [17.1 `yield` / `yield*` (operator, không phải statement thuần)](#171-yield--yield-operator-không-phải-statement-thuần)
+  - [17.2 Precedence khác evaluation order](#172-precedence-khác-evaluation-order)
+- [18. TypeScript: `as`, `satisfies`, `is`, `!`, `keyof`, `typeof`](#18-typescript-as-satisfies-is--keyof-typeof)
+- [19. Bẫy thường gặp](#19-bẫy-thường-gặp)
+- [20. Best practices](#20-best-practices)
+- [21. Checklist](#21-checklist)
+- [22. Cheat sheet](#22-cheat-sheet)
+- [23. Version notes](#23-version-notes)
+- [24. Tài liệu liên quan](#24-tài-liệu-liên-quan)
 
 ---
 
@@ -175,7 +178,7 @@ const b = x++; // 2, x === 3
 
 ## 4. Bảng coercion `==`
 
-Abstract Equality (`==`) **không** đối xứng theo trực giác. Quy tắc tóm tắt (spec `IsLooselyEqual`):
+Abstract Equality (`==`) đối xứng (`a == b` và `b == a`), nhưng coercion dễ trái trực giác. Quy tắc tóm tắt (spec `IsLooselyEqual`):
 
 1. Cùng kiểu → gần như `===` (trừ `NaN`).
 2. `null == undefined` → **true** (và ngược lại); không coerce sang số.
@@ -690,7 +693,7 @@ Object.hasOwn({}, "toString"); // false
 
 | API | Own? | Inherited? | Primitive receiver |
 |-----|------|------------|--------------------|
-| `key in obj` | có | **có** (enumerable hoặc không, string/symbol key) | box; `in` với `null`/`undefined` → TypeError |
+| `key in obj` | có | **có** (enumerable hoặc không, string/symbol key) | RHS phải là object; mọi primitive → TypeError |
 | `Object.hasOwn(obj, key)` | **chỉ own** | không | TypeError nếu nullish |
 | `Object.prototype.hasOwnProperty.call` | own | không | dễ quên `.call`; key có thể bị shadow `hasOwnProperty` |
 | `Object.keys` | own enumerable string | không | |
@@ -855,19 +858,18 @@ function* g() {
 
 ---
 
-### 17.2 Thứ tự đánh giá (nhắc)
+### 17.2 Precedence khác evaluation order
 
-1. Grouping.
-2. Member/call trái → phải; `?.` có thể dừng.
-3. Unary phải.
-4. `**` phải.
-5. Binary trái (trừ `?:` / gán phải).
-6. Short-circuit: RHS `&&`/`||`/`??`/`?.`/`&&=`/`||=`/`??=` **không** chạy nếu không cần.
+Precedence/grouping quyết định cây biểu thức; associativity quyết định cách nhóm operator cùng ưu tiên. Chúng không làm các operand function call chạy từ phải sang trái. JS đánh giá operand theo thứ tự trái → phải, trừ nhánh không được chọn của short-circuit/conditional.
 
 ```ts
+f() + g() * h(); // gọi f, g, h; nhân kết quả g*h trước khi cộng
+f() ** g() ** h(); // gọi f, g, h; nhóm f ** (g ** h)
 a() && b(); // b không chạy nếu a() falsy
-obj?.[c()]; // c() không chạy nếu obj nullish
+obj?.[c()]; // c không chạy nếu obj nullish
 ```
+
+Getter, Proxy và coercion có side effect riêng khi bước đọc/chuyển đổi xảy ra. Tránh dùng biểu thức nhiều side effect làm giao thức thứ tự; tách thành statement khi cần kiểm soát. [ECMAScript expressions](https://tc39.es/ecma262/multipage/ecmascript-language-expressions.html).
 
 ---
 
@@ -1006,7 +1008,7 @@ type K = keyof User; // "id" | "n"
 | int32 | `n \| 0` |
 | Bỏ giá trị | `void expr` (có chủ đích) |
 | `undefined` không shadow | `void 0` |
-| Giữ literal + check | `satisfies` |
+| Check shape, giữ suy luận | `as const satisfies T` |
 | Predicate | `x is T` |
 | Keys / type-of-value | `keyof T` / `typeof v` (type pos.) |
 
@@ -1048,3 +1050,5 @@ Baseline: **Node 26** + **TS 7**.
 - [functions-methods.md](functions-methods.md) — `this` với `(0, obj.m)()`
 - [functions-callbacks.md](functions-callbacks.md) — rest params
 - [exceptions.md](exceptions.md) — `throw`, `instanceof Error`
+
+- [Object keys & prototype pollution](security.md)
