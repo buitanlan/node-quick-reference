@@ -258,7 +258,7 @@ p.abort(new Error("client"));
 
 Hợp lệ và phổ biến (nhiều callee tự `any` với cùng request signal). Hệ quả:
 
-- Mỗi `any` gắn listener lên nguồn — parent **sống lâu** (process-level `SIGINT` controller) + `any` per request **không gỡ** → leak listener. Request-scoped parent thì OK (cùng đời request).
+- Theo chuẩn WHATWG DOM và Node 22.x+/24/26, `AbortSignal.any()` giữ liên kết bằng **weak references** nội bộ: derived signal được GC bình thường khi không còn tham chiếu mạnh (kể cả khi parent là process-level `SIGINT` controller). Leak thật đến từ việc bạn **tự gắn `addEventListener("abort", ...)` mà không gỡ** hoặc **cache/giữ strong reference** tới các derived signal trên parent sống lâu.
 - Kim cương không “abort hai lần” trên P; P idempotent. D abort một lần theo nhánh nhanh hơn.
 - Đừng tạo `any([s1, s2])` nếu chỉ cần P — thừa; truyền P hoặc một derived.
 
@@ -350,6 +350,17 @@ function onAbort(signal: AbortSignal, fn: () => void): () => void {
 
 `throwIfAborted()` đầu hàm **và** trước vòng lặp / I/O đắt — tránh mở fd rồi mới biết đã hủy.
 
+**Fan-out nhiều listener & `util.aborted`:**
+
+- `AbortSignal` có ngưỡng mặc định 10 listener trước khi Node phát `MaxListenersExceededWarning`. Khi một signal dùng chung fan-out sang nhiều nhánh (>10 tác vụ song song hoặc process shutdown signal), nâng ngưỡng tường minh bằng `events.setMaxListeners(n, signal)` (không lạm dụng để che leak listener thật):
+  ```ts
+  import { setMaxListeners } from "node:events";
+
+  const ac = new AbortController();
+  setMaxListeners(50, ac.signal);
+  ```
+- `util.aborted(signal, resource)` (từ `node:util`): trả về `Promise<void>` resolve khi `signal` abort, nhưng chỉ giữ **weak reference** tới `resource` — nếu `resource` bị GC trước khi `signal` abort thì Promise đó cũng được thu hồi thay vì giữ leak listener trên signal sống lâu.
+
 > Event `"abort"` không cancelable; không `preventDefault`. Không dùng `signal` làm EventEmitter Node (`on("abort")` trên AbortSignal là DOM EventTarget — `once` option khác `emitter.once`).
 
 ---
@@ -363,7 +374,7 @@ function onAbort(signal: AbortSignal, fn: () => void): () => void {
 | `fs/promises` | `readFile` / `writeFile` có `{ signal }`; không suy ra `copyFile`/`cp` hay mọi method đều nhận |
 | `stream/promises` | `pipeline(src, …, dest, { signal })` |
 | `timers/promises` | `setTimeout(ms, undefined, { signal })` |
-| `child_process` | `promisify(execFile)(file, args, { signal })` — [threading.md](threading.md#44-promise-api) |
+| `child_process` | `spawn(cmd, args, { signal })`, `fork(mod, args, { signal })`, `promisify(execFile)(file, args, { signal })` — [threading.md](threading.md#44-promise-api) |
 
 ### 5.1 `fetch` abort ≠ “HTTP cancel” phía server
 
@@ -378,14 +389,15 @@ Client `abort()`:
 ```ts
 const ac = new AbortController();
 const res = await fetch(url, { signal: ac.signal });
-try {
-  return await res.json();
-} finally {
-  if (!res.bodyUsed) await res.body?.cancel();
+if (!res.ok) {
+  await res.body?.cancel(); // giải phóng kết nối khi không đọc body
+  throw new Error(`HTTP ${res.status}`);
 }
+// res.json() khóa (lock) và consume stream; không cần (và không được) cancel sau khi đã gọi json()
+return await res.json();
 ```
 
-Timeout **chỉ** `Promise.race` không abort → TCP/HTTP vẫn sống. Timeout thật: `AbortSignal.timeout` hoặc `any`.
+Timeout **chỉ** `Promise.race` không abort → TCP/HTTP vẫn sống. Timeout thật: `AbortSignal.timeout` hoặc `any`. Lưu ý HTTP/2 multiplex dùng `RST_STREAM` cho từng stream trong khi session vẫn giữ, nên số active sockets không giảm 1-1 theo số lần abort; với HTTP/1.1 abort giữa body, kết nối thường không được reuse.
 
 ### 5.2 Undici `Dispatcher` / `Agent`
 
@@ -394,20 +406,20 @@ Timeout **chỉ** `Promise.race` không abort → TCP/HTTP vẫn sống. Timeout
 ```ts
 import { Agent, request } from "undici";
 
+// Khởi tạo Agent ở module/app scope để dùng lại connection pool; đóng lúc shutdown bằng agent.close()
 const agent = new Agent({ connections: 16 });
-try {
+
+async function fetchJson(url: string, signal: AbortSignal) {
   const { statusCode, body } = await request(url, {
     dispatcher: agent,
     signal,
     method: "GET",
   });
-  try {
-    return await body.json();
-  } finally {
-    body.destroy(); // dọn nếu chưa consume hết
+  if (statusCode < 200 || statusCode >= 300) {
+    await body.dump(); // đọc bỏ hết body để giữ HTTP/1.1 keep-alive (thay vì body.destroy())
+    throw new Error(`HTTP ${statusCode}`);
   }
-} finally {
-  // KHÔNG destroy agent vì một abort request
+  return await body.json(); // đã consume xong stream — không gọi body.destroy() sau đó
 }
 ```
 
@@ -457,14 +469,23 @@ http.createServer((req, res) => {
       if (!res.destroyed) res.destroy();
       return;
     }
-    if (!res.headersSent) res.writeHead(500);
-    res.end();
     console.error(err);
+    if (!res.destroyed) {
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end();
+      } else {
+        // Headers đã gửi: destroy socket để client nhận lỗi mạng thay vì body bị cắt cụt (silent truncation).
+        res.destroy(err instanceof Error ? err : undefined);
+      }
+    }
   });
 });
 ```
 
-Framework (Fastify/Hono/…): dùng `req.signal` (nếu có) làm parent.
+Framework có sẵn `req.signal` (Hono, Undici, …): dùng `req.signal` làm parent và compose bằng `AbortSignal.any([req.signal, ...])`, đừng tạo controller rời mà quên nối với `req.signal`.
+
+Lưu ý về timeout tầng server: `req.socket.on("timeout")` (từ option `timeout`) và `http.Server` `requestTimeout` / `headersTimeout` chỉ ngắt socket/request ở tầng HTTP — vẫn cần nối vào `ac.abort(...)` (thường qua `res`/`req` `'close'`) để dừng JS và fan-out phía sau.
 
 ### 5.6 `IncomingMessage`: `aborted` / `close` / `destroy`
 
@@ -474,10 +495,10 @@ Trên `http.IncomingMessage` (Node):
 |-----------------|-----|
 | `'aborted'` | Client abort request (legacy; vẫn gặp) |
 | `'close'` trên `req` | Request message hoàn tất/đóng; `!req.complete` mới là request bị cắt. Theo dõi response bằng `res.close` + `!res.writableFinished` |
-| `req.aborted` | Boolean (deprecated hướng) — đừng làm nguồn sự thật duy nhất |
+| `req.aborted` | Boolean — **chính thức deprecated** từ Node 16.12 / 17.0; dùng `'close'` + `!req.complete` / `!res.writableFinished` |
 | `req.destroy(err)` | Hủy socket phía server |
 
-Abort **sau** `res.writeHead(200)`: không “đổi” thành 499 — headers đã đi. Chỉ dừng work còn lại (DB, fan-out). Metric: `canceled_after_headers`.
+Abort **sau** `res.writeHead(200)`: không “đổi” thành 499 — headers đã đi. Chỉ dừng work còn lại (DB, fan-out); nếu handler lỗi giữa chừng sau khi đã gửi headers, gọi `res.destroy(err)` thay vì `res.end()` để tránh client hiểu nhầm response hợp lệ bị cắt cụt. Metric: `canceled_after_headers`. Nếu nghiệp vụ buộc phải hoàn tất dù client ngắt, dùng handler idempotent + tách job nền (detach + timeout riêng, §3.4).
 
 Body request chưa đọc hết khi client ngắt: `req` emit error/close; `pipeline(req, …)` với signal liên kết `close` tránh treo parser.
 
@@ -537,6 +558,8 @@ als.run({ reqId: crypto.randomUUID() }, () => {
 
 Snapshot tại `await` (continuation restore store của `run`) — [async.md](async.md) §16.
 
+Từ **Node 24/26**, **`AsyncContextFrame`** (dựa trên V8 continuation preserved embedder data) là backend mặc định của `AsyncLocalStorage`, thay thế `async_hooks` legacy và giảm mạnh chi phí propagation trên đường nóng. Cờ `--no-async-context-frame` chỉ là fallback khi cần tương thích với thư viện cũ còn dựa vào hành vi `async_hooks`.
+
 ### 7.1 `run` vs `enterWith`
 
 | | `run(store, fn)` | `enterWith(store)` |
@@ -588,7 +611,7 @@ als.run({ reqId: "A" }, () => {
 });
 ```
 
-`exit(fn)` chạy `fn` **ngoài** store hiện tại (fire-and-forget audit không nên giữ user PII từ ALS — hoặc `run` store khác). `disable()`: mọi `getStore()` → `undefined` đến `run`/`enterWith` kế; cần trước khi GC instance ALS (hiếm trên server sống lâu).
+`exit(fn)` chạy `fn` **ngoài** store hiện tại (fire-and-forget audit không nên giữ user PII từ ALS — hoặc `run` store khác). `disable()`: mọi `getStore()` → `undefined` đến `run`/`enterWith` kế; trên backend `AsyncContextFrame` mặc định (Node 24/26) việc GC instance ALS không còn gánh chi phí hook toàn cục như `async_hooks` legacy (chủ yếu chỉ cần lưu ý nếu chạy `--no-async-context-frame`).
 
 Node 24+: `new AsyncLocalStorage({ name: "req", defaultValue })` — `getStore()` ngoài `run` trả `defaultValue` thay `undefined`. **Đừng** `defaultValue` là `AbortController` dùng chung.
 
@@ -596,11 +619,15 @@ Node 24+: `new AsyncLocalStorage({ name: "req", defaultValue })` — `getStore()
 const als = new AsyncLocalStorage<{ reqId: string }>({ name: "http-req" });
 ```
 
-`name` giúp debug async_hooks. `snapshot()` khi bind queue job đã nêu [async.md](async.md) §16.
+`name` giúp nhận diện instance khi debug / inspect `AsyncContextFrame` (và diagnostics). `snapshot()` khi bind queue job đã nêu [async.md](async.md) §16.
 
 ### 7.5 Custom pool: `AsyncResource` & emission context
 
-EventEmitter gọi listener trong context của **lúc emit**, không tự nhớ ALS store của lúc đăng ký. Với custom worker/task queue, tạo `AsyncResource` tại lúc nhận job, gọi callback qua `runInAsyncScope`, rồi `emitDestroy` ở success/fail/cancel. Mỗi job có resource riêng, đừng dùng một resource sống mãi cho cả pool. `snapshot`/`bind` phù hợp callback cần capture đơn giản; message sang worker vẫn phải gửi metadata tường minh. [AsyncResource for worker pools](https://nodejs.org/api/async_context.html#using-asyncresource-for-a-worker-thread-pool).
+EventEmitter gọi listener trong context của **lúc emit**, không tự nhớ ALS store của lúc đăng ký. Với custom worker/task queue:
+
+- Tạo `AsyncResource` tại lúc nhận job, gọi callback qua `runInAsyncScope`, rồi `emitDestroy` ở success/fail/cancel. Mỗi job có resource riêng, đừng dùng một resource sống mãi cho cả pool.
+- Khi custom class kế thừa `EventEmitter` cần tự gắn context của lúc khởi tạo cho mọi lần emit, dùng **`EventEmitterAsyncResource`** từ `node:events` (kết hợp `EventEmitter` + `AsyncResource`, tự động `runInAsyncScope` khi `emit`, gọi `emitDestroy()` khi xong vòng đời).
+- `AsyncLocalStorage.snapshot()` / `bind()` phù hợp callback cần capture đơn giản; message sang worker thread vẫn phải gửi metadata (`reqId`, trace) tường minh. [AsyncResource for worker pools](https://nodejs.org/api/async_context.html#using-asyncresource-for-a-worker-thread-pool).
 
 ---
 
@@ -608,35 +635,40 @@ EventEmitter gọi listener trong context của **lúc emit**, không tự nhớ
 
 Dispose chạy khi rời block kể cả abort reject — bổ sung listener, không thay thế.
 
+Node.js cung cấp sẵn **`addAbortListener(signal, fn)`** từ `node:events` (ổn định trên Node 22/24/26): trả về object implement `Disposable` (`[Symbol.dispose]`), dùng trực tiếp với `using` mà không cần tự viết class `AbortListener`:
+
 ```ts
-class AbortListener implements Disposable {
-  #off: () => void;
-  constructor(signal: AbortSignal, fn: () => void) {
-    this.#off = onAbort(signal, fn);
-  }
-  [Symbol.dispose]() {
-    this.#off();
-  }
-}
+import { addAbortListener } from "node:events";
 
 async function watch(signal: AbortSignal) {
-  using _l = new AbortListener(signal, () => socket.destroy());
+  using _l = addAbortListener(signal, () => socket.destroy());
   await using conn = await openConn();
   await conn.readLoop(signal);
 }
 ```
 
+Lưu ý: nếu `signal` đã aborted sẵn, `addAbortListener` gọi `fn` qua `queueMicrotask` (không gọi sync như helper `onAbort` ở §4); nên kết hợp `signal.throwIfAborted()` đầu hàm nếu muốn chặn ngay trước khi mở resource.
+
 Thứ tự LIFO: `conn` dispose trước `_l` nếu khai báo sau — khai báo hook **trước** resource nếu destroy phải xảy ra trong lúc handle còn mở, hoặc destroy trong `asyncDispose` của chính resource.
 
 ```ts
+import { addAbortListener } from "node:events";
+
+type RawHandle = { destroy(): void; close(): Promise<void> };
+
 class Conn implements AsyncDisposable {
-  constructor(private signal: AbortSignal) {
-    this.#stop = onAbort(signal, () => this.handle.destroy());
+  #stop: Disposable;
+  handle: RawHandle;
+
+  constructor(handle: RawHandle, signal: AbortSignal) {
+    // Khởi tạo handle TRƯỚC khi đăng ký abort listener để tránh crash TypeError khi signal đã aborted sẵn;
+    // không dùng parameter property (private signal: ...) để tương thích erasableSyntaxOnly.
+    this.handle = handle;
+    this.#stop = addAbortListener(signal, () => this.handle.destroy());
   }
-  #stop: () => void;
-  handle!: { destroy(): void; close(): Promise<void> };
+
   async [Symbol.asyncDispose]() {
-    this.#stop();
+    this.#stop[Symbol.dispose]();
     await this.handle.close();
   }
 }
@@ -654,7 +686,10 @@ class Conn implements AsyncDisposable {
 async function loadUser(id: string, signal: AbortSignal) {
   signal.throwIfAborted();
   const res = await fetch(`https://api.example/users/${id}`, { signal });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    await res.body?.cancel();
+    throw new Error(`HTTP ${res.status}`);
+  }
   return res.json();
 }
 
@@ -719,6 +754,7 @@ Combinators → [async.md](async.md). Entry / graceful shutdown → [main-functi
 ```ts
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { addAbortListener } from "node:events";
 
 const als = new AsyncLocalStorage<{ reqId: string }>();
 
@@ -735,40 +771,52 @@ async function onRequest(req: IncomingMessage, res: ServerResponse) {
   const reqId = crypto.randomUUID();
 
   await als.run({ reqId }, async () => {
-    using _hook = new AbortListener(signal, () => {
+    using _hook = addAbortListener(signal, () => {
       /* hủy timer phụ */
     });
     try {
       const body = await readJson(req, signal);
-      const result = await Promise.all([
-        loadA(body, signal),
-        loadB(body, signal),
-      ]);
-      if (!res.headersSent) {
+      // Dùng allOrAbort để khi loadA fail thì hủy luôn loadB (tránh leftover chạy nền)
+      const result = await allOrAbort(
+        [(s) => loadA(body, s), (s) => loadB(body, s)],
+        signal,
+      );
+      if (!res.headersSent && !res.destroyed) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(result));
       }
     } catch (e) {
-      if (ac.signal.aborted) {
+      const fromAbort = isAbortError(e) || (signal.aborted && e === signal.reason);
+      if (fromAbort && ac.signal.aborted) {
         if (!res.destroyed) res.destroy(); // metric cancellation có thể ghi 499
         return;
       }
-      if (timeout.aborted) {
+      if (fromAbort && timeout.aborted) {
         if (!res.destroyed) {
-          if (!res.headersSent) res.writeHead(504);
-          res.end();
+          if (!res.headersSent) {
+            res.writeHead(504);
+            res.end();
+          } else {
+            res.destroy(e instanceof Error ? e : undefined);
+          }
         }
         return;
       }
       console.error({ reqId, err: e });
-      if (!res.headersSent) res.writeHead(500);
-      res.end();
+      if (!res.destroyed) {
+        if (!res.headersSent) {
+          res.writeHead(500);
+          res.end();
+        } else {
+          res.destroy(e instanceof Error ? e : undefined);
+        }
+      }
     }
   });
 }
 ```
 
-Fan-out `Promise.all` **cùng** `signal`: khi timeout, cả hai `load*` phải tôn trọng signal — leftover dừng. ALS `reqId` sống qua `await`; **không** lấy `ac` từ ALS.
+Fan-out bằng `allOrAbort`: khi timeout, client ngắt, hoặc một nhánh fail, nhánh còn lại nhận abort ngay — không còn leftover. Đối chiếu lỗi `e` với `isAbortError(e)` / `signal.reason` trước khi bỏ error log để bug thật trùng lúc abort không bị phân loại nhầm thành 499/504 (§6). ALS `reqId` sống qua `await`; **không** lấy `ac` từ ALS.
 
 ### 9.5 `fetch` timeline abort
 
@@ -792,8 +840,18 @@ function isAbortError(e: unknown): boolean {
   if (e instanceof DOMException) {
     return e.name === "AbortError" || e.name === "TimeoutError";
   }
-  if (e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError")) {
-    return true;
+  if (e instanceof Error) {
+    if (
+      e.name === "AbortError" ||
+      e.name === "TimeoutError" ||
+      e.name === "RequestAbortedError"
+    ) {
+      return true;
+    }
+    const code = (e as { code?: unknown }).code;
+    if (code === "ABORT_ERR" || code === "UND_ERR_ABORTED") {
+      return true;
+    }
   }
   return false;
 }
@@ -807,15 +865,15 @@ function isTimeoutError(e: unknown): boolean {
 try {
   await work(signal);
 } catch (e) {
-  if (signal.aborted || isAbortError(e)) {
-    // hủy / timeout có chủ đích — thường không log error-level
+  if (isAbortError(e) || (signal.aborted && e === signal.reason)) {
+    // hủy / timeout có chủ đích — không nuốt bug thật (vd TypeError) trùng lúc abort
     return;
   }
   throw e;
 }
 ```
 
-Đừng `catch` mọi Error rồi nuốt. Kết hợp `signal.aborted` vì `reason` có thể primitive. Xem [exceptions.md](exceptions.md).
+Đừng `catch` mọi Error rồi nuốt, cũng đừng chỉ kiểm `signal.aborted` không đối chiếu `e === signal.reason` (vì bug thật xảy ra ngay sát lúc abort sẽ bị che mất). Đối chiếu `e === signal.reason` vẫn bắt được `reason` primitive. Xem [exceptions.md](exceptions.md).
 
 ---
 
@@ -846,21 +904,27 @@ test("timeout vs cancel", async () => {
   await assert.rejects(() => sleepForever(signal));
   assert.equal((signal.reason as DOMException).name, "TimeoutError");
 });
+
+test("truyền t.signal của node:test xuống I/O", { timeout: 2_000 }, async (t) => {
+  // t.signal tự abort khi test hết timeout hoặc runner dừng — dọn resource tự động
+  await assert.doesNotReject(() => doQuickIo(t.signal));
+});
 ```
 
 | Case | Cách |
 |------|------|
-| Already-aborted | `AbortSignal.abort(reason)` — không cần fake timer |
+| Already-aborted | `AbortSignal.abort(reason)` — tức thì, không qua timers (`timeout(0)` vẫn schedule timer) |
 | Mid-flight | `abort()` sau khi Promise đã start; fake `fetch` treo + abort |
+| Test timeout tích hợp | Dùng **`t.signal`** của `node:test` truyền thẳng xuống SUT / server / fetch |
 | Timeout | `AbortSignal.timeout` **thật** (fake timer không luôn hook timer nội bộ) — dùng delay ngắn hoặc inject clock/`timeout` helper |
 | Diamond / `any` | Abort parent; assert mọi derived `aborted` cùng `reason` |
-| Listener leak | Parent process-level: `dispose` / `once`; optional đếm `listenerCount` nếu EventEmitter |
+| Listener leak | Parent process-level: `dispose` / `once` / `addAbortListener`; optional đếm `listenerCount` nếu EventEmitter |
 | Client disconnect vs bug | Test `req.close` bình thường không abort; `res.close` chưa finish hủy work; không ghi 5xx giả |
 | ALS | `als.run` trong test; assert không abort nhầm request khác |
 
 > **Pitfall:** `sinon.useFakeTimers()` / `@sinonjs/fake-timers` **không đảm bảo** điều khiển `AbortSignal.timeout` (timer C++/libuv). Test timeout: delay ngắn thật, hoặc abstraction `timeoutFn(ms) => AbortSignal` để mock.
 
-Helper `onAbort` đã-aborted: test `fn` gọi **sync** khi `AbortSignal.abort()`, không đợi event.
+Helper `onAbort` đã-aborted: test `fn` gọi **sync** khi `AbortSignal.abort()`, không đợi event (lưu ý `addAbortListener` từ `node:events` gọi qua microtask khi signal đã aborted sẵn).
 
 ```ts
 test("onAbort already-aborted sync", () => {
@@ -879,7 +943,7 @@ test("499 không log 500", async () => {
   try {
     await service(ac.signal);
   } catch (e) {
-    if (ac.signal.aborted || isAbortError(e)) logs.push("canceled");
+    if (isAbortError(e) || (ac.signal.aborted && e === ac.signal.reason)) logs.push("canceled");
     else logs.push("500");
   }
   assert.deepEqual(logs, ["canceled"]);
@@ -904,8 +968,8 @@ Test `AbortSignal.any` diamond: abort `P`, assert `s1.aborted && s2.aborted && d
 10. **CPU loop không check abort** — `throwIfAborted()` định kỳ; CPU nặng → worker ([event-loop.md](event-loop.md)).
 11. **`agent.destroy` vì một abort** — cắt nhầm pool.
 12. **`reason` primitive** — `instanceof Error` fail; chuẩn hóa ở biên.
-13. **Diamond `any` trên parent process-lifetime** — leak listener.
-14. **`fetch` abort quên cancel body** — stream error / hang.
+13. **Giữ strong reference / `addEventListener` thủ công không gỡ trên parent process-lifetime** — gây leak (`AbortSignal.any()` tự dùng weak reference nội bộ nên tự GC khi không bị giữ tham chiếu mạnh).
+14. **`fetch` abort hoặc `!res.ok` quên cancel/dump body** — stream error / mất HTTP/1.1 keep-alive.
 
 ### 12.1 Compose helpers (copy-paste)
 
@@ -924,21 +988,11 @@ export function link(parent: AbortSignal | undefined, deadlineMs?: number): Abor
 }
 
 export function isCanceled(e: unknown, signal?: AbortSignal): boolean {
-  return Boolean(signal?.aborted) || isAbortError(e);
+  return isAbortError(e) || Boolean(signal?.aborted && e === signal.reason);
 }
 ```
 
-Cấm `link()` không parent không deadline trên production I/O — dễ quên timeout. Default: luôn có deadline request.
-
-`AbortSignal.any` tạo object mới mỗi lần — không cache “forever” trên parent process-level trừ khi dispose listener (parent chết cùng process thì OK).
-
-Keep-alive `fetch`: abort một request **không** bắt buộc đóng keep-alive socket sạch nếu body chưa hủy — cancel body. Agent connection reuse sau abort: Undici xử lý; đừng `destroy` Agent.
-
-HTTP/2 multiplex: `RST_STREAM` một stream; session còn. HTTP/1.1 abort giữa body: connection thường không reuse. Đừng kết luận “abort = luôn TCP RST”.
-
-Server đã `writeHead(200)` rồi abort client: không sửa status. Idempotent handler + job queue nếu work phải **xong** dù client đi (detach + timeout, §3.4).
-
-Nhiều `AbortSignal.timeout` trên cùng hàm: mỗi cái một timer. Gộp một deadline.
+Cấm gọi `link()` không parent không deadline trên production I/O — dễ quên timeout. Default: luôn có deadline request. Gộp nhiều timeout trong cùng hàm thành một deadline thay vì tạo nhiều `AbortSignal.timeout` tách rời (mỗi cái tạo một timer). Lưu ý `remainingTimeout(past)` gọi `AbortSignal.timeout(0)` vẫn đi qua hàng đợi timer, khác `AbortSignal.abort()` (aborted tức thì).
 
 ### 12.2 `addEventListener` options `signal`
 
@@ -949,21 +1003,7 @@ et.addEventListener("ping", handler, { signal: lifetime.signal });
 lifetime.abort(); // gỡ handler dù "ping" chưa fire
 ```
 
-AbortSignal là EventTarget: option `{ signal }` của `addEventListener` gỡ listener khi **options.signal** abort — khác `"abort"` event của chính signal. Dùng khi đăng ký listener lên object sống lâu.
-
-`AbortSignal.any` nội bộ gắn listener lên nguồn — GC composite khi không còn reference **và** nguồn không giữ listener. Parent process-level giữ mọi `any()` con nếu bạn cache nhầm.
-
-Test `link()`: parent abort → derived aborted cùng reason; deadline 0 (`Math.max(0, past)`) → timeout gần như ngay (`timeout(0)` vẫn qua timers, không instant như `AbortSignal.abort()`).
-
-`timeout(0)` ≠ already-aborted: vẫn schedule timer; `AbortSignal.abort()` cho stub test tức thì. Fake timers có thể **không** fire `AbortSignal.timeout` — test timeout bằng delay thật ngắn hoặc inject factory.
-
-`fetch` + `keepalive`: abort không luôn đóng TCP ngay trên HTTP/2. Metric “active sockets” không giảm 1-1 với số abort.
-
-`req.socket.on("timeout")` (HTTP server `timeout` option) **khác** `AbortSignal.timeout`: socket timeout destroy connection; bạn vẫn phải abort controller để dừng JS/fan-out. Gắn cả hai: socket timeout → `ac.abort`.
-
-`http.Server` `requestTimeout` / `headersTimeout` (Node) cắt request HTTP; map sang `AbortController` của handler nếu framework không làm. Đừng để JS chạy tiếp sau khi server đã destroy req.
-
-Framework `req.signal` (Hono/undici) đã compose disconnect — đừng tạo thêm controller quên `any` với `req.signal`.
+`AbortSignal` là `EventTarget`: option `{ signal }` của `addEventListener` tự động gỡ listener khi `options.signal` abort — rất gọn khi gắn nhiều listener lên một object sống lâu và muốn dọn tất cả bằng một lệnh `lifetime.abort()`. Khi gắn trên 10 listener vào cùng `lifetime.signal`, gọi `events.setMaxListeners(n, lifetime.signal)` để tránh cảnh báo `MaxListenersExceededWarning`.
 
 ---
 
@@ -983,13 +1023,13 @@ Framework `req.signal` (Hono/undici) đã compose disconnect — đừng tạo t
 ```text
 □ I/O propagate signal; timeout/deadline compose với parent
 □ throwIfAborted / already-aborted trước khi mở resource
-□ Listener once hoặc remove / using; parent dài hạn không leak any()
-□ fetch/fs/pipeline/timers/undici.request nhận signal thật
-□ fetch abort: cancel/consume body; không destroy Agent
-□ AbortError → 499/cancel metric, không 500
+□ Listener once hoặc remove / using (`addAbortListener`); không giữ strong ref thừa trên parent dài hạn
+□ fetch/fs/pipeline/timers/undici.request/spawn/fork nhận signal thật
+□ fetch/undici: cancel hoặc dump body khi không đọc; không destroy Agent
+□ AbortError → 499/cancel metric, không 500; không nuốt bug trùng lúc abort
 □ ALS run + snapshot; không giấu AbortController
 □ Fan-out abort leftover; SIGINT/SIGTERM → root abort
-□ Test already-aborted + mid-flight + timeout
+□ Test already-aborted + mid-flight + timeout + `t.signal`
 ```
 
 ---
@@ -1000,13 +1040,13 @@ Framework `req.signal` (Hono/undici) đã compose disconnect — đừng tạo t
 |---------------|------|
 | `AbortController` / `abort(reason)` | tạo & hủy; reason lần đầu |
 | `throwIfAborted` / `aborted` / `reason` | trạng thái (`reason` là `any`) |
-| `AbortSignal.timeout` / `.any` / `.abort` | timeout / gộp / stub |
-| `onAbort` (check aborted trước listen) | cleanup an toàn |
-| `{ signal }` fetch / fs / pipeline / `request` | hủy thật |
+| `AbortSignal.timeout` / `.any` / `.abort` | timeout / gộp (weak ref) / stub |
+| `addAbortListener` / `onAbort` | cleanup an toàn (`using` / sync check) |
+| `events.setMaxListeners(n, signal)` / `util.aborted` | fan-out >10 listeners / weak-ref Promise |
+| `{ signal }` fetch / fs / pipeline / `request` / `spawn` | hủy thật |
 | `agent.close` vs `destroy` vs request `signal` | shutdown vs một request |
-| `AsyncLocalStorage.run` / `snapshot` | request values |
-| `using` + abort listener | dispose + hủy |
-| 499 vs 500 | client cancel vs bug |
+| `AsyncLocalStorage.run` / `snapshot` / `EventEmitterAsyncResource` | request values (`AsyncContextFrame`) |
+| 499 vs 500 / `res.destroy(err)` sau `headersSent` | client cancel vs bug (tránh silent truncation) |
 | `isAbortError` / `isTimeoutError` | phân nhánh |
 
 ```ts
@@ -1016,7 +1056,7 @@ async function handle(reqSignal: AbortSignal) {
     try {
       return await service(signal);
     } catch (e) {
-      if (signal.aborted || isAbortError(e)) return;
+      if (isAbortError(e) || (signal.aborted && e === signal.reason)) return;
       throw e;
     }
   });
@@ -1030,13 +1070,15 @@ async function handle(reqSignal: AbortSignal) {
 | Mốc | Ghi chú |
 |-----|---------|
 | AbortController trên Node | ổn định từ ~16+ |
+| `req.aborted` | chính thức **deprecated** từ Node 16.12 / 17.0 |
 | `AbortSignal.timeout` | 17.3+ / 16.14+ |
-| `AbortSignal.any` | 20.3+; thoải mái trên **26** |
-| `throwIfAborted` / `reason` | Web IDL / Node hiện đại |
-| fs + signal, fetch/undici | baseline **26** |
+| `AbortSignal.any` | 20.3+ (weak references theo spec WHATWG); ổn định trên **26** |
+| `addAbortListener` / `EventEmitterAsyncResource` | `node:events`, ổn định trên Node 22/24/26 |
+| `util.aborted(signal, resource)` | `node:util`, weak-ref Promise chờ abort |
+| `AsyncContextFrame` (`AsyncLocalStorage`) | backend **mặc định** từ Node 24/26 (thay `async_hooks` legacy; `--no-async-context-frame` là fallback) |
 | `AsyncLocalStorage.snapshot` / `bind` | ổn định 22.15+ / 23.11+ |
 | `enterWith` | dễ leak — không dùng cho request boundary |
-| ERM `using` | Ngữ pháp native Node 24/26; symbol/API dispose có version gate riêng |
+| ERM `using` | Ngữ pháp native Node 24/26; `addAbortListener` trả `Disposable` dùng trực tiếp với `using` |
 
 ---
 

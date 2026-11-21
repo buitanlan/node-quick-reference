@@ -2,7 +2,7 @@
 
 Package managers, scripts, lockfiles, semver, ESLint/Prettier, và runners TypeScript trên baseline **Node.js 26** + **TypeScript 7**.
 
-> **Callout:** Chọn **một** package manager cho cả repo và commit **lockfile**. pnpm mặc định **isolated** `node_modules` (không hoist lung tung). Node **24** còn Active LTS tại ngày rà soát; xem [README](README.md). Xem [tsconfig.md](tsconfig.md).
+> **Callout:** Chọn **một** package manager cho cả repo và commit **lockfile**. pnpm mặc định **isolated** `node_modules` (không hoist lung tung). Baseline: **Node.js 26 Active LTS ("Lithium", từ 2026-10-28)**; Node **24** ở nhánh Maintenance LTS (xem [README](README.md)). Xem [tsconfig.md](tsconfig.md).
 
 ---
 
@@ -67,7 +67,7 @@ Package managers, scripts, lockfiles, semver, ESLint/Prettier, và runners TypeS
   "engines": {
     "node": ">=26"
   },
-  "packageManager": "pnpm@9.15.0",
+  "packageManager": "pnpm@10.20.0",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
@@ -83,7 +83,7 @@ Package managers, scripts, lockfiles, semver, ESLint/Prettier, và runners TypeS
     "@types/node": "^26.0.0",
     "typescript": "^7.0.0",
     "tsx": "^4.0.0",
-    "eslint": "^9.0.0"
+    "eslint": "^10.0.0"
   }
 }
 ```
@@ -170,7 +170,7 @@ describe("sum", () => {
 {
   "engines": {
     "node": ">=26 <27",
-    "pnpm": ">=9"
+    "pnpm": ">=10"
   }
 }
 ```
@@ -245,7 +245,7 @@ pnpm audit
 
 `peerDependencies` + `peerDependenciesMeta`: `{ "optional": true }` — plugin không bắt buộc. pnpm mặc định **nghiêm** peer: thiếu peer → warning/error (`auto-install-peers` tùy config). npm 7+ tự cài peer — tree khác pnpm. **Đây** là lý do “npm xanh, pnpm đỏ”.
 
-`optionalDependencies`: native (`sharp`, `fsevents`) fail trên OS lạ **không** fail cả install. Code phải `try/catch require`.
+`optionalDependencies`: native (`sharp`, `fsevents`) fail trên OS lạ **không** fail cả install. Trong ESM, load động qua `try { await import("pkg") } catch { ... }` để fallback mềm.
 
 `bundledDependencies`: pack kèm tarball — hiếm; tăng size; cẩn thận license.
 
@@ -304,13 +304,9 @@ Không commit cả `package-lock.json` **và** `pnpm-lock.yaml`. Xóa lock tool 
 
 `public-hoist-pattern[]=*eslint*` — chỉ tool phẳng. Pattern càng rộng càng gần npm.
 
-`neverBuiltDependencies` / `onlyBuiltDependencies` (pnpm): chặn `postinstall` compile native bất ngờ — supply chain. Allowlist `esbuild`, `sharp` khi cần.
+Trên **pnpm 10+**, dependency lifecycle scripts (`preinstall` / `install` / `postinstall` của package trong `node_modules`) bị **chặn mặc định** để bảo vệ supply chain. Muốn cho phép package biên dịch native hoặc tải binary hợp lệ (`esbuild`, `sharp`, …), khai allowlist tường minh trong **`pnpm-workspace.yaml`** qua `onlyBuiltDependencies` (hoặc duyệt tương tác bằng `pnpm approve-builds`, và loại trừ tường minh bằng `ignoredBuiltDependencies`). Các mục `overrides`, `onlyBuiltDependencies`, `patchedDependencies` trên pnpm 10+ đặt chuẩn trong `pnpm-workspace.yaml`.
 
-`ignoredBuiltDependencies` (tên tùy bản): tương tự. Review `pnpm install` log “Running lifecycle scripts”. `ignore-scripts=true` CI + chạy script cần **tường minh** (esbuild binary).
-
-`pnpm config list` / `npm config list` debug registry. `shamefully-hoist` chỉ khi tool gãy isolated — ghi README ngày gỡ.
-
-`pnpm install --prod` image runtime. `pnpm fetch` + offline CI (store). `shamefully-hoist` + serverless no-symlink: `nodeLinker=hoisted` lúc deploy, không đổi laptop nếu không cần.
+`pnpm config list` / `npm config list` debug registry. `pnpm install --prod` cho image runtime; `pnpm fetch` + offline CI cho cache store.
 
 ---
 
@@ -347,7 +343,7 @@ Yarn: `yarn dlx` tương tự. Đừng xen `npx` trong script pnpm trừ khi c�
 | Thêm dep | `npm i pkg` | `pnpm add pkg` | `yarn add pkg` |
 | Dev dep | `npm i -D pkg` | `pnpm add -D pkg` | `yarn add -D pkg` |
 | Script | `npm run x` | `pnpm x` | `yarn x` |
-| Binary local | `npx eslint` (lệch) | `pnpm exec eslint` | `yarn eslint` |
+| Binary local | `npm exec -- eslint` / `npx --no-install eslint` | `pnpm exec eslint` | `yarn eslint` |
 | One-shot | `npx pkg@1` | `pnpm dlx pkg@1` | `yarn dlx pkg@1` |
 | Filter | `-w pkg` | `--filter pkg` | `yarn workspace pkg` |
 | Why | `npm ls pkg` | `pnpm why pkg` | `yarn why pkg` |
@@ -417,33 +413,37 @@ Thực tế: **pnpm** phổ biến monorepo; **npm** đủ app đơn; **yarn** f
 
 ## 9. Corepack
 
-Corepack được bundled từ Node 14.19 đến trước 25; **Node 26 không kèm Corepack**. Cài riêng phiên bản được team ghim, hoặc dùng installer/action của package manager. Corepack đọc `packageManager` để chọn pnpm/yarn; field này không tự cài shim. [Corepack distribution](https://github.com/nodejs/corepack#corepack).
+Corepack được bundled từ Node 14.19 đến trước 25; **Node 26 không kèm Corepack**. Cài riêng phiên bản được team ghim, dùng installer/action của package manager, hoặc tận dụng **`manage-package-manager-versions`** của **pnpm 10+** (bật mặc định): chính `pnpm` tự đọc trường `packageManager` trong `package.json` và tải/chạy đúng bản pnpm đã ghim mà không cần cài Corepack. [Corepack distribution](https://github.com/nodejs/corepack#corepack).
 
 ```bash
-# Node 26: cài riêng Corepack đã ghim phiên bản trước bước này
+# Cách 1 (Node 26 + pnpm 10+): dùng manage-package-manager-versions tích hợp sẵn trong pnpm (không cần Corepack)
+pnpm --version   # tự khớp version trong "packageManager"
+
+# Cách 2: cài riêng Corepack đã ghim phiên bản trước bước này
 corepack enable
-corepack prepare pnpm@9.15.0 --activate
+corepack prepare pnpm@10.20.0 --activate
 ```
 
 - Ghim version tool → CI = laptop.
 - npm **không** bị Corepack chặn mặc định (shim npm tắt) — vẫn có thể `npm i` nhầm trong repo pnpm. Team: document “chỉ pnpm”; CI chỉ `pnpm`.
-- `corepack enable` cần Corepack đã cài và quyền ghi shim cạnh binary (hoặc `--install-directory` phù hợp). CI có thể dùng action pnpm và không cần Corepack.
-- Node 26: cài Corepack riêng trước `corepack enable`, hoặc dùng pnpm setup; pin phiên bản installer trong image/CI.
+- `corepack enable` cần Corepack đã cài và quyền ghi shim cạnh binary (hoặc `--install-directory` phù hợp). CI dùng `pnpm/action-setup` hoặc `manage-package-manager-versions` và không cần Corepack.
+- Trên môi trường offline/air-gap muốn tắt cơ chế tự tải của pnpm 10+, đặt `managePackageManagerVersions: false` trong `pnpm-workspace.yaml` (hoặc `COREPACK_ENABLE_NETWORK=0` nếu dùng Corepack).
 
 ```json
-{ "packageManager": "pnpm@9.15.0+sha256-…" }
+{ "packageManager": "pnpm@10.20.0+sha256-…" }
 ```
 
 Hash tùy chọn (pin integrity). Đổi version: sửa field + lockfile, PR một lần.
 
-> **Callout:** Corepack **không** thay `engines.node`. Sai Node vẫn chạy sai binary native. Kết hợp `.nvmrc` + `packageManager`.
+> **Callout:** Corepack / `manage-package-manager-versions` **không** thay `engines.node`. Sai Node vẫn chạy sai binary native. Kết hợp `.nvmrc` + `packageManager`.
 
 ### 9.1 Corepack trên CI & Windows
 
 ```yaml
-# Điều kiện: image đã cài phiên bản Corepack được ghim (Node 26 không bundled).
+# Cách gọn trên Node 26 CI: dùng pnpm/action-setup đọc packageManager (không cần Corepack)
+# Hoặc nếu image đã cài sẵn Corepack đã ghim:
 - run: corepack enable
-- run: corepack prepare pnpm@9.15.0 --activate
+- run: corepack prepare pnpm@10.20.0 --activate
 - run: pnpm --version   # phải khớp packageManager
 ```
 
@@ -484,7 +484,7 @@ pnpm audit filter theo advisory id (GHSA), không phải mọi CVE string. `audi
 | Node type stripping | `node src/app.ts` | Chỉ **erasable** TS; Node 26 **không** còn `--experimental-transform-types` |
 | `tsx` | `tsx src/app.ts` / `tsx watch` | Dev transpile; không typecheck, kiểm decorator mode/metadata theo transformer |
 | `ts-node` | `ts-node src/app.ts` | Compiler TS/SWC; ESM + `NodeNext` dễ lệch |
-| `tsc` emit | `tsc && node dist/app.js` | Production rõ; TS 7 (Go) full build ~8–12× nhanh hơn |
+| `tsc` emit | `tsc && node dist/app.js` | Production rõ; TS 7 (native Go) nhanh hơn rõ rệt tùy project/hardware — benchmark trên workload thật |
 
 ```bash
 pnpm exec tsx watch src/index.ts
@@ -496,7 +496,11 @@ Khuyến nghị tsconfig strip-oriented: `erasableSyntaxOnly` + `verbatimModuleS
 
 **TypeScript 7 tooling:**
 
-- CLI: `--checkers`, `--builders`, `--singleThreaded`; `--watch` cải thiện.
+- **Cờ song song CLI (TS 7.0):**
+  - `--checkers <n>` (mặc định **`4`**): số checker chạy song song trong mỗi project.
+  - `--builders <n>`: số project trong `tsc -b` build song song cùng lúc.
+  - `--singleThreaded`: ép chạy đơn luồng để tiết kiệm RAM hoặc debug determinism.
+  - **Lưu ý RAM:** mức tiêu thụ bộ nhớ nhân theo **`--builders × --checkers`** — trên container CI giới hạn RAM, đừng tăng cả hai đồng thời mà chưa đo. `--watch` cũng được tối ưu trên native compiler.
 - TS 7.0 chưa ship compiler API. Tool cần API dùng bridge TS 6 cho đến khi tool hỗ trợ API/version mới thực tế; kế hoạch 7.1 không là bảo đảm ổn định. Xem [tsconfig bridge](tsconfig.md#32-cli-native-và-tool-cần-compiler-api).
 - Packages: `typescript@^7`, `@types/node@^26`; có thể `@tsconfig/node26`.
 
@@ -539,25 +543,28 @@ Nhiều team thay nodemon bằng **`tsx watch`** hoặc `node --watch`. `nodemon
 
 ## 12. ESLint flat config & Prettier
 
-**ESLint 9** flat config (bỏ `.eslintrc` JSON cũ):
+**ESLint 9/10** dùng **flat config** (`eslint.config.js`); từ **ESLint 10**, `.eslintrc*` đã bị **gỡ hoàn toàn**. Dùng helper chuẩn **`defineConfig`** từ `"eslint/config"` (thay `tseslint.config(...)` đã `@deprecated`):
 
 ```js
 // eslint.config.js — ESM khi "type": "module"
+import { defineConfig } from "eslint/config";
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
-export default tseslint.config(
-  js.configs.recommended,
-  ...tseslint.configs.recommended,
+export default defineConfig(
   { ignores: ["dist/**"] },
+  js.configs.recommended,
+  tseslint.configs.recommended,
 );
 ```
 
-CJS repo: `eslint.config.cjs` / `module.exports`. `ignores` trong flat thay `.eslintignore` (vẫn hỗ trợ file ignore — ưu tiên config).
+CJS repo: `eslint.config.cjs` / `module.exports`. `ignores` trong flat thay `.eslintignore` (và `node_modules/**` đã được ESLint bỏ qua mặc định).
 
-`typescript-eslint` typed lint (`parserOptions.project`) **đắt** — bật có chủ đích (`projectService` trên bản mới). TS 7 early: plugin chưa ăn API → bridge `@typescript/typescript6`.
+`typescript-eslint` typed lint (`parserOptions.projectService: true`) **đắt** hơn lint cú pháp thuần — bật kèm `tseslint.configs.recommendedTypeChecked` có chủ đích. TS 7 early: plugin chưa ăn API mới → bridge `@typescript/typescript6`.
 
 **Prettier** — format; **không** lint logic. `eslint-config-prettier` **tắt** rule ESLint đụng format (indent, quotes) — chạy Prettier riêng (script / hook).
+
+**Lựa chọn native tốc độ cao:** Với repo lớn muốn rút ngắn thời gian CI mà không cần toàn bộ hệ sinh thái plugin ESLint, cân nhắc **Biome** (linter + formatter gộp một binary Rust) hoặc **Oxlint** (linter Rust chạy trước ESLint hoặc thay thế phần lớn rule cú pháp/type-aware nhẹ).
 
 ```bash
 pnpm exec prettier -w .
@@ -580,14 +587,15 @@ Không cần `eslint-plugin-prettier` trừ khi muốn format-as-lint (ồn CI).
 ### 12.1 `eslint.config.js` sâu hơn
 
 ```js
+import { defineConfig } from "eslint/config";
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import prettier from "eslint-config-prettier";
 
-export default tseslint.config(
-  { ignores: ["dist/**", "coverage/**", "node_modules/**"] },
+export default defineConfig(
+  { ignores: ["dist/**", "coverage/**"] },
   js.configs.recommended,
-  ...tseslint.configs.recommended,
+  tseslint.configs.recommendedTypeChecked,
   {
     files: ["src/**/*.ts"],
     languageOptions: {
@@ -602,11 +610,11 @@ export default tseslint.config(
 );
 ```
 
-`ignores` **đầu** config — file ignored không parse. `projectService` (typescript-eslint mới) thay `project: true` + `tsconfigRootDir`.
+`ignores` **đầu** config — file ignored không parse (không cần thêm `"node_modules/**"` vì ESLint đã ignore mặc định). Khi đã bật `projectService: true`, dùng `tseslint.configs.recommendedTypeChecked` (hoặc `strictTypeChecked`) thay vì chỉ `recommended` để tận dụng type-aware rules; nhớ disable type-checked rules cho file `.js` nếu cần (`tseslint.configs.disableTypeChecked`). `projectService` thay cho `project: true` + `tsconfigRootDir` kiểu cũ.
 
 CJS: `eslint.config.cjs` + `require`. `"type":"module"` → `eslint.config.js` ESM.
 
-Rule `import/no-unresolved` phải hiểu `exports` / `#imports` — plugin `eslint-plugin-import` cổ **kém** NodeNext; `typescript-eslint` type-aware bắt specifier tốt hơn nếu `project` bật.
+Rule `import/no-unresolved` phải hiểu `exports` / `#imports` — plugin `eslint-plugin-import` cổ **kém** NodeNext; `typescript-eslint` type-aware bắt specifier tốt hơn nếu `projectService` bật.
 
 ### 12.2 Prettier ignore & conflict
 
@@ -629,7 +637,7 @@ Rule `import/no-unresolved` phải hiểu `exports` / `#imports` — plugin `esl
 
 `node --run lint` **bỏ** `prelint`. Hook format (`prelint: prettier`) → `pnpm lint`. CI: `pnpm lint && pnpm exec prettier --check .` tường minh hai bước — không dựa `pre*`.
 
-> **Callout:** Flat config là **default ESLint 9**. Đừng thêm `.eslintrc` “cho chắc” — hai lớp conflict.
+> **Callout:** Flat config là **default ESLint 9** và là **duy nhất trên ESLint 10** (`.eslintrc` đã bị gỡ hoàn toàn). Không tạo `.eslintrc` song song.
 
 Editor: ESLint extension + Prettier format-on-save. `eslint.useFlatConfig` (nếu IDE hỏi).
 
@@ -659,16 +667,14 @@ Audit = advisory (GitHub/npm) trên tree **lockfile**. Nhiều warning transitiv
 }
 ```
 
-pnpm:
+pnpm 10+ (đặt chuẩn trong **`pnpm-workspace.yaml`** cùng `onlyBuiltDependencies` và `patchedDependencies`; đặt trong `package.json` `"pnpm"` là kiểu cũ):
 
-```json
-{
-  "pnpm": {
-    "overrides": {
-      "foo": "1.2.4"
-    }
-  }
-}
+```yaml
+# pnpm-workspace.yaml
+overrides:
+  foo: 1.2.4
+onlyBuiltDependencies:
+  - esbuild
 ```
 
 (Yarn: `resolutions`.)
@@ -765,13 +771,23 @@ Windows/macOS matrix: native addon; JS thuần Ubuntu đủ.
 - `npm pack --dry-run` trước khi publish.
 
 ```dockerfile
-# ý tưởng multi-stage
-# FROM node:26-bookworm AS build
-#   pnpm install --frozen-lockfile && pnpm build
-# FROM node:26-bookworm-slim
-#   COPY --from=build /app/dist ./dist
-#   COPY --from=build /app/node_modules ./node_modules
-#   CMD ["node", "dist/index.js"]
+# Multi-stage: chỉ đưa production dependencies vào image cuối (KHÔNG copy node_modules kèm devDependencies)
+FROM node:26-bookworm AS build
+WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build && pnpm deploy --prod --legacy /prod
+# Hoặc cho single-package repo không dùng workspace:
+# RUN pnpm build && pnpm prune --prod
+
+FROM node:26-bookworm-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /prod/dist ./dist
+COPY --from=build /prod/node_modules ./node_modules
+COPY --from=build /prod/package.json ./
+CMD ["node", "dist/index.js"]
 ```
 
 Prod: chỉ `dependencies` runtime (hoặc bundle). Ghim `node:26-…`, không `latest`. `NODE_ENV=production` ảnh hưởng một số lib (không thay `engines`). Isolated symlink: copy `node_modules` cần `--filter` deploy / `pnpm deploy` (pnpm) thay `cp -r` mù.
@@ -801,7 +817,7 @@ Monorepo lockfile root. `cache: npm` sai nếu pnpm. Restore miss: vẫn `--froz
 ### 14.5 `engines` trên CI
 
 ```yaml
-- run: node -e "const e=require('./package.json').engines.node; if(!e) process.exit(1)"
+- run: node -e "const e = require('./package.json').engines?.node; if (!e) process.exit(1)"
 ```
 
 Hoặc `engine-strict` lúc install. Matrix 24 khi `engines` `>=24` — comment trong YAML **tại sao** còn 24 (khách LTS). Gỡ job 24 khi drop support, bump `engines` **cùng PR**.
@@ -817,7 +833,7 @@ Hoặc `engine-strict` lúc install. Matrix 24 khi `engines` `>=24` — comment 
 7. `typecheck` script riêng — không bỏ vì “tsx đã chạy”.
 8. Corepack `packageManager` đồng bộ pnpm/yarn.
 9. `npx`/`dlx` ghim version; script hằng ngày = `exec` local.
-10. ESLint 9 flat + Prettier tách; ignore `dist`.
+10. ESLint 9/10 flat (`defineConfig`) + Prettier tách (hoặc Biome/Oxlint khi cần tốc độ native); ignore `dist`.
 11. Audit report ≠ auto force; override có lý do CVE và test.
 12. `node --run` khi không cần pre/post; còn lại pnpm/npm run.
 
@@ -865,15 +881,15 @@ pnpm audit
 | Prod emit | `tsc` / bundler |
 | Dev TS đầy đủ syntax | `tsx` |
 | Dev erasable | `node` / `node --watch` |
-| Lint | ESLint 9 flat |
-| Format | Prettier |
+| Lint | ESLint 9/10 flat (`defineConfig`) / Biome / Oxlint |
+| Format | Prettier / Biome |
 | Monorepo | pnpm filter / npm workspaces |
 | One-shot CLI | `pnpm dlx pkg@version` |
 | Script không hook | `node --run name` |
 
 `node --run` không `pre`/`post`. Isolated pnpm bắt phantom dep. Matrix 24/26 khớp `engines`. Audit ≠ override; override có CVE + test.
 
-`npx` vs `pnpm dlx`: ghim version, repo pnpm dùng dlx/exec. ESLint 9 flat + Prettier tách. Corepack `packageManager`. `node --test` đủ service nhỏ.
+`npx` vs `pnpm dlx`: ghim version, repo pnpm dùng dlx/exec. ESLint 9/10 flat + Prettier tách. `manage-package-manager-versions` (pnpm 10+) hoặc Corepack cho `packageManager`. `node --test` đủ service nhỏ.
 
 `.nvmrc` = `26`. Docker `FROM node:26-bookworm`, không `latest`. `packageManager` hash tùy chọn pin integrity.
 
@@ -900,11 +916,11 @@ Husky `prepare` tối giản. `prepublishOnly` typecheck+build. Không `postinst
 | Node 18+ | `node --watch`, `node --test` |
 | Node 22+ | `node --run` |
 | Node 22–24 | type stripping experimental → ổn định |
-| **Node 26** | strip mặc định/ổn định; gỡ transform-types; V8 14.6 |
-| **TS 7.0** | CLI native Go; chưa ship API; tool API dùng bridge TS 6 |
-| ESLint 9 | flat config |
-| pnpm | isolated default; `dlx`; `overrides` |
-| Corepack | `packageManager`; enable tường minh |
+| **Node 26 Active LTS (2026-10-28)** | strip ổn định; gỡ transform-types; không kèm Corepack; V8 14.6+ |
+| **TS 7.0** | CLI native Go (`--checkers`, `--builders`, `--singleThreaded`); chưa ship API; tool API dùng bridge TS 6 |
+| ESLint 9 / 10 | flat config (`defineConfig` từ `"eslint/config"`); ESLint 10 gỡ hoàn toàn `.eslintrc` |
+| pnpm 10+ | isolated default; chặn lifecycle scripts mặc định (`onlyBuiltDependencies`); `overrides` trong `pnpm-workspace.yaml`; `manage-package-manager-versions` |
+| Corepack | không còn bundled từ Node 25/26 — cài riêng hoặc dùng cơ chế tích hợp của pnpm 10+ |
 | pnpm isolated | default; phantom dep phải khai |
 | `node --run` | không pre/post scripts |
 

@@ -1,6 +1,6 @@
 # Toán tử (Operators)
 
-Tham chiếu toán tử theo **ECMAScript hiện đại** (Node **26**) và ghi chú TypeScript **7** khi khác biệt. Ưu tiên thực hành: `===`, `??`, `?.`, spread/rest, gán logic `??=` `&&=` `||=`. Phần assertion/`satisfies`/`keyof` chỉ ở góc toán tử — hệ thống kiểu đầy đủ xem [typesystem.md](typesystem.md).
+Tham chiếu toán tử theo **ECMAScript hiện đại** (**Node.js 26 Active LTS**, V8 14.6+) và ghi chú **TypeScript 7.0** khi khác biệt. Ưu tiên thực hành: `===`, `??`, `?.`, spread/rest, gán logic `??=` `&&=` `||=`. Phần assertion/`satisfies`/`keyof` chỉ ở góc toán tử — hệ thống kiểu đầy đủ xem [typesystem.md](typesystem.md).
 
 ---
 
@@ -58,7 +58,7 @@ const portBetter = process.env.PORT != null && process.env.PORT !== ""
 | Comparison | `=== !== == != < > <= >=` | prefer `===` |
 | Same-value | `Object.is` | không phải toán tử, nhưng cặp với `===` |
 | Logical / nullish | `! && \|\| ?? ?. ` | short-circuit |
-| Assignment | `=` `+=` `??=` … | RHS trước, LHS một lần |
+| Assignment | `=` `+=` `??=` … | **LHS reference đánh giá trước**, sau đó mới đến RHS (`a[i++] = i`); compound chỉ đánh giá LHS một lần |
 | Bitwise | `& \| ^ ~ << >> >>>` | ToInt32 / ToUint32 trên number |
 | Meta | `typeof` `in` `instanceof` `delete` `void` `new` | keyword-ops |
 | TS-only | `as` `satisfies` `is` `!` `keyof` `typeof` | erase |
@@ -91,7 +91,7 @@ Từ **cao → thấp**. Nhóm cùng mức: xem cột kết hợp. Đây là b�
 | 18 | `=` `+=` `-=` `*=` `/=` `%=` `**=` `<<=` `>>=` `>>>=` `&=` `^=` `\|=` `&&=` `\|\|=` `??=` ; `yield` `yield*` | phải |
 | 19 | Comma `,` | trái |
 
-> `**` không cho unary không ngoặc gây ambigu ở trái: `-2 ** 2` là **SyntaxError**; dùng `(-2) ** 2` hoặc `-(2 ** 2)`.
+> **`**` và unary:** Vế **trái** của `**` chỉ nhận `UpdateExpression` (`++x ** 2`, `x++ ** 2` hợp lệ), **cấm** mọi `UnaryExpression` thiếu ngoặc (`-2 ** 2`, `~2 ** 2`, `await a ** 2` đều là **SyntaxError**; phải viết `(-2) ** 2` hoặc `-(2 ** 2)`). Ngược lại, vế **phải** cho phép `UnaryExpression` trực tiếp: `2 ** -3 === 0.125`.
 >
 > `??` không trộn với `||` / `&&` thiếu ngoặc → **SyntaxError** (cùng “nullish/or” zone).
 >
@@ -129,6 +129,11 @@ true || false && false; // true — && cao hơn ||
 7 / 2;    // 3.5 (không chia nguyên)
 7 % 2;    // 1
 2 ** 10;  // 1024
+2 ** -3;  // 0.125 — unary ở vế phải `**` hợp lệ
+```
+
+```js
+// JS runtime (TS chặn unary +/- trên boolean/string bằng lỗi TS2362)
 +true;    // 1
 -"5";     // -5
 ```
@@ -137,7 +142,7 @@ true || false && false; // true — && cao hơn ||
 - BigInt: `10n / 3n` → `3n` (cắt về 0); không trộn `number` trong phép toán số học.
 - `%` với số âm: dấu theo toán hạng trái (C-family): `-7 % 3 === -1`.
 - `**` **associativity phải**: `2 ** 3 ** 2 === 2 ** 9 === 512`.
-- Unary `-`/`+`/`~` **không** đứng sát trái `**` thiếu ngoặc.
+- `UpdateExpression` (`++x ** 2`) hợp lệ ở vế trái `**`; mọi `UnaryExpression` (`-`/`+`/`~`/`await`/`typeof`/`!`) bị cấm ở vế trái nếu không ngoặc, nhưng hợp lệ ở vế phải (`2 ** -3`).
 
 ```ts
 let x = 1;
@@ -156,7 +161,8 @@ const b = x++; // 2, x === 3
 
 `+` chuỗi thắng số khi ToPrimitive ra string:
 
-```ts
+```js
+// JS runtime (TS báo lỗi TS2365 với `[] + []` và `[] + {}`)
 1 + 2 + "3";   // "33"
 "1" + 2 + 3;   // "123"
 [] + [];       // ""
@@ -180,7 +186,7 @@ const b = x++; // 2, x === 3
 
 Abstract Equality (`==`) đối xứng (`a == b` và `b == a`), nhưng coercion dễ trái trực giác. Quy tắc tóm tắt (spec `IsLooselyEqual`):
 
-1. Cùng kiểu → gần như `===` (trừ `NaN`).
+1. Cùng kiểu → gọi **chính xác `===`** (kể cả `NaN == NaN` là `false` và `+0 == -0` là `true`).
 2. `null == undefined` → **true** (và ngược lại); không coerce sang số.
 3. Number ↔ String → `ToNumber(string)`.
 4. Boolean ↔ bất kỳ → `ToNumber(boolean)` rồi `==` lại (`true` → `1`, `false` → `0`).
@@ -211,7 +217,8 @@ Abstract Equality (`==`) đối xứng (`a == b` và `b == a`), nhưng coercion 
 | `{} == {}` | `false` | reference |
 | `document.all == undefined` | quirk trình duyệt | **không** trên Node |
 
-```ts
+```js
+// JS runtime (TS báo lỗi TS2367 vì các kiểu so sánh không chồng nhau)
 0 == false;         // true
 0 === false;        // false
 null == undefined;  // true
@@ -396,7 +403,7 @@ obj?.method();         // undefined, không gọi
 | Ném trong getter | vẫn ném nếu `a` truthy | vẫn ném nếu `a` không nullish |
 
 - `?.` không nuốt mọi lỗi — chỉ short-circuit khi nullish.
-- `a?.b.c` — nếu `a` không nullish, `.c` vẫn chạy trên `b` (có thể `undefined.c` ném nếu viết `a?.b.c` khi `b` undefined: **`a?.b.c`** ≡ `(a == null ? undefined : a.b).c` — **`.c` không optional**).
+- **Short-circuiting của `?.`:** `a?.b.c` tương đương **`a == null ? undefined : a.b.c`** (KHÔNG phải `(a == null ? undefined : a.b).c`). Khi `a` nullish, cả chuỗi `.b.c` phía sau dừng lại và trả `undefined` mà không ném lỗi. Tuy nhiên, nếu `a` **không** nullish mà `a.b` là `undefined`, đọc `.c` vẫn ném `TypeError` — lúc đó cần `a?.b?.c`.
 
 ```ts
 a?.b.c;   // nếu a.b === undefined → đọc `.c` ném TypeError
@@ -442,7 +449,7 @@ cache ??= expensive();
 
 - Compound: `+=` `-=` `*=` `/=` `%=` `**=` `<<=` `>>=` `>>>=` `&=` `^=` `|=`.
 - Logical assignment **không** gán nếu điều kiện không thỏa — RHS **không** đánh giá (short-circuit).
-- LHS của compound được đánh giá **một lần** (quan trọng với getter / `obj[i++]`).
+- **Thứ tự đánh giá:** với mọi phép gán (`=`, `+=`, …), **LHS reference luôn được đánh giá TRƯỚC**, sau đó mới đánh giá RHS (`let i = 0; const a: number[] = []; a[i++] = i;` → gán vào `a[0] = 1`). LHS của compound được đánh giá **một lần** (quan trọng với getter / `obj[i++]`).
 - Không có `?.=` ; optional assign: `if (obj) obj.x ??= 1` hoặc `obj && (obj.x = 1)`.
 
 ```ts
@@ -542,14 +549,16 @@ Idiom cắt bit trên number (không dùng cho ID 64-bit):
 (n | 0);     // cắt int32 (cả số âm)
 ```
 
-- BigInt: `1n << 8n` không giới hạn 32-bit theo cùng quy tắc number; **không** có `>>>` trên BigInt; không trộn bit `number` với `bigint`.
-- Shift BigInt: count âm → `RangeError`; không mask 5 bit.
+- BigInt: `1n << 8n` không giới hạn 32-bit theo cùng quy tắc number; **không** có `>>>` trên BigInt (`TypeError` lúc runtime); không trộn bit `number` với `bigint`.
+- Shift BigInt: không mask 5 bit; **count âm hợp lệ và dịch ngược chiều** (`8n << -1n === 4n`, `8n >> -1n === 16n`). `RangeError` chỉ xảy ra nếu kết quả vượt kích thước tối đa của BigInt.
 - Dùng flag bit trong domain nhỏ OK; tiền tệ / ID 64-bit → BigInt hoặc tránh bit trên number.
 
 ```ts
 1n << 8n;    // 256n
 1n << 40n;   // 2n ** 40n — không wrap 32
-// 1n >>> 1n; // SyntaxError — không có unsigned shift
+8n << -1n;   // 4n  — shift âm = dịch ngược chiều
+8n >> -1n;   // 16n
+// 1n >>> 1n; // TypeError (runtime) — BigInt không có unsigned shift (TS cũng báo lỗi)
 // 1n & 1;    // TypeError
 ```
 
@@ -593,8 +602,19 @@ const v = (doSideEffect(), 42); // trả 42; tránh lạm dụng ngoài for
 
 ```ts
 const fee = kind === "pro" ? 10 : kind === "team" ? 25 : 0; // khó đọc
-const fees = { pro: 10, team: 25 } as const;
-const fee2 = fees[kind as keyof typeof fees] ?? 0;
+
+// Tránh `fees[kind] ?? 0` trên plain object: `kind === "toString"` sẽ khớp Object.prototype.toString!
+const fees = new Map<string, number>([
+  ["pro", 10],
+  ["team", 25],
+]);
+const fee2 = fees.get(kind) ?? 0;
+
+// Hoặc kiểm tra own property trước khi đọc object lookup table:
+const feeTable = { pro: 10, team: 25 } as const;
+const fee3 = Object.hasOwn(feeTable, kind)
+  ? feeTable[kind as keyof typeof feeTable]
+  : 0;
 ```
 
 ### `void 0`
@@ -664,9 +684,12 @@ typeof notDeclared; // "undefined"
 - `typeof new Proxy(fn, {})` vẫn `"function"` nếu target callable.
 
 ```ts
-typeof async function () {}; // "function"
-typeof function* () {};      // "function"
-Function.prototype.toString.call(async () => {}).startsWith("async"); // có thể dùng, giòn
+import { types } from "node:util";
+
+typeof async function () {};               // "function"
+typeof function* () {};                    // "function"
+types.isAsyncFunction(async () => {});     // true — kiểm tra tin cậy ở mức V8 trên Node
+types.isGeneratorFunction(function* () {}); // true
 ```
 
 **Bẫy `typeof`:**
@@ -677,7 +700,7 @@ Function.prototype.toString.call(async () => {}).startsWith("async"); // có th�
 | `typeof []` | `"object"` | `Array.isArray` |
 | Tin `typeof` undeclared an toàn với `let` | TDZ ném | khai báo trước |
 | `typeof` class instance | `"object"` | `instanceof` / brand / `Array.isArray` |
-| `typeof async fn` | vẫn `"function"` | convention / `Function.prototype.toString` giòn |
+| `typeof async fn` | vẫn `"function"` | `util.types.isAsyncFunction` / `isGeneratorFunction` (tránh `Function.prototype.toString` giòn) |
 | `typeof Proxy(fn)` | `"function"` nếu callable | không tin Proxy “ẩn” hàm |
 
 ---
@@ -705,12 +728,26 @@ o.own = 2;
 Object.hasOwn(o, "inherited"); // false
 "own" in o;                    // true
 
-"toString" in 1; // true — box Number
-// "x" in null;  // TypeError
+// "toString" in 1; // TypeError — toán tử `in` KHÔNG box primitive
+// "x" in null;     // TypeError
 ```
 
 - `in` với symbol key: `sym in obj`.
-- Narrowing TS: `"x" in obj` hẹp property — khác `hasOwn` (TS hỗ trợ `Object.hasOwn` narrowing ở bản hiện đại).
+- **Ergonomic brand check (`#privateField in obj`, ES2022):** kiểm tra object có thực sự là instance sở hữu private field `#field` của class hiện tại hay không mà không cần `try/catch` (vẫn cần guard `x` là non-null object trước để tránh `TypeError`):
+
+```ts
+class Token {
+  #secret: string;
+  constructor(secret: string) {
+    this.#secret = secret;
+  }
+  static isToken(x: unknown): x is Token {
+    return typeof x === "object" && x !== null && #secret in x;
+  }
+}
+```
+
+- Narrowing TS: `"x" in obj` hẹp property trực tiếp; ngược lại, TS (kể cả **TS 7.0**) **chưa** hỗ trợ native narrowing cho `Object.hasOwn(obj, "x")` — cần viết helper predicate `hasOwn` (xem [typesystem.md](typesystem.md) §19.6).
 - Dictionary: `Object.create(null)` + `hasOwn` / `in` (không inherited `toString`).
 
 **Bẫy `in`:**
@@ -737,26 +774,36 @@ Array.isArray([]);       // true — prefer cho array
 
 ```ts
 import vm from "node:vm";
+import { types } from "node:util";
 
 const ctx = vm.createContext({});
 const otherArray = vm.runInContext("[]", ctx);
-otherArray instanceof Array; // false — Array của realm khác
-Array.isArray(otherArray);   // true — brand nội bộ
+otherArray instanceof Array;  // false — Array của realm khác
+Array.isArray(otherArray);    // true — brand nội bộ
+
+const otherErr = vm.runInContext("new Error('boom')", ctx);
+otherErr instanceof Error;    // false
+Error.isError(otherErr);      // true — ES2026 / Node 26 cross-realm Error check
+
+const otherBytes = vm.runInContext("new Uint8Array(4)", ctx);
+otherBytes instanceof Uint8Array; // false
+types.isUint8Array(otherBytes);   // true — kiểm tra internal slot V8 xuyên realm
 ```
 
 | Kiểm tra | Cross-realm |
 |----------|-------------|
 | `instanceof Array` | **fail** |
 | `Array.isArray` | **OK** |
-| `instanceof Uint8Array` | fail qua realm |
-| `typeof` / `ArrayBuffer.isView` | tùy API |
-| `error instanceof Error` | fail nếu Error khác realm |
+| `instanceof Uint8Array` | **fail** qua realm → dùng **`util.types.isUint8Array`** |
+| `typeof` / `ArrayBuffer.isView` | **OK** (lưu ý `isView` khớp mọi TypedArray & `DataView`) |
+| `error instanceof Error` | **fail** nếu Error khác realm → dùng **`Error.isError(x)`** (ES2026 / Node 26) |
 
 `Symbol.hasInstance` cho phép class tự định nghĩa:
 
-```ts
+```js
+// JS runtime (TS yêu cầu vế trái của `instanceof` có kiểu object hoặc any)
 class Even {
-  static [Symbol.hasInstance](x: unknown) {
+  static [Symbol.hasInstance](x) {
     return typeof x === "number" && x % 2 === 0;
   }
 }
@@ -840,6 +887,7 @@ function F() {
 - `new Ctor(...args)` tạo object, bind `this`, trả `this` trừ khi constructor `return` object — xem [statements.md](statements.md) § return trong constructor.
 - `new.target` trong constructor/function: `undefined` nếu gọi không `new`; class constructor gọi thiếu `new` → TypeError sẵn.
 - Arrow không có `new.target` / không làm constructor.
+- **Meta-property cùng họ — `import.meta` (ESM):** giống `new.target`, `import.meta` là meta-property cú pháp (chỉ dùng trong ES module, không phải biến để tách khỏi cú pháp). Trên **Node 26**, cung cấp `import.meta.url`, `import.meta.dirname`, `import.meta.filename`, `import.meta.resolve()`, và **`import.meta.main`** (kiểm tra module có phải entry point không — xem [main-function.md](main-function.md) & [modules-packages.md](modules-packages.md)).
 
 ### 17.1 `yield` / `yield*` (operator, không phải statement thuần)
 
@@ -878,8 +926,8 @@ Getter, Proxy và coercion có side effect riêng khi bước đọc/chuyển đ
 Các dạng này xuất hiện gần expression nhưng **không** phải toán tử JS runtime (trừ `typeof` **value**). Chi tiết hệ thống kiểu: [typesystem.md](typesystem.md).
 
 ```ts
-const el = document.getElementById("app") as HTMLDivElement | null;
-// assertion — không check runtime
+const payload = JSON.parse(raw) as { id: string };
+// assertion — không check runtime (chỉ nói với checker)
 
 const cfg = { port: 3000 } satisfies { port: number };
 // kiểm tra gán được; giữ suy luận field
@@ -1033,11 +1081,12 @@ Array.isArray(x);
 | ES2019+ | `Object.fromEntries` (không phải op) |
 | ES2020 | `??`, `?.`, `bigint` ops |
 | ES2021 | `??=` `&&=` `\|\|=`; numeric `_` (literals) |
-| ES2022 | `Object.hasOwn` |
+| ES2022 | `Object.hasOwn`, `#privateField in obj` (ergonomic brand check) |
+| ES2026 / Node 26 Active LTS | `Error.isError(x)` cross-realm; `import.meta.main`; `util.types.*` ổn định |
 | TS 4.9+ | `satisfies` |
-| TS / Node 26 | assertion erase + type strip — không invent runtime từ `as` |
+| TS 7.0 / Node 26 | assertion erase + type strip — không invent runtime từ `as`; `Object.hasOwn` vẫn chưa có native narrowing |
 
-Baseline: **Node 26** + **TS 7**.
+Baseline: **Node 26 Active LTS** (V8 14.6+) + **TS 7.0**.
 
 ---
 

@@ -208,7 +208,7 @@ wrapped !== t; // true — assimilate vào Promise mới
 3. `onFulfilled` nhận thenable khác → assimilate **đệ quy** (flatten).
 4. `then` ném sync → Promise assimilating **reject**.
 5. Thenable resolve bằng **chính promise đang follow** → `TypeError` (cycle).
-6. `await x` dùng cùng semantics `Promise.resolve` rồi đợi — `await 1` vẫn qua một microtask.
+6. `await x` dùng cùng semantics `Promise.resolve` rồi đợi: `await nativePromise` (hoặc `await 1`) chỉ tốn **1 microtask** (V8 fast-path từ ES2019+), còn `await customThenable` tốn **2+ microtask** (do phải chạy *PromiseResolveThenableJob* rồi mới resume continuation).
 
 ```ts
 const evil = {
@@ -318,11 +318,11 @@ const fail = Promise.reject(new Error("boom")); // luôn gắn .catch nếu khô
 Wrap API callback (khi chưa có `*/promises`):
 
 ```ts
+import fs from "node:fs";
+
 function readFileP(path: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    import("node:fs").then((fs) => {
-      fs.readFile(path, (err, data) => (err ? reject(err) : resolve(data)));
-    });
+    fs.readFile(path, (err, data) => (err ? reject(err) : resolve(data)));
   });
 }
 ```
@@ -389,21 +389,33 @@ setTimeout(() => resolve(1), 10);
 await promise;
 ```
 
-Hữu ích khi cầu nối EventEmitter / callback một lần, hoặc hàng đợi “lần đọc tiếp theo” trên stream. Vẫn tránh async executor (§10.2).
+Hữu ích khi cầu nối callback/event một lần hoặc tạo deferred gate. Lưu ý: `stream.Readable` của Node **đã hỗ trợ sẵn `for await (const chunk of stream)`**, và với `EventEmitter` chuẩn ưu tiên **`events.once(emitter, event, { signal })` / `events.on(emitter, event, { signal })`** (§13) thay vì tự viết vòng lặp lắng nghe dễ deadlock hoặc rò listener.
+
+Khi vẫn cần cầu nối thủ công với `Promise.withResolvers`, luôn gỡ listener trong `finally` / cleanup và xử lý cả lỗi lẫn `AbortSignal`:
 
 ```ts
-async function* readableToChunks(stream: NodeJS.ReadableStream) {
-  let { promise, resolve, reject } = Promise.withResolvers<void>();
-  stream.on("error", (err) => reject(err));
-  stream.on("end", () => resolve());
-  stream.on("readable", () => resolve());
-  while (stream.readable) {
-    await promise;
-    let chunk;
-    while ((chunk = (stream as NodeJS.ReadableStream & { read(): unknown }).read())) {
-      yield chunk;
-    }
-    ({ promise, resolve, reject } = Promise.withResolvers<void>());
+import type { EventEmitter } from "node:events";
+
+async function waitNext<T>(
+  emitter: EventEmitter,
+  event: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  signal?.throwIfAborted();
+  const { promise, resolve, reject } = Promise.withResolvers<T>();
+  const onEvent = (value: T) => resolve(value);
+  const onError = (err: unknown) => reject(err);
+  const onAbort = () => reject(signal!.reason);
+
+  emitter.once(event, onEvent);
+  emitter.once("error", onError);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await promise;
+  } finally {
+    emitter.off(event, onEvent);
+    emitter.off("error", onError);
+    signal?.removeEventListener("abort", onAbort);
   }
 }
 ```
@@ -649,6 +661,8 @@ await doWork({ signal });
 
 `race` hợp lý cho “event nào tới trước” (lần đầu message, once-lock) — vẫn abort nhánh kia nếu việc đó tốn tài nguyên.
 
+> **Pitfall — input rỗng:** `Promise.race([])` trả về Promise **pending vĩnh viễn** (không bao giờ settle), khác `Promise.all([])` (`[]`) và `Promise.any([])` (reject `AggregateError`). Luôn kiểm tra mảng rỗng trước khi `race`.
+
 ### 8.4 `Promise.any`
 
 ```ts
@@ -679,10 +693,12 @@ async function allOrAbort<T>(
   tasks: ((signal: AbortSignal) => Promise<T>)[],
   parent?: AbortSignal,
 ): Promise<T[]> {
+  parent?.throwIfAborted();
   const ac = new AbortController();
   const signal = parent ? AbortSignal.any([parent, ac.signal]) : ac.signal;
   try {
-    return await Promise.all(tasks.map((t) => t(signal)));
+    // Promise.try tránh unhandledRejection cho các task đã start nếu một task sau throw sync
+    return await Promise.all(tasks.map((t) => Promise.try(() => t(signal))));
   } catch (e) {
     ac.abort(e);
     throw e;
@@ -698,10 +714,10 @@ async function allOrAbort<T>(
 |---------|------|
 | Tất cả phải OK, song song | `all` + signal nếu cần cancel leftover |
 | Thu thập cả thành công/lỗi | `allSettled` |
-| Timeout / first event | `AbortSignal.timeout` (không chỉ `race`+sleep) |
+| Timeout / first event | `AbortSignal.timeout` (không chỉ `race`+sleep; nhớ `Promise.race([])` treo vĩnh viễn) |
 | First success (mirror) | `any` + abort leftover |
 | Giới hạn độ song song | `mapPool` (§9), không `all` trần |
-| Iterable async → mảng | `Array.fromAsync` (ES2024 / Node 26) |
+| Iterable async → mảng | `Array.fromAsync` (ES2026 / Node 22+) |
 
 ```ts
 const rows = await Array.fromAsync(ids, async (id) => fetchRow(id));
@@ -884,12 +900,12 @@ const q = Promise.reject(new Error("ok"));
 void q.catch(() => {}); // handler gắn trước khi rời turn → không unhandled
 ```
 
-`process.nextTick` / `queueMicrotask` để gắn catch **có thể** vẫn trễ hơn detection — **đừng** dựa vào. Macrotask (`setTimeout` / `setImmediate`) thì **chắc** là after-tick: `unhandledRejection` rồi `rejectionHandled`.
+Trong Node, bước kiểm tra unhandled rejection chạy trong `processTicksAndRejections()` **sau khi** xả microtask queue — nên `queueMicrotask(() => void r.catch(...))` đôi khi vẫn kịp thoát `unhandledRejection`, nhưng **vẫn là anti-pattern** mong manh (phụ thuộc thứ tự enqueue/nested `nextTick`, kém portable). Macrotask (`setTimeout` / `setImmediate`) thì **chắc chắn** là after-tick: `unhandledRejection` rồi `rejectionHandled`.
 
 ```ts
 const r = Promise.reject(new Error("tick"));
 queueMicrotask(() => {
-  void r.catch(() => {}); // đua với kiểm tra unhandled — không portable
+  void r.catch(() => {}); // ❌ anti-pattern — luôn gắn .catch ngay trong cùng sync turn
 });
 ```
 
@@ -945,10 +961,14 @@ Unhandled rejection: Node log nghiêm trọng; **đừng** dựa vào handler to
 
 ## 11. `await using` & async dispose
 
-Explicit Resource Management (JS + TS 7 / V8 trên Node 26): rời block → gọi `[Symbol.dispose]` / `[Symbol.asyncDispose]` **LIFO**, kể cả khi throw. Nhiều API Node **chưa** Disposable — wrapper gọi `.close()`.
+Explicit Resource Management (ES2026, hỗ trợ đầy đủ trên TS 7 & V8 của Node 26): rời block → gọi `[Symbol.dispose]` / `[Symbol.asyncDispose]` theo thứ tự **LIFO**, kể cả khi throw. Nhiều core API của **Node 26 đã có native dispose**: `FileHandle` (`fs/promises.open`), `fs.Dir` (`opendir`), `Worker`, `http.Server`, `Timeout` / `Immediate` (`Symbol.dispose`), `events.addAbortListener` (`Symbol.dispose`)… Với thư viện bên ngoài chưa implement, bọc wrapper hoặc dùng `DisposableStack` / `AsyncDisposableStack`.
 
 ```ts
 class Conn implements AsyncDisposable {
+  async exec(sql: string) {
+    /* thực thi query */
+    return sql;
+  }
   async close() {
     /* shutdown socket / transaction */
   }
@@ -959,8 +979,8 @@ class Conn implements AsyncDisposable {
 
 async function query() {
   await using c = new Conn();
-  await c /* ... */;
-} // await asyncDispose — kể cả throw
+  await c.exec("SELECT 1");
+} // tự động await c[Symbol.asyncDispose]() — kể cả khi throw
 ```
 
 | | |
@@ -970,51 +990,55 @@ async function query() {
 | Nhiều binding cùng block | Dispose **LIFO** |
 | Lỗi body + lỗi dispose | Có thể `SuppressedError` (`.error` / `.suppressed`) |
 
+Ví dụ dùng trực tiếp core API native trên Node 26 (`FileHandle` từ `node:fs/promises`):
+
 ```ts
+import { open } from "node:fs/promises";
+
 async function processFiles(paths: string[]) {
   for (const p of paths) {
-    await using f = await openTracked(p); // wrapper minh họa — không phải mọi fs handle đã Disposable
-    await handle(f);
-  } // dispose mỗi iteration trước vòng sau
+    await using fh = await open(p, "r"); // FileHandle có sẵn Symbol.asyncDispose
+    await handle(fh);
+  } // tự động await fh.close() mỗi iteration trước vòng sau
 }
 ```
 
-Kết hợp abort: dispose **vẫn chạy** khi `await` reject vì abort — giống `finally`. Listener abort để chủ động `destroy` sớm; `await using` bảo đảm nhánh thành công cũng đóng.
+Kết hợp abort: dispose **vẫn chạy** khi `await` reject vì abort — giống `finally`. `events.addAbortListener` trả về `Disposable` (sync `using`) để tự gỡ listener khi rời scope:
 
 ```ts
-async function readWithAbort(signal: AbortSignal) {
-  await using tracked = acquireTracked(signal);
-  signal.throwIfAborted();
-  return await tracked.read();
+import { addAbortListener } from "node:events";
+
+async function work(signal: AbortSignal) {
+  await using conn = await connect();
+  using _onAbort = addAbortListener(signal, () => conn.destroy());
+  return await conn.query("SELECT 1", { signal });
 }
+// Rời block (LIFO): gỡ abort listener trước (sync), rồi await conn[Symbol.asyncDispose]()
 ```
 
 `Worker` (Node 22.18+ / 24.2+): `await using worker = new Worker(...)` gọi `terminate()` khi rời scope — [threading.md](threading.md).
 
-Abort không thay dispose: signal reject `await` **rồi** engine vẫn chạy asyncDispose. Thứ tự: rời block (throw abort) → LIFO dispose → reject lan ra caller. Đừng `return` sớm mà bỏ resource không `using`.
+**`DisposableStack` & `AsyncDisposableStack`** — gom nhiều tài nguyên động (kể cả tài nguyên không implement `Symbol.dispose`/`Symbol.asyncDispose`) vào một scope LIFO:
+
+- `use(res)`: đăng ký object đã có `Symbol.dispose` / `Symbol.asyncDispose`.
+- `adopt(raw, onDispose)`: đăng ký tài nguyên thô kèm hàm dọn tường minh.
+- `defer(fn)`: đăng ký callback dọn bất kỳ (không gắn value).
+- `move()`: chuyển toàn bộ ownership sang stack mới (hữu ích khi factory/init thành công và không muốn dọn ngay lúc rời hàm khởi tạo).
 
 ```ts
-class AbortHook implements AsyncDisposable {
-  #fn: () => void;
-  constructor(
-    private signal: AbortSignal,
-    fn: () => void,
-  ) {
-    this.#fn = fn;
-    if (signal.aborted) fn();
-    else signal.addEventListener("abort", fn, { once: true });
-  }
-  async [Symbol.asyncDispose]() {
-    this.signal.removeEventListener("abort", this.#fn);
-  }
-}
+async function initSession(path: string) {
+  await using stack = new AsyncDisposableStack();
+  const fh = stack.use(await open(path, "r"));
+  const conn = stack.adopt(await connectLegacy(), (c) => c.close());
+  stack.defer(() => console.log("session cleanup"));
 
-async function work(signal: AbortSignal) {
-  await using _hook = new AbortHook(signal, () => socket.destroy());
-  await using conn = await connect();
-  return await conn.query("…", { signal });
+  await conn.ping();
+  // Nếu init thành công, move() chuyển quyền dọn cho caller; nếu throw trước đó, stack tự dọn LIFO!
+  return { fh, conn, resources: stack.move() };
 }
 ```
+
+(Với tài nguyên hoàn toàn đồng bộ, dùng `using stack = new DisposableStack()` với cùng bộ method `use` / `adopt` / `defer` / `move`.)
 
 > Sync `using` trên resource cần `await close()` → sai. Grammar / `SuppressedError` → [statements.md](statements.md#11-using-vs-tryfinally), [functions-methods.md](functions-methods.md) §11. Abort + cleanup → [abort-context.md](abort-context.md).
 
@@ -1026,18 +1050,21 @@ Chuẩn hủy hợp tác (tương tự hướng `context` / `CancellationToken`)
 
 ```ts
 const ac = new AbortController();
-setTimeout(() => ac.abort(new Error("timeout")), 3_000);
+const timer = setTimeout(() => ac.abort(new Error("timeout")), 3_000);
 
 try {
   const res = await fetch("https://example.com", { signal: ac.signal });
   const text = await res.text();
+  console.log(text.length);
 } catch (err) {
   if (ac.signal.aborted) console.error("aborted", ac.signal.reason);
   else throw err;
+} finally {
+  clearTimeout(timer); // tránh timer ref giữ event loop sống thêm tới 3 giây
 }
 ```
 
-Helpers nhanh:
+Với timeout đơn thuần, ưu tiên **`AbortSignal.timeout(3_000)`** — ngắn gọn hơn và không cần tự `clearTimeout`:
 
 ```ts
 const signal = AbortSignal.timeout(5_000);
@@ -1050,11 +1077,14 @@ Pattern hàm hỗ trợ cancel:
 ```ts
 async function loadUser(id: string, signal?: AbortSignal) {
   signal?.throwIfAborted();
-  const res = await fetch(`/api/users/${id}`, { signal });
+  // Undici fetch trên Node bắt buộc URL tuyệt đối (không có window.location như browser)
+  const res = await fetch(`https://api.example.com/users/${id}`, { signal });
   if (!res.ok) throw new Error(String(res.status));
   return res.json();
 }
 ```
+
+Ngoài `fetch` / `fs` / `stream`, `events.once(emitter, event, { signal })` và `events.on(emitter, event, { signal })` cũng hỗ trợ hủy qua `AbortSignal` (§13).
 
 > **Độ sâu đầy đủ** (already-aborted, diamond `any`, timeout vs deadline, fetch vs HTTP cancel, ALS, 499 vs 500, test): **[abort-context.md](abort-context.md)** — analogue của Go `context.md`.
 
@@ -1090,6 +1120,20 @@ legacy("a.txt", (err, data) => {
 `util.promisify` trên hàm đã Promise-returning: đừng bọc hai lần. Callbackify một `async` function: rejection → `err` argument; đừng `throw` trong callback style sau khi đã callbackify (double).
 
 `node:timers/promises.setImmediate` / `setTimeout`: macrotask (check / timers) — không phải microtask. Hủy: `{ signal }`.
+
+Cầu nối `EventEmitter` chuẩn sang Promise / AsyncIterable (hỗ trợ `{ signal }`, tự lắng nghe `'error'` và dọn listener):
+
+```ts
+import { once, on } from "node:events";
+
+// Đợi một event duy nhất (trả về mảng args của event)
+await once(server, "listening", { signal });
+
+// Đọc chuỗi event như AsyncIterable (tự dừng & gỡ listener khi break hoặc signal abort)
+for await (const [payload] of on(bus, "message", { signal })) {
+  await handle(payload);
+}
+```
 
 ---
 
@@ -1153,6 +1197,18 @@ await finished(ws);
 Promise khi stream `end` / `finish` / error — hữu ích khi tự quản lý pipe (không qua `pipeline`).
 
 ```ts
+import { buffer, text, json, arrayBuffer } from "node:stream/consumers";
+
+// Ưu tiên node:stream/consumers khi chỉ cần gom toàn bộ stream (Node + Web Streams đều nhận)
+const rawBuf = await buffer(readable);
+const bodyText = await text(readable);
+const parsed = await json(readable);
+const ab = await arrayBuffer(readable);
+```
+
+Khi cần xử lý từng chunk (hoặc kiểm soát giới hạn kích thước) với backpressure:
+
+```ts
 async function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
@@ -1167,12 +1223,21 @@ Tôn trọng backpressure; hủy bằng `signal` + `stream.destroy(err)`. `for a
 ### 14.4 Web Streams / `fetch` body
 
 ```ts
-const res = await fetch(url);
-const text = await res.text(); // consume body
-// hoặc res.body (ReadableStream) + stream/web helpers
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createWriteStream } from "node:fs";
+
+const res = await fetch("https://example.com/archive.tar.gz");
+if (!res.body) throw new Error("empty body");
+
+// Chuyển Web ReadableStream <-> Node Readable để dùng trực tiếp với pipeline()
+await pipeline(Readable.fromWeb(res.body), createWriteStream("archive.tar.gz"));
+
+// Chiều ngược lại (Node Readable -> Web ReadableStream, ví dụ gửi body cho fetch):
+const webStream = Readable.toWeb(nodeReadable);
 ```
 
-Đừng quên consume / cancel body khi abort sớm. Xem thêm [nodejs-apis.md](nodejs-apis.md).
+(`Writable.fromWeb` / `Writable.toWeb` và `Duplex.fromWeb` / `Duplex.toWeb` tương tự.) Đừng quên consume hoặc `res.body.cancel()` khi abort sớm để tránh giữ socket/pool. Xem thêm [nodejs-apis.md](nodejs-apis.md).
 
 `finished(stream, { signal })` reject khi abort — **không** luôn destroy giúp bạn; tự `stream.destroy(err)` trong `catch` nếu bạn không dùng `pipeline`. `pipeline` = finished + destroy + wire lỗi. Mix `.pipe()` giữa chừng với `pipeline` → hai ông chủ backpressure.
 
@@ -1183,7 +1248,8 @@ const text = await res.text(); // consume body
 Trong **ESM** (`.mjs` hoặc `"type":"module"`):
 
 ```ts
-const config = await import("./config.js").then((m) => m.load());
+const m = await import("./config.js");
+const config = await m.load();
 export { config };
 ```
 
@@ -1261,14 +1327,14 @@ main().catch((err) => {
 
 ## 16. `AsyncLocalStorage` snapshot tại `await`
 
-Giống `context.Value` — gắn value **theo chuỗi async** (request ID, logger) không cần truyền mọi hàm. ALS **không** hủy việc (dùng AbortSignal). Đầy đủ cây abort / `enterWith` / cấm singleton controller → **[abort-context.md](abort-context.md)** §5.
+Giống `context.Value` — gắn value **theo chuỗi async** (request ID, logger) không cần truyền mọi hàm. Trên **Node 24/26**, `AsyncLocalStorage` mặc định chạy trên **V8 `AsyncContextFrame`** (overhead thấp hơn nhiều, không còn phụ thuộc `async_hooks`). ALS **không** hủy việc (dùng AbortSignal). Đầy đủ cây abort / `enterWith` / cấm singleton controller → **[abort-context.md](abort-context.md)** §5.
 
 ```ts
 import { AsyncLocalStorage } from "node:async_hooks";
 
 const als = new AsyncLocalStorage<{ reqId: string }>();
 
-als.run({ reqId: "abc" }, async () => {
+await als.run({ reqId: "abc" }, async () => {
   await doWork();
   console.log(als.getStore()?.reqId); // "abc" — continuation sau await vẫn trong run
 });
@@ -1279,14 +1345,16 @@ als.run({ reqId: "abc" }, async () => {
 Khi `await` settle, continuation resume với **async context đã gắn lúc suspend** — `getStore()` ra store của `run` đang active, không phải request “đang chạy trên stack khác”. Hai request xen kẽ:
 
 ```ts
-als.run({ reqId: "A" }, async () => {
-  await sleep(10);
-  als.getStore()?.reqId; // "A"
-});
-als.run({ reqId: "B" }, async () => {
-  await sleep(1);
-  als.getStore()?.reqId; // "B"
-});
+await Promise.all([
+  als.run({ reqId: "A" }, async () => {
+    await sleep(10);
+    console.log(als.getStore()?.reqId); // "A"
+  }),
+  als.run({ reqId: "B" }, async () => {
+    await sleep(1);
+    console.log(als.getStore()?.reqId); // "B"
+  }),
+]);
 ```
 
 **Mutate in-place** object store → mọi continuation thấy mutation (cùng reference). **Thay** store: `run` lồng / `enterWith` — không gán `store = …` lên biến ngoài rồi kỳ vọng ALS đổi.
@@ -1296,6 +1364,7 @@ als.run({ reqId: "B" }, async () => {
 | API | Việc |
 |-----|------|
 | `als.run(store, fn)` | Gắn store cho `fn` và async tree nó tạo; rời `fn` thì hết (ưu tiên) |
+| `als.exit(fn)` | Chạy `fn` **ngoài** store hiện tại (`getStore() === undefined`) — tách background/audit job khỏi request context |
 | `als.enterWith(store)` | Đổi context **phần sync còn lại + async sau** — dễ leak sang handler kế |
 | `AsyncLocalStorage.snapshot()` | Chụp context hiện tại, trả hàm gọi `fn` trong context đó |
 | `AsyncLocalStorage.bind(fn)` | Bind `fn` vào context lúc gọi `bind` |
@@ -1313,17 +1382,17 @@ Dùng `snapshot()` khi đăng ký callback lâu (EventEmitter, queue) cần **gi
 ### 16.3 Nested `run`
 
 ```ts
-als.run({ reqId: "outer" }, async () => {
-  als.run({ reqId: "inner" }, async () => {
+await als.run({ reqId: "outer" }, async () => {
+  await als.run({ reqId: "inner" }, async () => {
     await sleep(1);
-    als.getStore()?.reqId; // "inner"
+    console.log(als.getStore()?.reqId); // "inner"
   });
   await sleep(1);
-  als.getStore()?.reqId; // "outer"
+  console.log(als.getStore()?.reqId); // "outer"
 });
 ```
 
-Inner shadow outer đến khi inner callback xong. Fire-and-forget job **không** nên giữ HTTP store: `als.run(undefined, () => audit())` hoặc payload tường minh — và **không** dùng AbortSignal của request nếu job phải sống sót.
+Inner shadow outer đến khi inner callback xong. Fire-and-forget job **không** nên giữ HTTP store: dùng **`als.exit(() => audit())`** (hoặc truyền payload tường minh; không dùng `als.run(undefined, ...)` vì vi phạm kiểu TS strict) — và **không** dùng AbortSignal của request nếu job phải sống sót.
 
 ### 16.4 Mất context — checklist ngắn
 
@@ -1457,10 +1526,11 @@ async function run(signal: AbortSignal) {
 | Node 15+ | Unhandled rejection nghiêm hơn |
 | Node 17.3+ / 16.14+ | `AbortSignal.timeout` |
 | Node 20+ | `AbortSignal.any`; Web Streams mạnh hơn |
-| ES2024 / Node 22+ | `Promise.withResolvers`, `Array.fromAsync` |
-| Node 24/26 | `Promise.try`; ngữ pháp ERM `await using` (không suy từ Symbol trên Node 22) |
+| ES2024 / Node 22+ | `Promise.withResolvers` |
+| ES2025 / Node 24+ | `Promise.try` |
+| ES2026 (ship sớm Node 22/24) | `Array.fromAsync`, Explicit Resource Management (`using` / `await using` / `DisposableStack` / `AsyncDisposableStack`) |
 | Node 22.15+ / 23.11+ | `AsyncLocalStorage.snapshot` / `bind` ổn định |
-| Node 24–26 | Baseline: fetch/undici + signal trên fs/stream; `await using Worker` |
+| Node 24–26 | `AsyncLocalStorage` mặc định dùng V8 `AsyncContextFrame`; `fetch`/Undici 8+ + signal; native dispose trên `FileHandle`, `Dir`, `Worker`, `http.Server`, `Timeout` |
 
 Baseline repo: **Node 26** + **TS 7** — dùng `timeout` / `any` / `withResolvers` / `try` / `throwIfAborted` / `await using` thoải mái.
 

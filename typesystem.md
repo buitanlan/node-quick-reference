@@ -2,7 +2,7 @@
 
 JavaScript là ngôn ngữ **dynamic** tại runtime (kiểu gắn với *giá trị*). TypeScript thêm lớp **static types** bị xóa khi biên dịch / type-strip — không tồn tại trên V8. Tài liệu này tập trung **TypeScript 7** chạy trên **Node.js 26** (ESM ưu tiên). Mục tiêu: tham chiếu thực dụng, không phải tutorial nhập môn.
 
-> Baseline: **TypeScript 7** (compiler Go) + **Node.js 26** (type stripping ổn định). Node **24** còn Active LTS tại ngày rà soát; lịch chuyển Maintenance ở [README](README.md). TS 7: `strict` mặc định **true**; `moduleResolution: "node"` / `node10` / `classic` → **error**.
+> Baseline: **TypeScript 7.0** (native Go compiler) + **Node.js 26 Active LTS** ("Lithium", từ 2026-10-28, V8 14.6+; type stripping ổn định). Node **24** đã sang Maintenance LTS (2026-10-20); lịch LTS ở [README](README.md). TS 7: `strict` mặc định **true**, `types` mặc định **`[]`**, `moduleResolution: "node"` / `node10` / `classic` → **error**.
 
 ---
 
@@ -17,6 +17,7 @@ JavaScript là ngôn ngữ **dynamic** tại runtime (kiểu gắn với *giá t
   - [2.5 `symbol` & well-known symbols](#25-symbol--well-known-symbols)
 - [3. `object`, functions, arrays](#3-object-functions-arrays)
   - [3.1 `Record` & index signatures](#31-record--index-signatures)
+  - [3.2 TypedArrays & generic `Uint8Array` (TS 5.7+ / TS 7)](#32-typedarrays--generic-uint8array-ts-57--ts-7)
 - [4. Tuples](#4-tuples)
 - [5. Enums vs const objects / unions](#5-enums-vs-const-objects--unions)
 - [6. `any` / `unknown` / `never` / `void`](#6-any--unknown--never--void)
@@ -108,7 +109,7 @@ Hai tầng lệch nhau theo những đường điển hình:
 | `as Foo` / `!` | tin tưởng | không kiểm |
 | Type predicate viết sai | hẹp thành `T` | giá trị khác `T` |
 | `erasableSyntaxOnly` + `enum` | lỗi compile | Node strip cũng không emit enum |
-| Cross-realm `instanceof` | `Error` | `instanceof` fail — [oop.md](oop.md) |
+| Cross-realm `instanceof` | `Error` | `instanceof Error` fail giữa `vm`/worker — dùng **`Error.isError(x)`** (ES2026 / Node 26) — [oop.md](oop.md) |
 
 ```ts
 type User = { id: string };
@@ -175,7 +176,7 @@ function isCallable(x: unknown): x is (...args: never[]) => unknown {
 
 - Type guard dựa `typeof` phải xử lý `null` và mảng tường minh.
 - `typeof` trong **type position** (`typeof value`) lấy kiểu của giá trị/biến — khác toán tử runtime. Xem §19.
-- `typeof` không ném với undeclared binding trong sloppy mode; ESM luôn strict — undeclared → `ReferenceError`.
+- `typeof undeclaredVar` trả `"undefined"` **ở cả sloppy mode lẫn strict/ESM** (không ném lỗi). Chỉ biến khai báo bằng `let`/`const`/`class` đang ở trong **TDZ** (Temporal Dead Zone) mới ném `ReferenceError` khi gọi `typeof`.
 - Không dùng `typeof x === "array"` — không bao giờ đúng.
 
 > `typeof null === "object"` là bất biến web. Guard object: `x !== null && typeof x === "object"`.
@@ -195,7 +196,7 @@ Object.is(+0, -0); // false  (=== thì true)
 | `+0` vs `-0` | `true` | `false` | `true` | — |
 | `"1"` vs `1` | `false` | `false` | `true` | — |
 | `1n` vs `1` | `false` | `false` | `true` | — |
-| `Object(NaN)` vs `NaN` | `false` | `false` | `true` (unbox) | `Number.isNaN` **false** (không unbox) |
+| `Object(NaN)` vs `NaN` | `false` | `false` | **`false`** (unbox thành `NaN == NaN`) | `Number.isNaN` **false** (không unbox) |
 
 Thuật toán:
 
@@ -401,7 +402,7 @@ interface Bag {
 
 - Với `noUncheckedIndexedAccess`: `dict[key]` thành `V | undefined` — phản ánh runtime.
 - `symbol` / number keys: index signature `string` cũng bắt number keys (ép `number → string`); dùng mapped/`Record` khi cần chính xác hơn.
-- `Record<string, V>` **không** mô tả “object có toString riêng”: mọi key string, kể cả `"toString"`, phải là `V`.
+- Bẫy `Record<string, V>`: `{}` vẫn gán hợp lệ vào `Record<string, number>` (vì không có property sai kiểu), nhưng truy cập `rec["toString"]` được checker gõ là `number` (hoặc `number | undefined` khi bật `noUncheckedIndexedAccess`) trong khi runtime thực tế trả về function từ `Object.prototype`. Với dictionary động, ưu tiên `Map` hoặc `Object.create(null)` + `Object.hasOwn`.
 
 ```ts
 type Json =
@@ -412,6 +413,28 @@ type Json =
   | Json[]
   | { [key: string]: Json };
 ```
+
+### 3.2 TypedArrays & generic `Uint8Array` (TS 5.7+ / TS 7)
+
+Từ TS 5.7+ (và TS 7.0), các TypedArray (như `Uint8Array<TArrayBuffer>`) và `Buffer` là **generic theo backing buffer** (`ArrayBufferLike = ArrayBuffer | SharedArrayBuffer`), giúp tách biệt vùng nhớ có thể share giữa `worker_threads` với buffer cục bộ:
+
+```ts
+const local = new Uint8Array(16); // Uint8Array<ArrayBuffer>
+const shared = new Uint8Array(new SharedArrayBuffer(16)); // Uint8Array<SharedArrayBuffer>
+
+function hashLocal(bytes: Uint8Array<ArrayBuffer>) {
+  return new Blob([bytes]); // OK — Blob/Web Crypto yêu cầu ArrayBuffer không shared
+}
+
+function inspectAny(bytes: Uint8Array<ArrayBufferLike>) {
+  return bytes.byteLength; // chấp nhận cả ArrayBuffer lẫn SharedArrayBuffer
+}
+
+// hashLocal(shared); // lỗi TS2345 — SharedArrayBuffer không gán vào ArrayBuffer
+```
+
+- Annotation trần `Uint8Array` mặc định là `Uint8Array<ArrayBufferLike>` — truyền nó vào Web API trên Node 26 đòi `ArrayBuffer` (như `new Blob([u8])`, `crypto.subtle.digest`, `new Response(u8)`) sẽ báo `TS2322`.
+- Giải pháp: annotate tường minh `Uint8Array<ArrayBuffer>` (hoặc `Buffer<ArrayBuffer>`) khi API yêu cầu buffer không shared, và `Uint8Array<ArrayBufferLike>` khi hàm chỉ đọc được cả hai.
 
 ---
 
@@ -434,7 +457,7 @@ type Variadic = [...string[], number]; // phần tử cuối cố định
 - Variadic tuple + generics: nền tảng cho kiểu `zip`, `concat`, infer rest params.
 
 ```ts
-function head<T extends unknown[]>(tuple: [...T]): T[0] {
+function head<T extends readonly unknown[]>(tuple: readonly [...T]): T[0] {
   return tuple[0];
 }
 const h = head(["a", 1] as const); // "a"
@@ -534,13 +557,13 @@ function log(msg: string): void {
 
 | Từ ↓ / Đến → | `any` | `unknown` | `never` | `void` | `string` |
 | --- | --- | --- | --- | --- | --- |
-| `any` | ✓ | ✓ | ✓* | ✓ | ✓ |
+| `any` | ✓ | ✓ | **✗*** | ✓ | ✓ |
 | `unknown` | ✓ | ✓ | ✗ | ✗ | ✗ |
 | `never` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `void` | ✓ | ✓ | ✗ | ✓ | ✗ |
 | `string` | ✓ | ✓ | ✗ | ✗** | ✓ |
 
-\*Gán vào `never` từ `any` được checker cho phép nhưng vô nghĩa — đừng dựa vào.  
+\*Ngoại lệ duy nhất của `any`: **`any` KHÔNG gán được vào `never`** (`TS2322`); chỉ chính `never` mới gán được vào `never` — nhờ đó `assertNever(x: never)` không bị `any` lách qua im lặng.  
 \*\*`void` đặc biệt: hàm trả `string` có thể gán cho `() => void` (caller bỏ qua return); ngược lại không gán `void` vào chỗ cần `string`.
 
 - Gán `any` lan truyền độc; `unknown` buộc narrowing.
@@ -695,7 +718,7 @@ Chi tiết augmentation vs merging: §17.
 
 ## 9. Narrowing: predicates vs asserts vs `satisfies`
 
-**Narrowing tự động**: `typeof`, `===` / `!==`, `in`, `instanceof`, truthiness, discriminated union, control-flow analysis, assignment.
+**Narrowing tự động**: `typeof`, `===` / `!==`, `in`, `instanceof`, `Array.isArray`, `Error.isError` (ES2026 / Node 26 — hẹp `Error` an toàn cross-realm), truthiness, discriminated union, control-flow analysis, assignment.
 
 ```ts
 function len(x: string | string[]) {
@@ -705,6 +728,14 @@ function len(x: string | string[]) {
 
 function hasId(x: object): x is { id: string } {
   return "id" in x && typeof (x as { id: unknown }).id === "string";
+}
+
+// TS 5.5+: Control-flow narrowing cho constant indexed access (khi cả obj và key không bị gán lại)
+function upperAt(obj: Record<string, unknown>, key: string) {
+  if (typeof obj[key] === "string") {
+    return obj[key].toUpperCase(); // hẹp trực tiếp thành string mà không cần copy biến tạm
+  }
+  return undefined;
 }
 ```
 
@@ -719,6 +750,13 @@ function pick(x: unknown) {
   if (isString(x)) x.toUpperCase(); // hẹp ở nhánh true
   // x vẫn unknown ở đây
 }
+```
+
+**Inferred Type Predicates (TS 5.5+):** khi hàm không ghi rõ return type, không có `return` mơ hồ và biểu thức trả về thực hiện narrowing trực tiếp trên tham số, TS tự suy ra `x is T` — cực hữu ích với `.filter()`:
+
+```ts
+const raw: Array<string | null | undefined> = ["a", null, "b", undefined];
+const clean = raw.filter((x) => x != null); // TS 5.5+: tự suy ra string[], không cần `(x): x is string => ...`
 ```
 
 - Guard trả `boolean` + `x is T`.
@@ -776,11 +814,11 @@ const cfg = { port: 3000 } satisfies { port: number };
 - `this is T` predicate trên method: hẹp `this` (hiếm, class hierarchy).
 
 ```ts
-class Response {
+class ApiResponse {
   header(name: string) {
     return "";
   }
-  isJson(): this is Response & { json(): unknown } {
+  isJson(): this is ApiResponse & { json(): unknown } {
     return this.header("content-type").includes("json");
   }
 }
@@ -873,12 +911,12 @@ const r = route("/users/:id"); // "/users/:id", không phải string
 Chặn một vị trí tham gia **suy luận**. Các đối số khác suy `T`; vị trí `NoInfer<T>` chỉ **kiểm tra** khớp.
 
 ```ts
-function pair<T>(primary: T, secondary: NoInfer<T>): [T, T] {
+function pair<const T>(primary: T, secondary: NoInfer<T>): [T, T] {
   return [primary, secondary];
 }
 
-pair("a", "a");       // T = "a"
-pair("a", "b");       // lỗi — "b" không gán vào "a"
+pair("a", "a");         // T = "a"
+// pair("a", "b");      // lỗi TS2345 — "b" không gán vào "a"
 pair<string>("a", "b"); // OK nếu annotate T = string
 ```
 
@@ -903,7 +941,7 @@ Trước `NoInfer`, người ta dùng `T & {}` hack hoặc tách hàm — đừn
 | Vị trí | Hướng | Ví dụ |
 | --- | --- | --- |
 | Output / property đọc | covariant | `() => Animal` nhận `() => Dog` |
-| Input param (strictFunctionTypes) | contravariant | `(a: Dog) => void` **không** nhận `(a: Animal) => void` |
+| Input param (strictFunctionTypes) | contravariant | `(a: Dog) => void` **nhận được** `(a: Animal) => void`; ngược lại `(a: Animal) => void` **không** nhận `(a: Dog) => void` |
 | Mutable prop | invariant thực dụng | `Box<Animal>` ≠ `Box<Dog>` khi ghi |
 
 ```ts
@@ -954,7 +992,7 @@ type DeepReadonly<T> = {
 ```
 
 - Interface có thể tự tham chiếu trực tiếp; `type` alias cũng được nếu gián tiếp (qua object/array).
-- `type T = T[]` trực tiếp → lỗi circular; `type T = { x: T }` OK.
+- Từ TS 3.7+, `type T = T[]` và `type T = { x: T }` đều hợp lệ nhờ deferred instantiation; lỗi circular `TS2456` xảy ra khi tự tham chiếu trực tiếp ở top-level như `type T = T` hoặc `type T = T | string`.
 - Độ sâu đệ quy conditional bị giới hạn (khoảng 50+ tùy phiên bản) — đừng parse HTML bằng type.
 
 ```ts
@@ -1111,22 +1149,40 @@ Variadic + optional:
 ```ts
 type Params<F> = F extends (...args: infer P) => unknown ? P : never;
 
-type DropOptional<T extends unknown[]> = T extends [...infer R, infer L?]
-  ? L extends undefined
-    ? DropOptional<R>
-    : T
-  : T;
+// Bỏ các phần tử optional ở cuối tuple: nếu bỏ phần tử cuối (R) mà vẫn gán được vào T
+// thì phần tử cuối đó là optional. Lưu ý: mẫu `[...infer R, infer L?]` khớp cả phần tử bắt buộc,
+// và hành vi phân biệt `T?` với `T | undefined` phụ thuộc `exactOptionalPropertyTypes`.
+type DropTrailingOptional<T extends readonly unknown[]> =
+  T extends readonly [...infer R, unknown?]
+    ? R extends T
+      ? DropTrailingOptional<R>
+      : T
+    : T;
 
-type Cons<H, T extends unknown[]> = [H, ...T];
-type Concat<A extends unknown[], B extends unknown[]> = [...A, ...B];
+type D1 = DropTrailingOptional<[string, number?, boolean?]>; // [string]
+type D2 = DropTrailingOptional<[string, undefined]>;         // [string, undefined]
+
+type Cons<H, T extends readonly unknown[]> = [H, ...T];
+type Concat<A extends readonly unknown[], B extends readonly unknown[]> = [...A, ...B];
 ```
 
 ```ts
-function zip<A extends unknown[], B extends unknown[]>(
-  a: [...A],
-  b: [...B],
-): { [K in keyof A]: [A[K], K extends keyof B ? B[K] : never] } {
-  return a.map((x, i) => [x, b[i]]) as never;
+type Zip<A extends readonly unknown[], B extends readonly unknown[]> =
+  A extends readonly [infer AH, ...infer AT]
+    ? B extends readonly [infer BH, ...infer BT]
+      ? [[AH, BH], ...Zip<AT, BT>]
+      : []
+    : [];
+
+type Pairs = Zip<["a", "b"], [1, 2]>; // [["a", 1], ["b", 2]]
+
+function zip<A, B>(a: readonly A[], b: readonly B[]): Array<[A, B]> {
+  const len = Math.min(a.length, b.length);
+  const out: Array<[A, B]> = [];
+  for (let i = 0; i < len; i++) {
+    out.push([a[i]!, b[i]!]); // index nằm trong [0, len)
+  }
+  return out;
 }
 ```
 
@@ -1203,7 +1259,7 @@ const p2: P = tmp; // OK — qua biến trung gian (mất freshness)
 | `f({ extra: 1 })` với `f(x: T)` | ✓ | có |
 | `return { extra: 1 }` kiểu trả `T` | ✓ | có |
 | `const tmp = { extra }; use(tmp)` | ✗ | không (open) |
-| Spread `const p: T = { ...tmp }` | một phần | field thừa từ literal còn lại vẫn bắt |
+| Spread `const p: T = { ...tmp }` | **✗** (mất freshness) | **bỏ qua** excess property check (kể cả prop thêm cùng literal) |
 | `as T` | bỏ check | assertion |
 
 ```ts
@@ -1214,7 +1270,7 @@ take({ x: 1, y: 2, z: 3 }); // lỗi fresh
 const v = { x: 1, y: 2, z: 3 };
 take(v); // OK
 
-const p3: P = { x: 1, y: 2, ...{ z: 3 } }; // vẫn excess trên z nếu checker thấy
+const p3: P = { x: 1, y: 2, ...{ z: 3 } }; // OK — spread làm mất freshness, bỏ qua excess property check trên z
 ```
 
 Weak types (mọi prop optional): gán object không chồng key nào → lỗi, kể cả không fresh — chống `{}` gán nhầm.
@@ -1406,7 +1462,9 @@ Bật `"strict": true` (TS 7: **mặc định true**) gồm nhiều cờ con; v�
     "noImplicitOverride": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "target": "ES2024",
+    "target": "ES2025",
+    "lib": ["ES2025", "ESNext.Temporal"],
+    "types": ["node"],
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
     "rewriteRelativeImportExtensions": true
@@ -1416,12 +1474,17 @@ Bật `"strict": true` (TS 7: **mặc định true**) gồm nhiều cờ con; v�
 
 ### TS 7 — defaults cứng
 
-| Mục | TS 7 |
+| Mục | TS 7.0 |
 | --- | --- |
-| `strict` | mặc định **true** |
-| `moduleResolution: "node"` / `node10` / `classic` | **error** — dùng `NodeNext` / `bundler` |
-| `target: es5` (và vài target cũ) | **error** — Node 26: `ES2024` / `ESNext` |
-| Compiler | Go; ngữ nghĩa ~ TS 6 |
+| `strict` | mặc định **`true`** |
+| `types` | mặc định **`[]`** (không tự nạp mọi `@types/*` — dự án Node cần khai báo `"types": ["node"]`) |
+| `module` | mặc định **`"esnext"`** (dự án Node ESM nên đặt tường minh `"NodeNext"`) |
+| `rootDir` | mặc định **`"./"`** (không tự suy từ thư mục chung thấp nhất) |
+| `moduleResolution: "node"` / `node10` / `classic` | **error** — dùng `"NodeNext"` / `"bundler"` |
+| `target: es5` (và target cũ) | **error** — Node 26 dùng `ES2025` (+ `ESNext.Temporal` trong `lib`) |
+| `baseUrl` | **đã gỡ** — thay bằng `paths` tường minh hoặc `package.json` `imports` (`#...`) |
+| `esModuleInterop: false` / `allowSyntheticDefaultImports: false` | **đã gỡ** (luôn bật interop) |
+| Compiler | Native **Go**; ngữ nghĩa tương đương TS 6, biên dịch nhanh hơn nhiều |
 
 - `skipLibCheck`: tăng tốc CI; vẫn type-check code mình.
 - `verbatimModuleSyntax` + Node strip: thiếu `type` trên type-only import → runtime trỏ export không tồn tại.
@@ -1545,6 +1608,7 @@ node src/app.ts   # Node 26: strip types ổn định, không type-check
 - `namespace` / `module` có runtime code
 - Parameter properties (`constructor(private x: string)`)
 - `import =` / `export =`
+- Angle-bracket type assertion (`<Type>expr` — dùng `expr as Type` thay thế)
 
 Decorators là trường hợp riêng: `erasableSyntaxOnly` không chặn `@dec`, nhưng **Node 26 không parse decorator** và không transform chúng. Cần pipeline emit; xem [decorators.md](decorators.md).
 
@@ -1731,11 +1795,11 @@ const tup = [1, 2] as const; // readonly [1, 2]
 | `T` → `unknown` | ✓ | |
 | `unknown` → `T` | ✗ | narrow / assert |
 | `T` → `any` | ✓ | |
-| `any` → `T` | ✓ | tắt an toàn |
+| `any` → `T` | ✓ (trừ `never`) | tắt an toàn; `any` không gán vào `never` |
 | `never` → `T` | ✓ | bottom |
 | `T[]` → `readonly T[]` | ✓ | |
 | `readonly T[]` → `T[]` | ✗ | |
-| `[string, number]` → `string[]` | ✓ (một chiều thường) | mất độ dài cố định |
+| `[string, number]` → `(string \| number)[]` | ✓ (một chiều) | mất độ dài cố định (`[string, number]` **không** gán vào `string[]`; `[string, string]` → `string[]` ✓) |
 | object literal thừa prop → `T` | ✗ | excess / freshness |
 | biến cùng shape thừa prop → `T` | ✓ | open assignability |
 | `() => string` → `() => void` | ✓ | đặc hiệu `void` |
@@ -1790,7 +1854,7 @@ function f(x: number): string;
 function f(x: string | number): string | number {
   return typeof x === "string" ? x.length : String(x);
 }
-const g: (x: string | number) => string | number = f; // có thể lỗi — overload ≠ union implementation
+const g: (x: string | number) => string | number = f; // lỗi TS2322 — TS kiểm từng overload riêng lẻ, không ghép union implementation
 ```
 
 Implementation signature **không** visible với caller — chỉ overload list. Chi tiết: [functions-methods.md](functions-methods.md).
@@ -1886,7 +1950,7 @@ function dump(x: unknown) {
 }
 
 dump(new String("a")); // keys của wrapper — không phải "string"
-dump(String);          // "function" (built-in constructor)
+dump(String);          // "String" — rơi vào nhánh typeof === "function" và trả x.name
 ```
 
 ```ts
@@ -1965,7 +2029,7 @@ function hasOwn<K extends PropertyKey>(
 | Utility | Việc | Bẫy |
 | --- | --- | --- |
 | `Partial<T>` | mọi field optional | sâu một tầng |
-| `Required<T>` | bỏ `?` | không bỏ `| undefined` trong value |
+| `Required<T>` | bỏ `?` | bỏ `\| undefined` trên prop optional khi `exactOptionalPropertyTypes: false`; giữ `\| undefined` khi `exactOptionalPropertyTypes: true` hoặc trên non-optional `{ x: number \| undefined }` |
 | `Readonly<T>` | một tầng | mutate nested vẫn được |
 | `Pick<T, K>` | chọn key | `K` phải ⊆ `keyof T` |
 | `Omit<T, K>` | bỏ key | union `T` phân phối khác trực giác |
@@ -2112,12 +2176,14 @@ const cfg = { port: 3000, host: "localhost" } as const satisfies Record<
 | **TS 4.9+** | `satisfies` |
 | **TS 5.0+** | decorators chuẩn (khi bật), `const` type params |
 | **TS 5.4+** | `NoInfer`, cải thiện narrowing |
-| **TS 5.8+** | `erasableSyntaxOnly` |
-| **TS 6 → 7** | default `strict: true`; `moduleResolution` `node`/`node10`/`classic` **error**; compiler Go (TS 7) |
+| **TS 5.5+** | Inferred type predicates (`.filter`), control-flow narrowing cho constant indexed access |
+| **TS 5.7+** | `Uint8Array<ArrayBuffer>` generic (tách `ArrayBuffer` vs `SharedArrayBuffer`) |
+| **TS 5.8+** | `erasableSyntaxOnly`, `rewriteRelativeImportExtensions` |
+| **TS 6 → 7.0** | Native Go compiler; default `strict: true`, `types: []`, `module: "esnext"`, `rootDir: "./"`; gỡ `baseUrl` & `esModuleInterop: false`; `moduleResolution` `node`/`node10`/`classic` **error** |
 | **ES / Node** | ESM-first; `NodeNext` |
 | **Node 22.6+** | type stripping (experimental → dần ổn định) |
-| **Node 24** | Active LTS tại 2026-10-06; strip ổn định từ 24.12.0 |
-| **Node 26** | strip **ổn định** mặc định; **gỡ** `--experimental-transform-types` |
+| **Node 24** | Maintenance LTS từ 2026-10-20; strip ổn định từ 24.12.0 |
+| **Node 26** | **Active LTS** ("Lithium", từ 2026-10-28, V8 14.6+); strip **ổn định** mặc định; **gỡ** `--experimental-transform-types`; **`Error.isError(x)`** (ES2026) |
 | **Explicit Resource Management** | `Symbol.dispose` / `using` — [statements.md](statements.md) |
 
 ---

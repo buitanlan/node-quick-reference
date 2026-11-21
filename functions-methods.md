@@ -107,7 +107,8 @@ Anonymous expression: `multiply.name` vẫn là `"multiply"` nhờ inference t�
 const ops = { mul: function (a: number, b: number) { return a * b; } };
 ops.mul.name; // "mul" (method inference)
 const detached = function (x: number) { return x; };
-detached.name; // "" — stack khó đọc hơn
+detached.name; // "detached" (ES2015 SetFunctionName từ tên binding)
+(0, function (x: number) { return x; }).name; // "" — không gắn trực tiếp tên binding, stack khó đọc hơn
 ```
 
 ### 1.3 Arrow
@@ -185,7 +186,7 @@ Named IIFE đệ quy: `(function walk(n: Node): void { … walk(child); })(root)
 | `const { fn } = obj; fn()` | `undefined` | `undefined` | Mất receiver |
 | `(0, obj.fn)()` / `const f = obj.fn; f()` | `undefined` | `undefined` | Indirect / detached |
 | `fn()` | `undefined` | `undefined` | Bare call |
-| `fn.call(x, …)` | `x`; `null`/`undefined` → `undefined` | `undefined` | |
+| `fn.call(x, …)` | `x` nguyên vẹn (`null` giữ `null`, `undefined` giữ `undefined`) | `undefined` | Không box primitive trong strict/ESM |
 | `fn.apply(x, args)` | như `call` | `undefined` | |
 | `fn.bind(x)()` | `x` (cố định) | `undefined` | `call` sau bind **không** đổi `this` |
 | `new fn()` | instance mới | `fn` | `this` instance; `prototype` chain |
@@ -193,9 +194,9 @@ Named IIFE đệ quy: `(function walk(n: Node): void { … walk(child); })(root)
 | `Reflect.apply(fn, t, args)` | `t` | `undefined` | Tường minh |
 | `Reflect.construct(fn, args, newT)` | instance `newT.prototype` | `newT` | |
 | `super.fn()` | `this` hiện tại | `undefined` | Home object / `[[HomeObject]]` |
-| `setTimeout(obj.fn, 0)` | `undefined` | `undefined` | Pass method = detach |
-| `emitter.on("x", obj.fn)` | `undefined` (trừ API tự bind) | `undefined` | Node `EventEmitter` **không** bind |
-| Tagged template | Bare `tag`: `undefined`; `obj.tag`: `obj` | Theo call site | Method tag vẫn giữ receiver |
+| `setTimeout(obj.fn, 0)` | `Timeout` (trên Node.js; browser là `globalThis`) | `undefined` | Pass method = mất receiver `obj` |
+| `emitter.on("x", obj.fn)` | `emitter` | `undefined` | Node `EventEmitter` gọi listener non-arrow với `this === emitter` (§2.6) |
+| Tagged template | Bare `tag`: `undefined`; `obj.tag`: `obj` | `undefined` | Không thể dùng với `new`; method tag vẫn giữ receiver |
 | `arr.forEach(obj.fn)` | `undefined` (trừ `thisArg` đối số 2) | `undefined` | `forEach`/`map` nhận `thisArg` |
 | Class static `C.m()` | `C` (constructor) | `undefined` | Detach `const { m } = C` mất `this` |
 | Class field initializer | instance đang construct | — | Chạy như thể trong ctor |
@@ -210,7 +211,7 @@ const obj = {
 };
 const greet = obj.greet;
 obj.greet(); // "hi node"
-greet();     // TypeError / undefined (strict)
+greet();     // TypeError: Cannot read properties of undefined (reading 'name') (strict/ESM)
 ```
 
 ### 2.2 `new.target`
@@ -260,7 +261,7 @@ setTimeout(c.dec, 0); // this sai
 | Arrow field / `bind` ctor | Có | Mỗi instance | **Không** (`super` trong arrow field không hợp lệ như method) |
 | Wrap `() => svc.handle()` | Có | Closure mỗi lần gán | n/a |
 
-> Arrow field / bind trên hàng loạt instance tốn bộ nhớ hơn. Hot path → prototype + bind khi cần, hoặc wrap call-site.
+> Arrow field / bind trên hàng loạt instance tốn bộ nhớ hơn. Hot path → prototype + bind khi cần, hoặc wrap call-site. Với **Stage 3 decorators** (TS 5+/7), có thể viết decorator `@bound` gọi `context.addInitializer(function () { this[name] = this[name].bind(this); })` để tự bind từng instance mà vẫn giữ method trên prototype.
 
 ### 2.4 Annotate `this` (TS)
 
@@ -321,11 +322,12 @@ function createId(factory = () => crypto.randomUUID()) {
 
 **TDZ của default params** — mỗi param có binding riêng; default **không** thấy body, và chưa init thì không đọc được:
 
-```ts
+```js
+// JS runtime (TS báo lỗi biên dịch cho tham chiếu TDZ chéo/tự tham chiếu)
 function bad(a = b, b = 1) {
   return [a, b];
 }
-// bad(); // ReferenceError — `b` còn TDZ khi đánh `a`
+// bad(); // ReferenceError — `b` còn TDZ khi đánh giá `a`
 
 function ok(a = 1, b = a) {
   return [a, b]; // [1, 1]
@@ -494,8 +496,8 @@ Khi union/generic đủ rõ → khỏi overload (`identity<T>(x: T): T`). Discri
 ### 4.3 Overload + generic / type predicate
 
 ```ts
+function pick<T extends object, K extends keyof T>(obj: T, key: K): T[K];
 function pick(obj: object, key: string): unknown;
-function pick<T, K extends keyof T>(obj: T, key: K): T[K];
 function pick(obj: object, key: PropertyKey): unknown {
   return (obj as Record<PropertyKey, unknown>)[key];
 }
@@ -572,9 +574,12 @@ const calculator = {
 };
 
 class UserRepo {
-  constructor(private readonly db: { query: (sql: string) => Promise<unknown> }) {}
+  private readonly db: { query: (sql: string, params?: unknown[]) => Promise<unknown> };
+  constructor(db: { query: (sql: string, params?: unknown[]) => Promise<unknown> }) {
+    this.db = db;
+  }
   async findById(id: string) {
-    return this.db.query("select * from users where id = $1");
+    return this.db.query("select * from users where id = $1", [id]);
   }
   static empty() {
     return new UserRepo({ query: async () => null });
@@ -614,7 +619,7 @@ const proto = {
   prop: function () {
     return this.kind;
   }, // function property — `this` dynamic, không `super`
-  arrow: () => this, // lexical — thường globalThis/undefined, hiếm khi đúng
+  arrow: () => this, // lexical — trong ESM top-level luôn là undefined (không phải globalThis)
 };
 
 class Service {
@@ -692,6 +697,21 @@ t.celsius; // 100
 
 - Không gọi `t.celsius()` — trông như property.
 - Setter: validate rồi `throw`; `Object.defineProperty` khi cần `enumerable`/`configurable`.
+- **Setter type rộng hơn getter (TS 4.3+/7):** TS cho phép `set` nhận union rộng hơn kiểu `get` trả về (miễn getter assignable vào setter), tiện cho normalize input:
+
+```ts
+class Box {
+  #size = 0;
+  get size(): number {
+    return this.#size;
+  }
+  set size(value: number | string) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) throw new TypeError("invalid size");
+    this.#size = n;
+  }
+}
+```
 
 ### 7.1 Side effects — getter bị gọi “vô hình”
 
@@ -795,7 +815,7 @@ Math.max.toString(); // "function max() { [native code] }"
 |---|---|
 | JS source còn trên hàm | Giữ source text, gồm whitespace và comment (ES2018+) |
 | Builtin / host | `{ [native code] }` |
-| Bound | `"function bound …"` / native-style tùy engine |
+| Bound | `"function () { [native code] }"` trên V8/Node (chỉ `bound.name` là `"bound …"`) |
 | Callable Proxy | Native-style string; receiver không callable mới TypeError |
 
 Đừng dùng `toString()` làm bảo mật, fingerprint license, hay “parse AST”. Bundler/strip/emit đổi source trước khi runtime nhận nó. Tái tạo từ chuỗi không giữ môi trường closure gốc. Test hành vi thay vì so source.
@@ -837,7 +857,10 @@ function* outer() {
 
 ```ts
 class Page {
-  constructor(private items: string[]) {}
+  private readonly items: string[];
+  constructor(items: string[]) {
+    this.items = items;
+  }
   *chunks(size: number) {
     for (let i = 0; i < this.items.length; i += size) {
       yield this.items.slice(i, i + size);
@@ -850,9 +873,11 @@ class Page {
 
 Generator là **pull**: consumer gọi `next` để kéo. Giá trị truyền vào `next(x)` trở thành kết quả của `yield` đang treo — **`next` đầu tiên bỏ qua argument**.
 
+Khi gán kết quả của biểu thức `yield` (như `const x = yield "ready"`), luôn khai báo rõ return type **`Generator<TYield, TReturn, TNext>`** (hoặc **`AsyncGenerator<TYield, TReturn, TNext>`** cho async generator) để tránh lỗi biên dịch `TS7057` (`'yield' expression implicitly results in an 'any' type`):
+
 ```ts
-function* channel() {
-  const x: number = yield "ready";
+function* channel(): Generator<string | number, void, number> {
+  const x = yield "ready"; // x được suy luận là `number` nhờ TNext
   try {
     yield x * 2;
   } catch (e) {
@@ -863,10 +888,10 @@ function* channel() {
 }
 
 const g = channel();
-g.next();      // { value: "ready", done: false } — arg bị bỏ
-g.next(21);    // { value: 42, done: false } — yield nhận 21
+g.next();                // { value: "ready", done: false } — arg bị bỏ
+g.next(21);              // { value: 42, done: false } — yield nhận 21
 g.throw(new Error("x")); // ném vào điểm yield — có thể bị catch trong gen
-g.return("end");         // ép `return`, chạy `finally`, đóng iterator
+g.return();              // ép `return`, chạy `finally`, đóng iterator
 ```
 
 | Method | Ý nghĩa |
@@ -891,9 +916,9 @@ for await (const line of lines(source)) {
 }
 ```
 
-- `async function*` / `async *method()` → `AsyncGenerator`.
+- `async function*` / `async *method()` → `AsyncGenerator<TYield, TReturn, TNext>`.
 - `next`/`throw`/`return` trả **Promise** của `{ value, done }`.
-- `yield promise` không tự unwrap theo kiểu `await` mọi thenable ở mọi engine path — thường `yield await x` tường minh.
+- Trong `async function*`, **`yield expr` luôn gọi `Await(value)`** theo spec ES2018+ (`AsyncGeneratorYield`), nên luôn unwrap Promise/thenable trước khi giao cho consumer (`yield await x` thường viết cho dễ đọc, nhưng về ngữ nghĩa `yield promise` đã unwrap).
 - `for await...of` trên Node stream / readline: [async.md](async.md), [nodejs-apis.md](nodejs-apis.md).
 - Hủy: truyền `AbortSignal` vào producer; `break` chỉ đóng iterator, **không** abort I/O trừ khi producer lắng signal — [abort-context.md](abort-context.md).
 
@@ -922,7 +947,7 @@ async function load(id: string): Promise<User> {
 | Arrow / method | `async () => …` / `async find() { … }` |
 | `this` | Như hàm thường (method vs arrow) |
 
-Đừng `new Promise(async …)`. Combinators / AbortSignal → **[async.md](async.md)**.
+Đừng `new Promise(async …)`. Khi cần bọc một callback/hàm có thể **vừa `throw` đồng bộ vừa trả về `Promise`** thành một `Promise` đồng nhất (không tạo IIFE `async`), dùng **`Promise.try(fn, ...args)`** (ES2025 / Node 26). Combinators / AbortSignal → **[async.md](async.md)**.
 
 `async` **không** biến đệ quy thành không tốn stack giữa các `await` — đoạn sync trước `await` vẫn chồng frame; sau `await` stack “reset” microtask. Đệ quy sâu **không** `await` → vẫn `RangeError`.
 
@@ -942,7 +967,10 @@ Node 26 + TS hỗ trợ `using` / `await using`. Chi tiết → [statements.md](
 
 ```ts
 class FileTracker implements Disposable {
-  constructor(readonly path: string) {}
+  readonly path: string;
+  constructor(path: string) {
+    this.path = path;
+  }
   [Symbol.dispose]() {
     console.log("dispose", this.path);
   }
@@ -1002,7 +1030,7 @@ for (using item of getResources()) {
 
 > Nhiều API Node chưa `Disposable` — wrapper gọi `.close()` trong dispose. Factory nên trả `Disposable` khi cleanup deterministic quan trọng.
 
-Iterator hiện đại có `[Symbol.dispose]` gọi `return()` — `using it = stream[Symbol.iterator]()` đóng sớm. Xem [iterables-linq.md](iterables-linq.md).
+Iterator hiện đại có `[Symbol.dispose]` (gọi `return()`) và AsyncIterator có `[Symbol.asyncDispose]` (gọi async `return()`). Với `stream.Readable` (là `AsyncIterable` — dùng `Symbol.asyncIterator`), dùng `await using it = stream[Symbol.asyncIterator]()` để đóng sớm an toàn; với sync iterator (generator/array) dùng `using it = gen()`. Xem [iterables-linq.md](iterables-linq.md).
 
 ---
 
@@ -1071,7 +1099,8 @@ function walk(root: Node) {
   const seen = new Set<Node>();
   while (stack.length) {
     const n = stack.pop()!;
-    if (!seen.add(n)) continue;
+    if (seen.has(n)) continue; // Set.add trả về `this` (luôn truthy) — phải kiểm `has` trước
+    seen.add(n);
     // …
     for (const c of n.children) stack.push(c);
   }
@@ -1131,7 +1160,7 @@ fn.call(thisArg, a, b);
 fn.apply(thisArg, [a, b]);
 const bound = fn.bind(thisArg, a);
 bound.name;   // "bound …"
-bound.length; // orig.length - boundArgs
+bound.length; // Math.max(0, orig.length - boundArgs)
 function* gen() {
   const x = yield 1;
   yield* other();
@@ -1165,13 +1194,13 @@ if (new.target === undefined) throw new TypeError("use new");
 |---|---|
 | ES2015 | arrow, default/rest, class, generators, `name` inference, spec TCO (**V8 không làm**) |
 | ES2017 | async/await |
-| ES2018+ | async generators |
-| TS | overload, `this` param, parameter properties |
-| TS 5+/7 | `const` type params |
-| ERM | `using` / `await using`, `Disposable`, `SuppressedError` |
-| **Node 26** | ESM; `using` với lib/types phù hợp; V8 **14.6** — vẫn **không** PTC |
+| ES2018+ | async generators (`AsyncGeneratorYield` luôn `Await(value)`) |
+| ES2025 | `Promise.try(fn, ...args)` |
+| ES2026 | ERM (`using` / `await using`, `Disposable`, `SuppressedError`) |
+| TS 4.3–5+/7.0 | overload, `this` param, getter/setter distinct types (4.3), `<const T>` & Stage 3 decorators `addInitializer` (5.0), TS 7.0 native Go compiler |
+| **Node 26 Active LTS** | V8 **14.6+** (vẫn **không** PTC); ESM; ERM & `Promise.try` native; type strip ổn định (chỉ erasable, không parameter properties) |
 
-Baseline: **Node 26** + **TS 7**. Bật `lib` có `Disposable`/ESNext khi dùng `using`.
+Baseline: **Node 26 Active LTS** + **TS 7.0**. Bật `lib` có `Disposable`/ESNext khi dùng `using`.
 
 `Function.prototype.toString` giữ source text nếu source có sẵn; kết quả phản ánh mã sau build/strip, không khôi phục TypeScript ban đầu. Feature-detect API (`typeof Iterator.concat === "function"`) thay vì parse source hàm.
 
@@ -1189,5 +1218,4 @@ Baseline: **Node 26** + **TS 7**. Bật `lib` có `Disposable`/ESNext khi dùng 
 - [tsconfig & biên dịch TypeScript](tsconfig.md) — parameter properties / strip-types
 - [Event loop & concurrency model](event-loop.md) — recursion vs queue, async gen CPU
 - [AbortSignal & request context](abort-context.md) — đóng async generator + signal
-
 - [Eval và code không tin cậy](security.md)

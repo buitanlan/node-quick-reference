@@ -2,7 +2,7 @@
 
 Xử lý lỗi đúng cách: **không nuốt lỗi**, phân biệt lỗi vận hành vs bug, luôn `throw` `Error` (có `cause`), biết catalog `SystemError` / `ERR_*`, và xử lý an toàn `unhandledRejection` / `uncaughtException` trên Node.
 
-Baseline: **Node.js 26**, **TypeScript 7**, ESM. Abort: [abort-context.md](abort-context.md). `using` / `SuppressedError`: [statements.md](statements.md). Worker: [threading.md](threading.md).
+Baseline: **Node.js 26 Active LTS ("Lithium", V8 14.6+, Undici 8+)**, **TypeScript 7.0**, ESM. Abort: [abort-context.md](abort-context.md). `using` / `SuppressedError`: [statements.md](statements.md). Worker: [threading.md](threading.md).
 
 ---
 
@@ -22,6 +22,7 @@ Baseline: **Node.js 26**, **TypeScript 7**, ESM. Abort: [abort-context.md](abort
   - [3.2 `Error.captureStackTrace(target, constructorOpt?)`](#32-errorcapturestacktracetarget-constructoropt)
   - [3.3 `Error.prepareStackTrace` — cẩn thận](#33-errorpreparestacktrace--cẩn-thận)
   - [3.4 Async stack traces](#34-async-stack-traces)
+  - [3.5 Source maps (`--enable-source-maps`)](#35-source-maps---enable-source-maps)
 - [4. Custom errors](#4-custom-errors)
   - [4.1 Class chuẩn với `name`, `code`, `ErrorOptions`](#41-class-chuẩn-với-name-code-erroroptions)
   - [4.2 Gợi ý thiết kế](#42-gợi-ý-thiết-kế)
@@ -45,9 +46,10 @@ Baseline: **Node.js 26**, **TypeScript 7**, ESM. Abort: [abort-context.md](abort
   - [8.3 Combinators vs lỗi](#83-combinators-vs-lỗi)
   - [8.4 Anti-pattern: `new Promise(async …)`](#84-anti-pattern-new-promiseasync-)
   - [8.5 Async stack — thực hành](#85-async-stack--thực-hành)
+  - [8.6 `Promise.try(fn)` (ES2025 / Node 26)](#86-promisetryfn-es2025--node-26)
 - [9. `unhandledRejection` / `uncaughtException` / `rejectionHandled`](#9-unhandledrejection--uncaughtexception--rejectionhandled)
   - [9.1 `unhandledRejection`](#91-unhandledrejection)
-  - [9.2 `uncaughtException`](#92-uncaughtexception)
+  - [9.2 `uncaughtException` & `uncaughtExceptionMonitor`](#92-uncaughtexception--uncaughtexceptionmonitor)
   - [9.3 Fatal shutdown pattern (khuyến nghị service)](#93-fatal-shutdown-pattern-khuyến-nghị-service)
   - [9.4 `rejectionHandled`](#94-rejectionhandled)
   - [9.5 Worker không đi vào handler parent](#95-worker-không-đi-vào-handler-parent)
@@ -75,6 +77,7 @@ Baseline: **Node.js 26**, **TypeScript 7**, ESM. Abort: [abort-context.md](abort
 - [16. `using` / Disposable & lỗi khi dispose](#16-using--disposable--lỗi-khi-dispose)
   - [16.1 Lỗi body + lỗi dispose → `SuppressedError`](#161-lỗi-body--lỗi-dispose--suppressederror)
   - [16.2 Khi nào KHÔNG dựa `using` nuốt lỗi](#162-khi-nào-không-dựa-using-nuốt-lỗi)
+  - [16.3 `DisposableStack` & `AsyncDisposableStack`](#163-disposablestack--asyncdisposablestack)
 - [17. Worker error vs process chính](#17-worker-error-vs-process-chính)
   - [17.1 Serialize lỗi qua clone / IPC](#171-serialize-lỗi-qua-clone--ipc)
   - [17.2 Diagnostic: `process.report`](#172-diagnostic-processreport)
@@ -146,8 +149,8 @@ Error
 ├─ URIError           // encodeURI / decodeURI
 ├─ EvalError          // di sản, hiếm dùng
 ├─ AggregateError     // nhóm nhiều lỗi (Promise.any, batch, …)
-│     └─ (có thể lồng) SuppressedError  // ERM: lỗi gốc + lỗi dispose
-├─ DOMException       // web platform (AbortError, …) — Node cũng có
+├─ SuppressedError    // ERM: lỗi mới lúc dispose (.error) + lỗi gốc bị đè (.suppressed)
+├─ DOMException       // web platform (AbortError, TimeoutError, …) — Node cũng có
 └─ (Node) SystemError // err.code: ENOENT, EADDRINUSE, … + errno
 ```
 
@@ -225,10 +228,22 @@ try {
 | `EAGAIN` / `EWOULDBLOCK` | resource tạm bận | có |
 
 ```ts
+const RETRYABLE_NET_CODES = new Set([
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+]);
+
 function isRetryableNet(e: unknown): boolean {
-  if (!(e instanceof Error) || !("code" in e)) return false;
-  const code = String((e as { code: unknown }).code);
-  return ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ECONNREFUSED"].includes(code);
+  // Duyệt cả chuỗi cause (walkErrors — §5.3) để bắt lỗi mạng mà fetch/Undici bọc trong TypeError.cause
+  for (const node of walkErrors(e)) {
+    if (typeof node === "object" && node !== null && "code" in node) {
+      const code = (node as { code: unknown }).code;
+      if (typeof code === "string" && RETRYABLE_NET_CODES.has(code)) return true;
+    }
+  }
+  return false;
 }
 ```
 
@@ -236,7 +251,8 @@ function isRetryableNet(e: unknown): boolean {
 
 ```ts
 function isError(e: unknown): e is Error {
-  return e instanceof Error;
+  // ES2026 / V8 14.6 / Node 26 — chuẩn ECMAScript cross-realm, không phụ thuộc node:util
+  return Error.isError(e);
 }
 ```
 
@@ -263,10 +279,11 @@ function hasErrnoCode(e: unknown, code: string): boolean {
   );
 }
 
-types.isNativeError(new Error("x")); // native Error, kể cả một số cross-realm
+Error.isError(new Error("x"));          // true (kể cả cross-realm, subclass, DOMException)
+types.isNativeError(new Error("x"));    // true (kể cả cross-realm, subclass, DOMException trên Node 26)
 ```
 
-`util.types.isNativeError` nhận diện Error **của engine**, không nhận custom `class AppError extends Error` nếu… thực ra subclass JS hiện đại vẫn là native Error object. Cross-realm `Error` từ `vm` khác: `instanceof` fail, `isNativeError` thường vẫn true.
+Ưu tiên **`Error.isError(x)`** (ES2026 / V8 14.6 / Node 26) cho kiểm tra cross-realm thuần ECMAScript không phụ thuộc `node:util`. `util.types.isNativeError(x)` cũng trả `true` cho native `Error`, subclass `extends Error`, cross-realm `Error` từ `node:vm`, và `DOMException` trên Node 26 — hữu ích khi cần tương thích runtime cũ hơn chưa có `Error.isError`.
 
 Chi tiết `instanceof` / `Symbol.hasInstance`: [oop.md](oop.md).
 
@@ -359,12 +376,14 @@ function withStack<T>(fn: () => T): T {
       (err as { callsites?: CallSite[] }).callsites = callsites;
       return prev ? prev(err, callsites) : String(err);
     };
-    return fn();
+    return fn(); // PHẢI đọc `err.stack` bên trong fn() trước khi finally restore!
   } finally {
     Error.prepareStackTrace = prev; // luôn restore
   }
 }
 ```
+
+> **Lưu ý lazy evaluation:** `Error.prepareStackTrace` chỉ chạy khi `.stack` được **đọc lần đầu**. Nếu `fn()` chỉ tạo/trả `Error` mà chưa đọc `.stack`, lúc caller đọc `.stack` sau khi `finally` đã khôi phục `prev` thì hook tùy biến sẽ không chạy.
 
 > **Quy tắc:** production app **đừng** gán `Error.prepareStackTrace` global. Để SDK tracing làm. Nếu debug, restore ngay. Không log `getThis()`.
 
@@ -396,6 +415,24 @@ function inner() {
 ```
 
 > Throw trong `setImmediate` / `setTimeout` không gắn stack caller trừ khi bạn wrap Error lúc schedule. Capture `new Error("context")` làm `cause` nếu cần.
+
+### 3.5 Source maps (`--enable-source-maps`)
+
+Khi chạy code đã build/bundle (hoặc TypeScript qua compiler/bundler), stack trace mặc định trỏ tới dòng trong file `.js` đã emit. Bật source map để Node tự ánh xạ ngược về file gốc (`.ts`):
+
+```bash
+node --enable-source-maps dist/index.js
+# Hoặc qua biến môi trường cho toàn bộ child process:
+NODE_OPTIONS="--enable-source-maps" node dist/index.js
+```
+
+```ts
+// Bật/tắt tại runtime (Node 16.6+ / 26)
+process.setSourceMapsEnabled(true);
+```
+
+- Node đọc file `.map` **lười** (chỉ khi truy cập `.stack`), nhưng parse map lớn lần đầu vẫn tốn CPU/RAM — đo trước khi bật trên serverless cold-start cực nhạy.
+- Khi chạy thẳng `node file.ts` bằng native type-stripping của Node 26, số dòng được giữ nguyên (type bị thay bằng khoảng trắng) nên không cần source map.
 
 ---
 
@@ -452,7 +489,10 @@ Field enumerable: `code` trên instance thường enumerable (class field). `nam
 function isAppError(e: unknown): e is AppError {
   return (
     e instanceof AppError ||
-    (isErrorLike(e) && (e as { name?: string }).name === "AppError")
+    (isErrorLike(e) &&
+      (e as { name?: unknown }).name === "AppError" &&
+      "code" in e &&
+      typeof (e as { code: unknown }).code === "string")
   );
 }
 ```
@@ -474,7 +514,7 @@ console.log(ag.name);          // "AggregateError"
 console.log(ag.errors.length); // 2
 ```
 
-Xuất hiện khi: `Promise.any` (tất cả reject); tự gom validation / batch / shutdown nhiều resource; `SuppressedError` là **subclass** liên quan ERM — không phải mọi dual-error đều `AggregateError`.
+Xuất hiện khi: `Promise.any` (tất cả reject); tự gom validation / batch / shutdown nhiều resource. Lưu ý `SuppressedError` (ERM) kế thừa trực tiếp từ `Error`, **không** kế thừa `AggregateError` — không phải mọi dual-error đều là `AggregateError`.
 
 ```ts
 const results = await Promise.allSettled(tasks);
@@ -504,6 +544,16 @@ Cây hỗn hợp: `AppError { cause: AggregateError { errors: [ ENOENT, TypeErro
 ### 5.3 Duyệt đệ quy — `errors` rồi `cause`
 
 ```ts
+function* walkSuppressed(e: unknown, seen: Set<unknown>): Generator<unknown> {
+  if (
+    e instanceof SuppressedError ||
+    (typeof e === "object" && e !== null && "error" in e && "suppressed" in e)
+  ) {
+    yield* walkErrors((e as { error: unknown }).error, seen);
+    yield* walkErrors((e as { suppressed: unknown }).suppressed, seen);
+  }
+}
+
 function* walkErrors(e: unknown, seen = new Set<unknown>()): Generator<unknown> {
   if (e == null || seen.has(e)) return;
   seen.add(e);
@@ -515,8 +565,10 @@ function* walkErrors(e: unknown, seen = new Set<unknown>()): Generator<unknown> 
       for (const child of list) yield* walkErrors(child, seen);
     }
   }
-  if (e instanceof Error && e.cause !== undefined) {
-    yield* walkErrors(e.cause, seen);
+  yield* walkSuppressed(e, seen);
+  if (typeof e === "object" && e !== null && "cause" in e) {
+    const cause = (e as { cause: unknown }).cause;
+    if (cause !== undefined) yield* walkErrors(cause, seen);
   }
 }
 
@@ -537,34 +589,16 @@ function findCode(e: unknown, code: string): boolean {
 function flattenMessages(e: unknown): string[] {
   const out: string[] = [];
   for (const node of walkErrors(e)) {
-    if (node instanceof Error) out.push(`${node.name}: ${node.message}`);
+    if (Error.isError(node)) out.push(`${node.name}: ${node.message}`);
     else out.push(String(node));
   }
   return out;
 }
 ```
 
-`SuppressedError` (ES ERM): `error` (lỗi chính) + `suppressed` (lỗi dispose). Nên walk cả hai:
+`SuppressedError` (ECMA-262 ERM) có hai nhánh: `error` (**lỗi mới** phát sinh lúc dispose) và `suppressed` (**lỗi gốc** từ thân block bị đè). `walkErrors` tích hợp sẵn `walkSuppressed` nên duyệt trọn cả hai nhánh (kể cả `SuppressedError` lồng nhau khi nhiều tài nguyên cùng lỗi lúc dispose).
 
-```ts
-function walkSuppressed(e: unknown, seen: Set<unknown>): Generator<unknown> {
-  return (function* () {
-    if (typeof e === "object" && e !== null && "suppressed" in e) {
-      yield* walkErrors((e as { suppressed: unknown }).suppressed, seen);
-    }
-    if (typeof e === "object" && e !== null && "error" in e && !(e instanceof Error && !("errors" in e))) {
-      const inner = (e as { error?: unknown }).error;
-      if (inner !== undefined && inner !== (e as Error).cause) {
-        yield* walkErrors(inner, seen);
-      }
-    }
-  })();
-}
-```
-
-Thực dụng: check `e instanceof Error && "suppressed" in e` rồi `walkErrors(e.suppressed)`. Spec: `SuppressedError.prototype` có `.error` và `.suppressed`.
-
-> **Pitfall:** vòng `cause` tự tham chiếu → luôn dùng `Set` khi duyệt. Thứ tự nên **pre-order**: bản thân → `errors[]` → `suppressed`/`error` ERM → `cause`.
+> **Pitfall:** vòng `cause` tự tham chiếu → luôn dùng `Set` khi duyệt. Thứ tự nên **pre-order**: bản thân → `errors[]` → `error`/`suppressed` (ERM) → `cause`.
 
 ```ts
 function isAbortInTree(e: unknown): boolean {
@@ -691,20 +725,23 @@ Mỗi tầng thêm **ngữ cảnh mới** (operation, id, path) — không lặp
 ### 7.3 `formatErr` — in chuỗi cause + aggregate
 
 ```ts
-function formatErr(e: unknown, depth = 0): string {
-  if (!(e instanceof Error)) return String(e);
+function formatErr(e: unknown, depth = 0, seen = new Set<unknown>()): string {
+  if (!Error.isError(e)) return String(e);
   const pad = "  ".repeat(depth);
+  if (seen.has(e)) return `${pad}[Circular: ${e.name}]`;
+  seen.add(e);
   const parts = [`${pad}${e.name}: ${e.message}`];
   if (e instanceof AggregateError) {
     for (const [i, child] of e.errors.entries()) {
-      parts.push(`${pad}  [${i}] ${formatErr(child, depth + 1).trimStart()}`);
+      parts.push(`${pad}  [${i}] ${formatErr(child, depth + 1, seen).trimStart()}`);
     }
   }
-  if ("suppressed" in e && (e as { suppressed?: unknown }).suppressed !== undefined) {
-    parts.push(`${pad}Suppressed: ${formatErr((e as { suppressed: unknown }).suppressed, depth + 1).trimStart()}`);
+  if (e instanceof SuppressedError) {
+    parts.push(`${pad}Error (dispose): ${formatErr(e.error, depth + 1, seen).trimStart()}`);
+    parts.push(`${pad}Suppressed (original): ${formatErr(e.suppressed, depth + 1, seen).trimStart()}`);
   }
   if (e.cause !== undefined) {
-    parts.push(`${pad}Caused by: ${formatErr(e.cause, depth + 1).trimStart()}`);
+    parts.push(`${pad}Caused by: ${formatErr(e.cause, depth + 1, seen).trimStart()}`);
   }
   return parts.join("\n");
 }
@@ -826,6 +863,25 @@ async function outer() {
 }
 ```
 
+### 8.6 `Promise.try(fn)` (ES2025 / Node 26)
+
+Khi cần bọc một hàm **có thể sync throw hoặc trả Promise** vào chung một luồng Promise mà không trì hoãn chạy sang microtask như `Promise.resolve().then(fn)`:
+
+```ts
+function parseAndLoad(raw: string): Promise<Config> {
+  return Promise.try(() => {
+    const parsed = JSON.parse(raw) as { url: string }; // sync SyntaxError → Promise rejection
+    return fetchConfig(parsed.url);                    // async rejection → cùng luồng catch
+  });
+}
+
+// Truyền đối số mà không tạo closure phụ:
+const p = Promise.try(JSON.parse, raw);
+```
+
+- `fn` chạy **đồng bộ ngay lập tức** trong cùng tick; nếu `fn` throw đồng bộ, `Promise.try` bắt và trả rejected Promise (tránh phân nhánh sync throw vs async reject ở caller).
+- Khác `new Promise((resolve) => resolve(fn()))` ở chỗ gọn hơn và truyền được `...args`.
+
 ---
 
 ## 9. `unhandledRejection` / `uncaughtException` / `rejectionHandled`
@@ -840,17 +896,24 @@ process.on("unhandledRejection", (reason, promise) => {
 });
 ```
 
-Node hiện đại coi unhandled rejection nghiêm trọng. **Đừng** dùng handler toàn cục để “sửa” logic — sửa tại nguồn (`await` / `.catch`).
+Từ **Node 15+ đến Node 26**, chế độ mặc định là **`--unhandled-rejections=throw`**: nếu không có listener `unhandledRejection`, Node chuyển rejection thành uncaught exception và thoát process với exit code khác `0`. **Đừng** dùng handler toàn cục để “sửa” logic — sửa tại nguồn (`await` / `.catch`).
 
-### 9.2 `uncaughtException`
+### 9.2 `uncaughtException` & `uncaughtExceptionMonitor`
 
 ```ts
 process.on("uncaughtException", (err, origin) => {
   console.error("uncaughtException", origin, err);
 });
+
+// Chỉ quan sát (log/metric), KHÔNG ngăn Node crash/exit mặc định:
+process.on("uncaughtExceptionMonitor", (err, origin) => {
+  metrics.increment("fatal_uncaught", { origin });
+  logger.error("uncaughtExceptionMonitor", { err, origin });
+});
 ```
 
-`origin`: `'uncaughtException'` | `'unhandledRejection'` (tùy phiên bản/event). Sau sự kiện này, **trạng thái process có thể không tin cậy** (invariants, locks, half-written state).
+- `origin`: `'uncaughtException'` | `'unhandledRejection'`. Sau sự kiện này, **trạng thái process có thể không tin cậy** (invariants, locks, half-written state).
+- **`uncaughtExceptionMonitor`** chạy **trước** `uncaughtException`, không thay đổi hành vi thoát mặc định của Node, và **vẫn chạy** ngay cả khi đã gọi `process.setUncaughtExceptionCaptureCallback` (§18.1) — thích hợp cho APM/telemetry.
 
 ### 9.3 Fatal shutdown pattern (khuyến nghị service)
 
@@ -1090,10 +1153,10 @@ import fs from "node:fs";
 import util from "node:util";
 
 fs.access("missing", (err) => {
-  if (!err) return;
+  if (!err || typeof err.errno !== "number") return;
   console.log(util.getSystemErrorName(err.errno));    // "ENOENT"
   console.log(util.getSystemErrorMessage(err.errno)); // "No such file or directory"
-  console.log(util.getSystemErrorMap().get(err.errno)); // "ENOENT"
+  console.log(util.getSystemErrorMap().get(err.errno)); // ["ENOENT", "no such file or directory"]
 });
 ```
 
@@ -1101,11 +1164,11 @@ fs.access("missing", (err) => {
 |-----|------|
 | `util.getSystemErrorName(errno)` | số → tên (`ENOENT`) |
 | `util.getSystemErrorMessage(errno)` | số → mô tả OS (Node 22.12+ / 23.1+) |
-| `util.getSystemErrorMap()` | `Map<number, string>` errno → tên |
+| `util.getSystemErrorMap()` | `Map<number, [string, string]>` errno → tuple `[name, description]` |
 
 ```ts
 const map = util.getSystemErrorMap();
-for (const [errno, name] of map) {
+for (const [errno, [name, description]] of map) {
   // Windows và POSIX: cùng name, errno khác nhau có thể
 }
 ```
@@ -1138,8 +1201,10 @@ Nhóm **module / ESM** (hay gặp khi migrate ESM):
 | `code` | Ý nghĩa |
 |--------|---------|
 | `ERR_MODULE_NOT_FOUND` | resolve module / file thất bại |
-| `ERR_REQUIRE_ESM` | `require()` ESM thuần (không có CJS named export) |
-| `ERR_UNKNOWN_FILE_EXTENSION` | import đuôi không hỗ trợ (`.ts` khi strip tắt / `.foo`) |
+| `ERR_REQUIRE_ESM` | `require()` ESM trên Node cũ hoặc khi tắt `--no-experimental-require-module` (Node 22.12+/24/26 bật `require(esm)` mặc định cho ESM sync) |
+| `ERR_REQUIRE_ASYNC_MODULE` | `require()` một ESM module có Top-Level `await` trong đồ thị phụ thuộc |
+| `ERR_UNKNOWN_FILE_EXTENSION` | import đuôi không hỗ trợ (`.tsx`, `.css` không có loader) |
+| `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` | cú pháp TS non-erasable (`enum`, parameter properties, `namespace` runtime) khi chạy strip-types trên Node 26 |
 | `ERR_UNKNOWN_MODULE_FORMAT` | format không nhận |
 | `ERR_UNSUPPORTED_ESM_URL_SCHEME` | `import` scheme lạ |
 | `ERR_UNSUPPORTED_DIR_IMPORT` | import thư mục không có index hợp lệ |
@@ -1220,8 +1285,8 @@ Throw **bên trong** listener `'error'` → có thể `uncaughtException`. Handl
 import { readFile } from "node:fs/promises";
 
 try {
-  // @ts-expect-error minh họa runtime
-  await readFile(1 as unknown as string);
+  // @ts-expect-error minh họa runtime ERR_INVALID_ARG_TYPE
+  await readFile(1);
 } catch (e) {
   readCode(e); // "ERR_INVALID_ARG_TYPE"
 }
@@ -1231,8 +1296,8 @@ try {
 |------|----------------|--------|
 | `ERR_INVALID_ARG_TYPE` | caller truyền sai kiểu vào Node API | programmer error — fail-fast, đừng retry |
 | `ERR_MODULE_NOT_FOUND` | sai path, thiếu package, `exports` chặn | cài dep / sửa specifier; **không** bắt làm 404 HTTP trừ khi đó là user path |
-| `ERR_REQUIRE_ESM` | CJS `require` file `"type": "module"` | đổi `import`, hoặc dual package; Node 22+ có một số `require(esm)` — đừng dựa nếu lib thuần ESM |
-| `ERR_UNKNOWN_FILE_EXTENSION` | `import "./x.ts"` khi runtime không strip; hoặc `.css` không loader | Node 26 strip `.ts`; `.tsx` / `.mts` tùy; bundler cho non-JS |
+| `ERR_REQUIRE_ESM` / `ERR_REQUIRE_ASYNC_MODULE` | `require()` ESM trên Node cũ, hoặc trên Node 22.12+/24/26 khi đồ thị ESM có Top-Level `await` | dùng `import()` hoặc tách TLA; Node 26 bật `require(esm)` mặc định cho ESM sync |
+| `ERR_UNKNOWN_FILE_EXTENSION` / `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` | `import "./x.tsx"` hoặc `.css` không loader; hoặc cú pháp TS non-erasable | Node 26 strip `.ts`/`.mts`/`.cts` (không strip `.tsx`), đã gỡ `--experimental-transform-types`; non-erasable ném `SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]` |
 | Abort `ABORT_ERR` | `signal` abort giữa API | §15 — không log 5xx |
 
 > `ERR_MODULE_NOT_FOUND` **khác** `ENOENT`: cái trước là resolver ESM/CJS; cái sau là syscall fs. Dynamic `import(userPath)` cần chặn path traversal trước khi map 404.
@@ -1295,7 +1360,7 @@ if (!res.ok) {
 |------------|--------|----------------|
 | DNS fail, TCP refused, TLS, reset | **có** | `TypeError` (`fetch failed`) — `cause` có thể SystemError (`ECONNREFUSED`, …) |
 | Abort `signal` | **có** | `DOMException` `name === "AbortError"` / `ABORT_ERR` |
-| Timeout `AbortSignal.timeout` | **có** | AbortError; `signal.reason` thường `TimeoutError` / `DOMException` |
+| Timeout `AbortSignal.timeout` | **có** | `DOMException` với `name === "TimeoutError"` (cùng `signal.reason`, không phải `AbortError`) |
 | HTTP 404 / 500 | **không** | `Response` — tự kiểm `ok`/`status` |
 | Body đã consume hai lần | **có** | `TypeError` (body used) |
 | URL invalid | **có** | `TypeError` / `ERR_INVALID_URL` |
@@ -1318,16 +1383,18 @@ async function loadJson(url: string, signal?: AbortSignal): Promise<unknown> {
 
 ```ts
 class HttpError extends Error {
+  readonly status: number;
+  readonly code = "HTTP_STATUS";
+
   constructor(
-    readonly status: number,
+    status: number,
     statusText: string,
     options?: ErrorOptions,
   ) {
     super(`HTTP ${status} ${statusText}`, options);
     this.name = "HttpError";
-    this.code = "HTTP_STATUS";
+    this.status = status;
   }
-  readonly code: string;
 }
 ```
 
@@ -1461,13 +1528,18 @@ Explicit Resource Management: [statements.md](statements.md#11-using-vs-tryfinal
 
 ```ts
 class FileTracker implements Disposable {
-  constructor(readonly path: string) {}
+  readonly path: string;
+
+  constructor(path: string) {
+    this.path = path;
+  }
+
   [Symbol.dispose]() {
     /* close fd */
   }
 }
 
-function process() {
+function processFile() {
   using f = new FileTracker("./x.txt");
   throw new Error("work"); // vẫn dispose
 }
@@ -1475,30 +1547,29 @@ function process() {
 
 ### 16.1 Lỗi body + lỗi dispose → `SuppressedError`
 
-Nếu **thân block throw** và `[Symbol.dispose]` cũng throw, runtime tạo `SuppressedError`:
+Nếu **thân block throw** và `[Symbol.dispose]` cũng throw, runtime tạo `SuppressedError` (theo ECMA-262):
 
 | Field | Ý nghĩa |
 |-------|---------|
-| `error` | lỗi **gốc** (body) |
-| `suppressed` | lỗi **dispose** |
+| `error` | lỗi **mới phát sinh lúc dispose** (đè lên lỗi trước) |
+| `suppressed` | lỗi **gốc từ body** (bị đè bởi lỗi dispose) |
 | `name` | `"SuppressedError"` |
-| `message` | mô tả dual |
+| `message` | `"An error was suppressed during disposal."` |
 
 ```ts
-function isSuppressedError(
-  e: unknown,
-): e is Error & { error: unknown; suppressed: unknown } {
+function isSuppressedError(e: unknown): e is SuppressedError {
   return (
-    typeof e === "object" &&
-    e !== null &&
-    e.constructor?.name === "SuppressedError" &&
-    "error" in e &&
-    "suppressed" in e
+    e instanceof SuppressedError ||
+    (typeof e === "object" &&
+      e !== null &&
+      (e as { name?: unknown }).name === "SuppressedError" &&
+      "error" in e &&
+      "suppressed" in e)
   );
 }
 ```
 
-`globalThis.SuppressedError` có trên Node hiện đại khi ERM bật.
+`globalThis.SuppressedError` là built-in chuẩn mặc định trên Node 26 (không cần flag).
 
 ```ts
 try {
@@ -1509,17 +1580,17 @@ try {
   };
   throw new Error("work failed");
 } catch (e) {
-  if (isSuppressedError(e)) {
-    console.error("primary", e.error);
-    console.error("dispose", e.suppressed);
+  if (e instanceof SuppressedError) {
+    console.error("dispose (new):", e.error);        // Error: dispose failed
+    console.error("body (suppressed):", e.suppressed); // Error: work failed
   }
   throw e;
 }
 ```
 
-- Nhiều `using` LIFO: dispose ngược thứ tự khai. Lỗi dispose tầng trong có thể suppressed chồng.
+- Nhiều `using` LIFO: dispose ngược thứ tự khai báo. Nếu nhiều disposer cùng throw, lỗi mới nhất nằm ở `.error`, lỗi trước đó bị bọc lồng vào `.suppressed` thành chuỗi `SuppressedError`.
 - `await using` + `Symbol.asyncDispose`: dual error tương tự, async.
-- **`finally` throw** che body — ERM chuẩn hóa dual error; prefer `using` hơn `finally { throw }`.
+- **`finally` throw** che mất lỗi body — ERM chuẩn hóa dual error; prefer `using` hơn `finally { throw }`.
 
 ### 16.2 Khi nào KHÔNG dựa `using` nuốt lỗi
 
@@ -1529,12 +1600,51 @@ try {
 
 ```ts
 class Handle implements AsyncDisposable {
-  constructor(private fd: { close(): Promise<void> }) {}
+  #fd: { close(): Promise<void> };
+
+  constructor(fd: { close(): Promise<void> }) {
+    this.#fd = fd;
+  }
+
   async [Symbol.asyncDispose]() {
-    await this.fd.close();
+    await this.#fd.close();
   }
 }
 ```
+
+### 16.3 `DisposableStack` & `AsyncDisposableStack`
+
+Khi số lượng tài nguyên là **động** (trong vòng lặp, điều kiện nhánh, hoặc cần gom API chưa implement `Symbol.dispose`), dùng `DisposableStack` / `AsyncDisposableStack` (built-in trên Node 26):
+
+```ts
+async function copyWithLocks(paths: string[]) {
+  await using stack = new AsyncDisposableStack();
+
+  for (const p of paths) {
+    const fd = await openFile(p);
+    // adopt(): gắn callback cleanup cho giá trị không phải Disposable
+    stack.adopt(fd, (h) => h.close());
+  }
+
+  // use(): đăng ký đối tượng đã implement Disposable / AsyncDisposable
+  const lock = stack.use(await acquireLock());
+
+  // defer(): đăng ký callback cleanup không gắn với giá trị cụ thể
+  stack.defer(() => console.log("all resources released"));
+
+  // move(): chuyển quyền sở hữu sang stack mới (hữu ích khi trả resource từ factory)
+  return { lock, owned: stack.move() };
+}
+```
+
+| Method | Vai trò |
+|--------|---------|
+| `.use(resource)` | Đăng ký `Disposable`/`AsyncDisposable` và trả lại chính nó |
+| `.adopt(value, onDispose)` | Đăng ký resource bất kỳ kèm hàm dọn dẹp `onDispose(value)` |
+| `.defer(onDispose)` | Đăng ký callback chạy khi stack dispose (tương tự `defer` của Go) |
+| `.move()` | Chuyển toàn bộ resource sang stack mới; stack cũ trở thành đã dispose (no-op) |
+
+- Stack giải phóng theo thứ tự **LIFO**. Nếu nhiều bước cleanup throw, stack tự động xâu chuỗi thành `SuppressedError` (lỗi mới nhất ở `.error`, lỗi trước đó ở `.suppressed`).
 
 ---
 
@@ -1609,7 +1719,7 @@ function toDto(e: unknown): { name: string; message: string; code?: string } {
 }
 ```
 
-`ERR_WORKER_UNSERIALIZABLE_ERROR` khi throw giá trị không clone (circular, native handle). Luôn `try/catch` trong worker rồi `postMessage(toDto(err))`.
+`ERR_WORKER_UNSERIALIZABLE_ERROR` khi throw giá trị không clone được (function, `Symbol`, `Proxy`, `WeakMap`, native handle — lưu ý structured clone **có** hỗ trợ circular reference). Luôn `try/catch` trong worker rồi `postMessage(toDto(err))`.
 
 Child process `fork`: `'error'`, `'exit'`, `stdio` — lỗi uncaught child **không** phải `uncaughtException` parent; IPC message tương tự clone hạn chế.
 
@@ -1659,7 +1769,7 @@ process.setUncaughtExceptionCaptureCallback((err) => {
 });
 ```
 
-Chỉ **một** callback; đăng ký lần hai → `ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET`. Không kết hợp như recovery. APM đôi khi dùng — đừng chồng hai lớp. `uncaughtException` event có thể không chạy nếu capture đã set (tùy thứ tự) — đọc docs Node trước khi mix.
+Chỉ **một** callback; đăng ký lần hai → `ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET`. Không kết hợp như recovery. APM đôi khi dùng — đừng chồng hai lớp. Khi đã set capture callback, sự kiện `uncaughtException` **hoàn toàn không emit** — chỉ `uncaughtExceptionMonitor` vẫn chạy để quan sát.
 
 `worker_threads` có `setUncaughtExceptionCaptureCallback` **theo thread** — main capture không bắt worker.
 
@@ -1694,6 +1804,8 @@ describe("parsePort", () => {
 Object matcher (Node `assert`):
 
 ```ts
+import fs from "node:fs";
+
 assert.throws(() => fs.readFileSync("nope"), { code: "ENOENT" });
 ```
 
@@ -1701,6 +1813,7 @@ assert.throws(() => fs.readFileSync("nope"), { code: "ENOENT" });
 
 ```ts
 import assert from "node:assert/strict";
+import fsp from "node:fs/promises";
 import { it } from "node:test";
 
 it("readConfig maps ENOENT", async () => {
@@ -1711,13 +1824,13 @@ it("readConfig maps ENOENT", async () => {
 });
 
 it("rejects with code", async () => {
-  await assert.rejects(() => fs.readFile("nope"), { code: "ENOENT" });
+  await assert.rejects(() => fsp.readFile("nope"), { code: "ENOENT" });
 });
 
 it("ERR_INVALID_ARG_TYPE", async () => {
   await assert.rejects(
     async () => {
-      await fs.readFile(undefined as unknown as string);
+      await fsp.readFile(undefined as unknown as string);
     },
     { code: "ERR_INVALID_ARG_TYPE" },
   );
@@ -1868,13 +1981,16 @@ try {
 }
 
 class AppError extends Error {
+  readonly code: string;
+
   constructor(
     message: string,
-    readonly code: string,
+    code: string,
     options?: ErrorOptions,
   ) {
     super(message, options);
     this.name = "AppError";
+    this.code = code;
   }
 }
 
@@ -1883,7 +1999,7 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
-await assert.rejects(() => fs.readFile("nope"), { code: "ENOENT" });
+await assert.rejects(() => fsp.readFile("nope"), { code: "ENOENT" });
 ```
 
 | Tình huống | Hướng xử lý |
@@ -1894,9 +2010,9 @@ await assert.rejects(() => fs.readFile("nope"), { code: "ENOENT" });
 | Peer reset / timeout | `ECONNRESET` / `ETIMEDOUT` — cân nhắc retry |
 | Sai đối số Node API | `ERR_INVALID_ARG_TYPE` |
 | Sai file import | `ERR_MODULE_NOT_FOUND` / `ERR_UNKNOWN_FILE_EXTENSION` |
-| `require` ESM | `ERR_REQUIRE_ESM` |
+| `require` ESM (có TLA / Node cũ) | `ERR_REQUIRE_ASYNC_MODULE` / `ERR_REQUIRE_ESM` |
 | Nhiều task lỗi | `AggregateError` / `allSettled` |
-| Body + dispose lỗi | `SuppressedError` |
+| Body + dispose lỗi | `SuppressedError` (`.error` = dispose, `.suppressed` = body) |
 | Hủy | `AbortError` / `ABORT_ERR` — đừng log như crash |
 | `fetch` 404 | `res.status` — không throw |
 | `fetch` mạng | `TypeError` + `cause` |
@@ -1918,7 +2034,11 @@ await assert.rejects(() => fs.readFile("nope"), { code: "ENOENT" });
 | `assert.rejects(..., { code })` | test async lỗi |
 | `AbortSignal` / `isAbortError` | hủy hợp tác |
 | `process.on("unhandledRejection")` | safety net → shutdown |
-| `util.types.isNativeError` | Error cross-realm hơn `instanceof` |
+| `Error.isError(x)` | chuẩn ES2026 cross-realm (Node 26, không cần `node:util`) |
+| `util.types.isNativeError` | kiểm tra Error cross-realm (tương thích Node cũ hơn) |
+| `Promise.try(fn)` | thống nhất sync throw + async rejection (ES2025 / Node 26) |
+| `DisposableStack` / `AsyncDisposableStack` | quản lý LIFO động nhiều tài nguyên |
+| `process.on("uncaughtExceptionMonitor")` | quan sát lỗi fatal mà không chặn crash mặc định |
 
 ---
 
@@ -1930,12 +2050,11 @@ await assert.rejects(() => fs.readFile("nope"), { code: "ENOENT" });
 | ES2021 / rộng rãi | `AggregateError` (cũng từ `Promise.any`) |
 | V8 / Node (lâu) | `captureStackTrace`, `stackTraceLimit`, `prepareStackTrace` |
 | Node (lâu) | `SystemError` fields, `ERR_*`, `util.getSystemErrorName` |
-| Node 15+ | unhandled rejection ngày càng “strict” hơn theo mặc định/flag |
+| Node 15+–26 | `--unhandled-rejections=throw` mặc định (crash nếu không có handler) |
 | Node 18+ / hiện đại | `AbortSignal.timeout`, `throwIfAborted`, `AbortSignal.any` |
-| Node 22.12+ / 23.1+ | `util.getSystemErrorMessage` |
-| Explicit Resource Management | `using`, `Symbol.dispose`, `SuppressedError` |
-| Node 26 (baseline) | `cause`, AggregateError, Abort/`DOMException`, catalog `ERR_*`, `fetch` Undici, strip `.ts` |
-| TypeScript 4.4+ / 7 | `catch` → `unknown` dưới strict / `useUnknownInCatchVariables` |
+| Node 22.12+ / 24+ | `util.getSystemErrorMessage`; `require(esm)` bật mặc định cho ESM sync |
+| ES2025 / ES2026 / Node 26 | `Promise.try`, `Error.isError`, `using`/`SuppressedError`/`(Async)DisposableStack`, Undici 8+, strip `.ts`/`.mts`/`.cts` (gỡ `--experimental-transform-types`) |
+| TypeScript 4.4+ / 7.0 | `catch` → `unknown` dưới `strict` / `useUnknownInCatchVariables` |
 | `domain` | historical — không dùng |
 
 ---
@@ -1953,8 +2072,5 @@ await assert.rejects(() => fs.readFile("nope"), { code: "ENOENT" });
 - [Hệ thống kiểu](typesystem.md) — `unknown` trong `catch`
 - [OOP](oop.md) — `instanceof`, custom class
 - [Keywords](keywords.md) — `throw` / `try` / `using`
-
----
-
-- [Testing runtime/async](testing.md)
-- [Stack, report & log](diagnostics.md)
+- [Testing runtime/async](testing.md) — `assert.throws`, `assert.rejects`
+- [Stack, report & log](diagnostics.md) — `process.report`, structured logging

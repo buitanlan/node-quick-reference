@@ -2,7 +2,7 @@
 
 Tham khảo thực dụng các module lõi — **survey có chiều sâu**, không phải full API dump. Mỗi hotspot đủ để chọn đúng API; chi tiết event loop / abort / async nằm ở chương chuyên biệt.
 
-> **Callout:** Baseline: **Node.js 26** (V8 **14.6**, Undici **8**). Node **24** còn Active LTS tại ngày rà soát; xem [README](README.md). Luôn import qua prefix **`node:`**. `http.createServer` vẫn `(req, res)` — **không** có fetch handler ổn định trên `createServer` (xem §5.6).
+> **Callout:** Baseline: **Node.js 26 Active LTS ("Lithium", từ 2026-10-28; V8 14.6+, Undici 8+)**. Node **24** ở nhánh Maintenance LTS; xem [README](README.md). Luôn import qua prefix **`node:`**. `http.createServer` vẫn `(req, res)` — **không** có fetch handler ổn định trên `createServer` (xem §5.6).
 
 ---
 
@@ -68,6 +68,7 @@ Tham khảo thực dụng các module lõi — **survey có chiều sâu**, khô
   - [14.3 `zlib` / `readline`: stream nhưng vẫn cần budget](#143-zlib--readline-stream-nhưng-vẫn-cần-budget)
   - [14.4 `node:sqlite`: local data, synchronous API](#144-nodesqlite-local-data-synchronous-api)
   - [14.5 `node:vm` không là security boundary](#145-nodevm-không-là-security-boundary)
+  - [14.6 `node:sea` & `node --build-sea`](#146-nodesea--node---build-sea)
 - [15. Best practices](#15-best-practices)
 - [16. Checklist](#16-checklist)
 - [17. Cheat sheet](#17-cheat-sheet)
@@ -153,10 +154,9 @@ Hotspot:
 
 `writeFile` `{ flag: "wx" }` tạo exclusive. `rename` atomic **cùng filesystem** — đừng tin atomic xuyên disk.
 
-`lstat` vs `stat`: symlink. Path traversal: `realpath` sau khi join.
+- `lstat` vs `stat`: phân biệt symlink; gọi `realpath` trước khi so prefix path để chặn symlink escape / path traversal.
 - `open` + `FileHandle` khi cần vị trí / nhiều thao tác trên một fd.
 - `copyFile` / `cp` (recursive) — `cp` giống `cp -r`; biết `errorOnExist` / `force`.
-- `realpath` trước khi so prefix path (symlink escape).
 
 ### 3.1 `FileHandle` — đóng tường minh
 
@@ -193,12 +193,15 @@ Cần `lib` có `Disposable` / target đủ mới — [statements.md](statements
 Lồng:
 
 ```ts
-await using a = await fs.open("a.bin", "r");
-await using b = await fs.open("b.bin", "w");
-await a.copyFile?.; // không có trên handle theo kiểu đó — dùng fs.copyFile path
+await using src = await fs.open("a.bin", "r");
+await using dst = await fs.open("b.bin", "w");
+const buf = Buffer.alloc(4096);
+const { bytesRead } = await src.read(buf, 0, buf.length, 0);
+await dst.write(buf, 0, bytesRead);
+// dst đóng trước, rồi src đóng (LIFO) khi rời block
 ```
 
-(`copyFile` là `fs.copyFile(src, dest)` theo path, không phải method bắt buộc trên handle.)
+(`copyFile` là `fs.copyFile(src, dest)` theo path, không phải method trên `FileHandle`.)
 
 ### 3.3 Streams file vs `readFile`
 
@@ -219,6 +222,16 @@ await pipeline(
 ### 3.4 `opendir` / `readdir`
 
 `readdir` với `{ withFileTypes: true }` trả `Dirent` — tránh `stat` từng file nếu chỉ cần `isDirectory()`. `opendir` + `for await` thân thiện thư mục rất lớn (không materialize mảng tên).
+
+Tìm file theo pattern mà không cần package ngoài: **`fs.glob(pattern, options)`** (`node:fs/promises`, ổn định trên Node 26) trả về `AsyncIterator<string>` (hoặc `Dirent` khi `{ withFileTypes: true }`):
+
+```ts
+import fs from "node:fs/promises";
+
+for await (const entry of fs.glob("src/**/*.ts", { exclude: ["**/*.test.ts"] })) {
+  console.log(entry);
+}
+```
 
 ### 3.5 Atomic replacement, durability & race
 
@@ -284,14 +297,20 @@ console.log(u.toString());
 |---|---|---|
 | Path từ module ESM | `fileURLToPath(import.meta.url)` / `import.meta.filename` | `path.join(import.meta.url, …)` |
 | Worker specifier | `new URL("./w.js", import.meta.url)` | `"../w.js"` theo CWD |
-| `fetch` file local | `pathToFileURL` rồi `fetch(url)` (hạn chế) | `fetch("/tmp/a")` |
+| Đọc file local (kể cả từ `file:` URL) | `fs.readFile(fileURLToPath(url))` / `fs.readFile(path)` | `fetch("file:///...")` (Undici **throw `TypeError: fetch failed`** trên Node 26) |
 | Ghép URL HTTP | `new URL(path, base)` | `path.join` |
 
 Windows drive `C:\` → `file:///C:/…`. UNC cần `pathToFileURL` — tự ghép `file://` dễ sai.
 
 Trong ESM, `import.meta.url` là file URL của module hiện tại — nền tảng cho `__dirname` tương đương. Chi tiết: [modules-packages.md](modules-packages.md) §12, [main-function.md](main-function.md).
 
-`URL` cũng dùng cho `fetch`, redirect, canonical hóa — prefer `URL` hơn tự parse string.
+`URL` cũng dùng cho `fetch`, redirect, canonical hóa — prefer `URL` hơn tự parse string. Để khớp route/path URL không cần regex thủ công, Node 26 cung cấp sẵn global **`URLPattern`**:
+
+```ts
+const route = new URLPattern({ pathname: "/users/:id" });
+const match = route.exec("https://example.com/users/42");
+match?.pathname.groups.id; // "42"
+```
 
 > **Callout:** `path.extname("a.tar.gz")` là `.gz`. Parse extension kép thì tự xử lý. `path.normalize` **không** chặn `..` escape — vẫn `resolve` + prefix check.
 
@@ -304,14 +323,27 @@ Trong ESM, `import.meta.url` là file URL của module hiện tại — nền t�
 ```ts
 import http from "node:http";
 
-const server = http.createServer(async (req, res) => {
-  if (req.method === "GET" && req.url === "/health") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
-    return;
-  }
-  res.writeHead(404);
-  res.end();
+const server = http.createServer((req, res) => {
+  void (async () => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (req.method === "GET" && url.pathname === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  })().catch((err) => {
+    console.error(err);
+    if (!res.destroyed) {
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end();
+      } else {
+        res.destroy(err instanceof Error ? err : undefined);
+      }
+    }
+  });
 });
 
 server.listen(3000, () => {
@@ -319,7 +351,7 @@ server.listen(3000, () => {
 });
 ```
 
-`req` = `IncomingMessage` (Readable); `res` = `ServerResponse` (Writable). `req.url` là path+query **không** gồm host — `new URL(req.url ?? "/", `http://${req.headers.host}`)`.
+`req` = `IncomingMessage` (Readable); `res` = `ServerResponse` (Writable). Luôn bọc `try/catch` (hoặc `.catch()`) cho async handler vì `http.createServer` không await Promise trả về. `req.url` là path+query **không** gồm host — parse bằng base cố định `new URL(req.url ?? "/", "http://localhost")` thay vì nối trực tiếp `req.headers.host` chưa tin cậy (tránh crash khi `Host` sai cú pháp hoặc host-header injection).
 
 Framework (Fastify / Express / Hono) xây trên http — vẫn cần hiểu `req`/`res` / timeout / keep-alive khi debug.
 
@@ -370,6 +402,7 @@ Request `headers` trên `IncomingMessage`: `req.headers` (hạ lowercase), `req.
 Node/Undici fetch: body là `ReadableStream`/async iterable thì khai **`duplex: "half"`**. Đây là giá trị option theo Fetch API; Undici có thể vận hành full duplex, nên không suy ra phải gửi hết body mới đọc được response. [Undici duplex](https://github.com/nodejs/undici#requestduplex).
 
 ```ts
+import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 
 const nodeIn = createReadStream("upload.bin");
@@ -393,7 +426,7 @@ Buffer/`Blob`/`URLSearchParams`/`FormData`/`string` **không** cần `duplex`.
 `fetch` Node = Undici. Tinh chỉnh pool, proxy, TLS:
 
 ```ts
-import { Agent, fetch as undiciFetch } from "undici";
+import { Agent } from "undici";
 
 const agent = new Agent({
   connections: 16,
@@ -411,6 +444,11 @@ setGlobalDispatcher(new Agent({ connections: 32 }));
 ```
 
 Cần dependency `undici` (cùng major với bundled thì tốt) để `setGlobalDispatcher` / class `Agent`. Option `dispatcher` trên `fetch` là **API Node** (docs globals).
+
+**Proxy, System CA & WebSocket built-in trên Node 26:**
+
+- **Corporate proxy & CA hệ thống:** Bật **`NODE_USE_ENV_PROXY=1`** (hoặc cờ CLI **`--use-env-proxy`**) để `fetch` và `node:http`/`node:https` tự tôn trọng `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` mà không cần tự gắn `ProxyAgent`. Bật **`--use-system-ca`** để dùng kho chứng chỉ gốc của OS (Windows/macOS/Linux) song song với CA bundled của Node.
+- **Global `WebSocket` (Undici 8, ổn định trên Node 26):** Dùng trực tiếp `new WebSocket("wss://...")` theo chuẩn WHATWG cho WebSocket client không cần cài `ws` (server WebSocket vẫn cần thư viện ngoài). Ngược lại, `EventSource` **chưa** bật mặc định trên Node 26 — đừng giả định có sẵn global.
 
 | Nhu cầu | Chọn |
 |---|---|
@@ -450,6 +488,10 @@ import { pipeline } from "node:stream/promises";
 import { createWriteStream } from "node:fs";
 
 const res = await fetch(url);
+if (!res.ok || !res.body) {
+  await res.body?.cancel();
+  throw new Error(`HTTP ${res.status}`);
+}
 const nodeReadable = Readable.fromWeb(
   res.body as import("node:stream/web").ReadableStream,
 );
@@ -478,13 +520,13 @@ Prefer `fetch` trừ khi Agent/TLS thấp tầng bắt buộc. Timeout với `ht
 ### 5.9 Server timeout & keep-alive
 
 ```ts
-server.requestTimeout = 30_000;
-server.headersTimeout = 60_000;
-server.keepAliveTimeout = 5_000;
+server.keepAliveTimeout = 5_000;   // hoặc > idle timeout của ALB/Nginx (vd 65_000 nếu LB 60s)
+server.headersTimeout = 15_000;    // phải > keepAliveTimeout và <= requestTimeout
+server.requestTimeout = 30_000;    // tổng thời gian nhận đủ request (headers + body)
 server.maxHeadersCount = 100;
 ```
 
-Framework thường expose tương đương — biết các nút này khi debug connection treo / load balancer idle. `server.close` + [main-function.md](main-function.md) shutdown.
+Quan hệ bắt buộc: **`keepAliveTimeout < headersTimeout <= requestTimeout`**. Sau reverse proxy / ALB / Nginx, đặt `keepAliveTimeout` **lớn hơn** idle timeout của LB (vd LB 60s → `keepAliveTimeout = 65_000`, `headersTimeout = 66_000`, `requestTimeout = 90_000`) để tránh race condition LB gửi request đúng lúc Node vừa đóng socket (gây 502 rải rác). Framework thường expose tương đương. `server.close` + [main-function.md](main-function.md) shutdown.
 
 ### 5.10 Redirect, method, body một lần
 
@@ -517,10 +559,17 @@ Ba kiểu chính: **Readable**, **Writable**, **Transform** (+ Duplex).
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createReadStream, createWriteStream } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 
+const decoder = new StringDecoder("utf8");
 const upper = new Transform({
-  transform(chunk, _enc, cb) {
-    cb(null, chunk.toString().toUpperCase());
+  transform(chunk: Buffer, _enc, cb) {
+    cb(null, decoder.write(chunk).toUpperCase());
+  },
+  flush(cb) {
+    const tail = decoder.end();
+    if (tail) this.push(tail.toUpperCase());
+    cb();
   },
 });
 
@@ -563,11 +612,46 @@ await pipeline(src, transform, dest, { signal: AbortSignal.timeout(30_000) });
 Tự `write`:
 
 ```ts
-function writeWithBackpressure(ws: NodeJS.WritableStream, chunk: Buffer) {
+function writeWithBackpressure(ws: NodeJS.WritableStream, chunk: Buffer): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const ok = ws.write(chunk, (err) => (err ? reject(err) : undefined));
-    if (ok) resolve();
-    else ws.once("drain", () => resolve());
+    let writeErr: Error | null = null;
+    const onError = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(writeErr ?? new Error("stream closed before drain"));
+    };
+    const onDrain = () => {
+      cleanup();
+      if (writeErr) reject(writeErr);
+      else resolve();
+    };
+    const cleanup = () => {
+      ws.off("error", onError);
+      ws.off("close", onClose);
+      ws.off("drain", onDrain);
+    };
+
+    const ok = ws.write(chunk, (err) => {
+      if (err) {
+        writeErr = err;
+        cleanup();
+        reject(err);
+      } else if (ok) {
+        cleanup();
+        resolve();
+      }
+    });
+
+    if (!ok) {
+      ws.once("drain", onDrain);
+      ws.once("error", onError);
+      ws.once("close", onClose);
+    } else {
+      ws.once("error", onError);
+    }
   });
 }
 ```
@@ -594,13 +678,27 @@ Iteration tôn trọng backpressure (không đọc vô hạn vào RAM). `break` 
 
 ```ts
 import { Transform } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
+
+const decoder = new StringDecoder("utf8");
+let remainder = "";
 
 const parseLines = new Transform({
   readableObjectMode: true,
-  transform(chunk, _enc, cb) {
-    for (const line of chunk.toString().split("\n")) {
-      if (line) this.push({ line });
+  transform(chunk: Buffer, _enc, cb) {
+    // Dùng StringDecoder để không làm hỏng ký tự UTF-8 nhiều byte (vd tiếng Việt) bị cắt giữa 2 chunk
+    const parts = (remainder + decoder.write(chunk)).split("\n");
+    remainder = parts.pop() ?? ""; // giữ lại dòng chưa hoàn chỉnh sang chunk sau
+    for (const line of parts) {
+      const trimmed = line.replace(/\r$/, "");
+      if (trimmed) this.push({ line: trimmed });
     }
+    cb();
+  },
+  flush(cb) {
+    const last = (remainder + decoder.end()).replace(/\r$/, "");
+    if (last) this.push({ line: last });
+    remainder = "";
     cb();
   },
 });
@@ -642,7 +740,7 @@ const t = compose(
 
 `stream.compose` (và `pipeline`) nối web+Node tùy bản — đọc docs. Duplex = vừa đọc vừa ghi (`Socket`, `PassThrough`). `objectMode` hai phía độc lập: `readableObjectMode` / `writableObjectMode`.
 
-`stream.finished(stream, { signal })` Promise khi `end`/`close`/`error` — thay tự lắng nhiều event.
+Bản Promise **`finished(stream, { signal })`** nằm ở **`node:stream/promises`** (không phải `node:stream`, nơi `stream.finished` là bản callback) — chờ `end`/`close`/`error` thay cho việc tự lắng nhiều event.
 
 `Readable.from(iterable)` / `Readable.fromWeb`. Generator `async function*` + `from` = backpressure theo iteration.
 
@@ -703,7 +801,7 @@ socket.write(buf.subarray(0, bytesRead)); // không write cả 1024
 
 `Buffer.byteLength(str, "utf8")` ≠ `str.length` (UTF-16 JS). Cắt byte UTF-8: đừng `buf.slice` giữa code unit bừa.
 
-> **Callout:** Default `new Buffer(n)` **đã cấm** / removed. Luôn `alloc` / `from`. `slice` trên Buffer là **view** (shared memory) — `subarray` rõ hơn; `copy` khi cần tách.
+> **Callout:** `new Buffer(n)` chưa bị gỡ bỏ trên Node 26 nhưng phát **`[DEP0005] DeprecationWarning`** (và throw nếu chạy `--throw-deprecation`). Luôn dùng `Buffer.alloc` / `Buffer.from`. `slice` trên Buffer là **view** (shared memory) — ưu tiên `subarray`; dùng `copy` khi cần vùng nhớ tách biệt.
 
 ---
 
@@ -713,15 +811,19 @@ Hai bề mặt: **`node:crypto`** (hash stream sync-ish, `createHmac`, `scrypt`,
 
 ```ts
 import {
+  hash,
   createHash,
   createHmac,
   randomBytes,
   randomUUID,
   timingSafeEqual,
   scrypt,
+  argon2,
 } from "node:crypto";
 import { promisify } from "node:util";
 
+// One-shot hash nhanh (Node 21.7+ / 24 / 26) — không cần cấp phát object Hash trung gian
+hash("sha256", "data", "hex");
 createHash("sha256").update("data").digest("hex");
 createHmac("sha256", secret).update(body).digest("hex");
 randomUUID();
@@ -729,12 +831,23 @@ randomBytes(32);
 
 const scryptAsync = promisify(scrypt);
 const key = (await scryptAsync("password", salt, 64)) as Buffer;
+
+// Argon2id built-in trên Node 26 (async argon2 / argon2Sync) — KDF hiện đại cho mật khẩu
+const argon2Async = promisify(argon2);
+const derived = (await argon2Async("argon2id", {
+  message: "password",
+  nonce: randomBytes(16),
+  parallelism: 1,
+  tagLength: 32,
+  memory: 65_536, // KiB
+  passes: 3,
+})) as Buffer;
 ```
 
-- Password: `scrypt` / `pbkdf2` (async) — không tự invent hash nhanh. `scryptSync` block loop — đừng trên request.
+- Password: ưu tiên **`argon2`** (`"argon2id"`) hoặc **`scrypt`** / `pbkdf2` (bản **async**) — không tự invent hash nhanh. `scryptSync` / `argon2Sync` block loop — cấm trên request path.
 - Web Crypto: `globalThis.crypto.subtle` khi share code browser.
 - TLS chi tiết: `node:tls` / `https`.
-- Node 26 / OpenSSL: theo dõi release notes cho raw-key / thuật toán mới (ví dụ Ed25519 context) — đọc docs đúng minor bạn chạy.
+- **Node 26 / OpenSSL 3.5+ Post-Quantum Cryptography (PQC):** Hỗ trợ trực tiếp các thuật toán hậu lượng tử chuẩn NIST gồm **`ML-KEM`** (key encapsulation), **`ML-DSA`** và **`SLH-DSA`** (chữ ký số) qua `generateKeyPair` / `sign` / `verify` / `encapsulate` / `decapsulate`.
 - `randomUUID()` = UUID v4. `crypto.randomBytes` cho token opaque.
 
 Pipeline hash file:
@@ -871,8 +984,9 @@ for await (const [id] of on(bus, "job")) {
 | `once()` helper | `events.once(ee, "e", { signal })` | Cũng dùng được với EventTarget trên Node |
 
 ```ts
-import { EventEmitter, EventTarget, once } from "node:events";
+import { once } from "node:events";
 
+// EventTarget và CustomEvent là global (node:events KHÔNG export EventTarget)
 const et = new EventTarget();
 et.addEventListener("ping", (ev) => {
   console.log((ev as CustomEvent).detail);
@@ -965,13 +1079,9 @@ await assert.doesNotReject(Promise.resolve(1));
 assert.ifError(err); // throw nếu err truthy — style callback
 ```
 
-`AssertionError` có `actual` / `expected` / `operator`. `node --test` in diff.
+`AssertionError` có `actual` / `expected` / `operator`. `node --test` in diff. `assert.partialDeepStrictEqual(actual, expected)` (ổn định trên Node 26) cho phép kiểm tra tập con thuộc tính của object lồng nhau mà không phải khớp toàn bộ các trường thừa.
 
-`assert.partialDeepStrictEqual` — **chỉ** nếu version bạn chạy có (theo dõi changelog Node 22+/26). Không có trên bản cũ — đừng copy blindly.
-
-Production: `assert` có thể bị bundler drop khi `define process.env`. Invariant bảo mật: `throw`.
-
-`deepEqual` so object; **không** thay snapshot test lớn. `partialDeepStrictEqual` (nếu có trên minor) — đọc docs; đừng bịa.
+Production: `assert` có thể bị bundler drop khi `define process.env`. Invariant bảo mật: `throw`. `deepEqual` so object; **không** thay snapshot test lớn.
 
 Test runner: [tooling.md](tooling.md) `node --test`. AssertionError in stack — đủ cho service nhỏ; Vitest khi cần mock ecosystem.
 
@@ -1029,6 +1139,7 @@ util.types.isNativeError(x);
 util.types.isPromise(x);
 util.styleText("green", "ok");
 util.styleText(["bold", "red"], "fail");
+util.stripVTControlCharacters("\x1b[32mok\x1b[39m"); // "ok" — gỡ ANSI escape khi ghi log/test
 ```
 
 `styleText(format, text)` — màu/modifier **khi** TTY hiểu; Node tắt màu nếu không TTY / `NO_COLOR` (theo policy dòng). Đừng tự ghép ANSI nếu có `styleText`.
@@ -1068,13 +1179,14 @@ import diagnostics_channel from "node:diagnostics_channel";
 
 const ch = diagnostics_channel.channel("my-app:request");
 
-if (ch.hasSubscribers) {
-  ch.publish({ url: "/a", ms: 12 });
-}
-
+// Subscribe TRƯỚC khi publish (publish trước subscribe sẽ bị miss)
 diagnostics_channel.subscribe("my-app:request", (message) => {
   console.log(message);
 });
+
+if (ch.hasSubscribers) {
+  ch.publish({ url: "/a", ms: 12 });
+}
 ```
 
 `hasSubscribers` tránh serialize đắt khi không ai nghe. Tên kênh: convention `pkg:component` / `undici:request:create` (core đã publish một số kênh — đọc docs, đừng đoán tên).
@@ -1193,7 +1305,7 @@ console.log(instant.add(duration).toString());
 
 - Không cần flag / polyfill trên Node 26.
 - `Date` vẫn tồn tại (interop / legacy); code mới ưu tiên Temporal cho nghiệp vụ thời gian.
-- Types: theo dõi `@types/node@^26` / lib Temporal — có thể cần ambient nếu editor chưa nhận global.
+- Types: đã có sẵn trong **TypeScript 6/7** qua `"lib": ["ES2025", "ESNext.Temporal"]` (không cần hack ambient `temporal-polyfill`).
 - Node 24: **không** mặc định giống 26 — dual-support thì polyfill hoặc giữ `Date`.
 
 ### 13.1 Temporal vs `Date` — quyết định nhanh
@@ -1244,15 +1356,19 @@ TCP là byte stream, một `data` chunk không tương ứng một message. Fram
 
 ### 14.3 `zlib` / `readline`: stream nhưng vẫn cần budget
 
-Compression async tranh libuv pool; dùng `pipeline` và giới hạn output bytes khi decompress để chống expansion bomb. HWM không hard cap tổng output. `readline.createInterface` hỗ trợ `for await`, nhưng line khổng lồ vẫn tốn RAM và interface cần đóng khi break/error; không coi API line reader là input validator. [Zlib](https://nodejs.org/api/zlib.html#threadpool-usage-and-performance-considerations), [Readline](https://nodejs.org/api/readline.html).
+`node:zlib` trên Node 26 hỗ trợ đầy đủ **Zstandard (`zstd`)** (`createZstdCompress` / `createZstdDecompress`, `zstdCompress` / `zstdDecompress`) bên cạnh `gzip`, `deflate`, `brotli` — tỷ lệ nén/tốc độ vượt trội cho HTTP/cache. Compression async tranh libuv pool; dùng `pipeline` và giới hạn output bytes khi decompress để chống expansion bomb. HWM không hard cap tổng output. `readline.createInterface` hỗ trợ `for await`, nhưng line khổng lồ vẫn tốn RAM và interface cần đóng khi break/error; không coi API line reader là input validator. [Zlib](https://nodejs.org/api/zlib.html#threadpool-usage-and-performance-considerations), [Readline](https://nodejs.org/api/readline.html).
 
 ### 14.4 `node:sqlite`: local data, synchronous API
 
-`node:sqlite` được thêm ở 22.5.0; RC từ 25.7.0, **không gắn nhãn stable cho Node 26**. `DatabaseSync`/`StatementSync` block thread đang gọi: query nặng nên ở worker hoặc chọn adapter async phù hợp. Prepared statement dùng bound parameters; dynamic identifier vẫn allowlist. SQLite INTEGER có thể vượt safe integer JS: dùng `setReadBigInts(true)` khi hợp đồng cần. Giữ transaction ngắn, đặt busy policy và đóng DB; không giữ transaction xuyên await network. [SQLite docs](https://nodejs.org/api/sqlite.html).
+`node:sqlite` ở trạng thái **Stability 1.2 (Release Candidate)** trên Node 26: hỗ trợ **`using` (`Symbol.dispose`)** để tự đóng kết nối, **`backup()`** (sao lưu online) và **`Session`** (changeset/patchset). Từ Node 26.11+, class chính được đổi tên sang **`Database`** thay cho `DatabaseSync` (`DEP0210`). API vẫn là **synchronous** (block thread đang gọi): query nặng nên đưa sang worker thread hoặc chọn adapter async phù hợp. Prepared statement dùng bound parameters; dynamic identifier vẫn allowlist. SQLite INTEGER có thể vượt safe integer JS: dùng `setReadBigInts(true)` khi hợp đồng cần. Giữ transaction ngắn, đặt busy policy và đóng DB; không giữ transaction xuyên `await` network. [SQLite docs](https://nodejs.org/api/sqlite.html).
 
 ### 14.5 `node:vm` không là security boundary
 
 Context giúp tách global environment cho code được tin cậy; không có bảo đảm chống malicious code. Worker chia isolate nhưng cùng process. Chọn OS/process/container isolation theo threat model và xem [security.md](security.md#7-permission-model-isolation-và-supply-chain). [VM contract](https://nodejs.org/api/vm.html).
+
+### 14.6 `node:sea` & `node --build-sea`
+
+Node 26 cho phép đóng gói ứng dụng thành Single Executable Application trực tiếp bằng **`node --build-sea sea-config.json`** (không còn cần thủ công bước `postject` riêng) và đọc tài nguyên nhúng lúc runtime qua module **`node:sea`** (`sea.isSea()`, `sea.getAsset(...)`, `sea.getAssetAsBlob(...)`). Phù hợp phân phối CLI nội bộ không yêu cầu cài Node sẵn; vẫn cần ký số binary theo OS (macOS/Windows).
 
 ---
 
@@ -1354,8 +1470,8 @@ assert.equal(1 + 1, 2);
 | Node 20+ | `AbortSignal.any`; `--env-file`; `import.meta.dirname` (20.11) |
 | Node 20.6+ / 22+ | `util.parseArgs` ổn định; `styleText` |
 | Node 22–24 | type stripping experimental → ổn định dần |
-| **Node 26** | V8 **14.6**, Undici **8**, **Temporal** default, `Iterator.concat`, type stripping ổn định, gỡ `--experimental-transform-types` |
-| Node 24 | LTS theo lịch trong README; Temporal **không** cùng default |
+| **Node 26 Active LTS ("Lithium", 2026-10-28)** | V8 **14.6+**, Undici **8+**, **Temporal** default, global `WebSocket` & `URLPattern`, `fs/promises.glob`, `NODE_USE_ENV_PROXY=1`/`--use-env-proxy`, `--use-system-ca`, `crypto.hash`/`argon2`/OpenSSL 3.5 PQC (`ML-KEM`, `ML-DSA`, `SLH-DSA`), `zlib` Zstandard (`zstd`), `node --build-sea`, `assert.partialDeepStrictEqual`, type stripping ổn định, gỡ `--experimental-transform-types` |
+| Node 24 Maintenance LTS | Nhánh bảo trì theo lịch trong README; Temporal **không** bật mặc định |
 | `FileHandle` asyncDispose | `await using` trên dòng hiện đại |
 | `http.serve` fetch | **Không** baseline — proposal/PR, không dùng như API ổn định |
 

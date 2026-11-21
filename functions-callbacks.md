@@ -139,11 +139,11 @@ type Task<T> = () => Promise<T>;
 | `Identity` (generic trên hàm) | Giữ nguyên kiểu từng lần gọi |
 | `IdentityFixed<T>` | Một `T` cho cả lifetime alias |
 | `Mapper<T,U>` | Select / `map` |
-| `Predicate<T>` | `filter` boolean — **không** thu hẹp union |
-| `Refinement<A,B>` | type guard |
+| `Predicate<T>` | `filter` boolean tường minh — **không** tự thu hẹp union |
+| `Refinement<A,B>` | type guard (`value is B`) |
 | `Endo<T>` | transform cùng kiểu (pipeline) |
 
-`Array.prototype.map` typed gần `Mapper`; truyền predicate thường `filter` không hẹp trừ khi `x is T`.
+`Array.prototype.map` typed gần `Mapper`. Từ **TS 5.5+/7**, inline arrow trong `.filter((x) => typeof x === "string")` được **tự suy luận type predicate** (inferred type predicate) nên tự hẹp kiểu; nhưng nếu bạn gán hàm vào kiểu tường minh `Predicate<T>` (`=> boolean`), narrowing sẽ mất — khi đó cần khai báo rõ `x is B` (xem §5.1).
 
 ---
 
@@ -189,11 +189,11 @@ fs.readFile("a.json", "utf8", (e1, a) => {
 
 Node core **thường** gọi `cb(null, value)` khi thành công. Một số thư viện / code tay dùng `cb(undefined, value)` hoặc `cb()`. Consumer an toàn:
 
-| Kiểm tra | `null` | `undefined` | `Error` | `0` / `""` / `false` |
+| Kiểm tra (vào nhánh lỗi khi điều kiện đúng) | `null` | `undefined` | `Error` | `0` / `""` / `false` |
 |---|---|---|---|---|
-| `if (err)` | falsy → OK | falsy → OK | vào nhánh lỗi | **nhầm thành công** |
-| `if (err != null)` | OK | OK | OK | **nhầm** nếu err “falsy” |
-| `if (err === null)` | OK | **bỏ sót** `undefined` | OK | không vào |
+| `if (err)` | bỏ qua (OK) | bỏ qua (OK) | vào nhánh lỗi | **bỏ sót** (nhầm thành công) |
+| `if (err != null)` | bỏ qua (OK) | bỏ qua (OK) | vào nhánh lỗi | **bắt được** (`!= null` là `true`) |
+| `if (err !== null)` | bỏ qua (OK) | **vào nhầm nhánh lỗi** | vào nhánh lỗi | bắt được |
 
 > **Callout:** `if (err)` đủ cho Node core (`null` / `Error`). **Không** dùng giá trị falsy làm `err`. Thành công: `cb(null, result)` (hoặc `cb(null)` nếu không có value). Thất bại: `cb(err)` — **không** kèm `result` (tránh caller đọc data khi lỗi).
 
@@ -212,7 +212,7 @@ function readJson(path: string, cb: NodeCb<unknown>) {
     try {
       cb(null, JSON.parse(data));
     } catch (e) {
-      cb(e instanceof Error ? e : new Error(String(e)));
+      cb(Error.isError(e) ? e : new Error(String(e)));
     }
   });
 }
@@ -281,7 +281,15 @@ const text = await readFile("a.txt", "utf8");
 
 Nhiều API Node đã có bản Promise (`node:fs/promises`, `fetch`, …). Prefer **Promise + async/await** cho code mới.
 
-`node:util` còn `types.isAsyncFunction` / `isPromise` — **không** dùng cho control flow nghiệp vụ (engine-specific, dễ gãy với thenable). Type guard tay (`typeof then === "function"`) cũng không đủ; prefer `await` assimilate.
+Khi cần chuẩn hóa một hàm/callback có thể **vừa `throw` đồng bộ vừa trả về `Promise`** thành một `Promise` duy nhất (thay vì `new Promise(...)` hay `Promise.resolve().then(...)`), dùng **`Promise.try(fn, ...args)`** (ES2025 / Node 26):
+
+```ts
+function loadNormalized(fn: (raw: string) => unknown, raw: string): Promise<unknown> {
+  return Promise.try(fn, raw); // lỗi sync trở thành Promise rejected; lỗi async giữ nguyên
+}
+```
+
+`node:util` còn `types.isAsyncFunction` / `isPromise` — **không** dùng cho control flow nghiệp vụ (engine-specific, dễ gãy với thenable). Type guard tay (`typeof then === "function"`) cũng không đủ; prefer `await` assimilate hoặc `Promise.try`.
 
 ---
 
@@ -296,27 +304,36 @@ Thư viện tự cung cấp bản Promise tối ưu qua **`util.promisify.custom
 ```ts
 import { promisify } from "node:util";
 
-function delay(ms: number, cb: (err: Error | null) => void) {
-  setTimeout(() => cb(null), ms);
-}
+type DelayFn = ((ms: number, cb: (err: Error | null) => void) => void) & {
+  [promisify.custom]: (ms: number) => Promise<void>;
+};
 
-delay[promisify.custom] = (ms: number) =>
-  new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
-  });
+const delay: DelayFn = Object.assign(
+  (ms: number, cb: (err: Error | null) => void) => {
+    setTimeout(() => cb(null), ms);
+  },
+  {
+    [promisify.custom]: (ms: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+      }),
+  },
+);
 
 const wait = promisify(delay);
 // wait === delay[promisify.custom]
 await wait(10);
 ```
 
-Nếu `promisify.custom` **có** nhưng không phải function → `promisify` throw. Dùng custom khi:
+Nếu `promisify.custom` **có** nhưng không phải function → `promisify` throw. Dùng `Object.assign` hoặc typed interface để tránh lỗi TS `TS7053` khi gắn symbol lên function. Dùng custom khi:
 
 - Callback overload không err-first chuẩn,
 - Đã có Promise native (tránh wrap kép),
 - Cần `AbortSignal` / nhiều value (`cb(null, a, b)` — promisify mặc định chỉ lấy **một** result; custom trả tuple).
 
-`callbackify(asyncFn)` ngược lại (hiếm): API đòi err-first. Rejection → `cb(err)`; fulfill → `cb(null, value)`.
+`callbackify(asyncFn)` ngược lại (hiếm): khi API legacy đòi err-first. Rejection → `cb(reason)`; falsy reason được bọc bằng `Error` có code `ERR_FALSY_VALUE_REJECTION` và `.reason`, truthy reason không nhất thiết là `Error`. Hàm async throw sync cũng thành rejection; callback tự throw là lỗi riêng ở turn gọi callback. [callbackify](https://nodejs.org/api/util.html#utilcallbackifyoriginal).
+
+`util.promisify` + `fs.exists` (deprecated) là ví dụ custom symbol lịch sử — dùng `fs.promises.access` / `stat` thay `exists`.
 
 Chi tiết combinators → [async.md](async.md) §8.
 
@@ -336,27 +353,26 @@ Symbol well-known liên quan hàm: `Symbol.toStringTag` trên callable object; `
 | Số lần | **một** (once) | settle một lần | 0..N events |
 | Chuỗi | lồng nhau | `then` / `await` | không phải pipeline giá trị |
 | Song song | thủ công | `Promise.all` | nhiều emit |
-| Hủy | tùy API | `AbortSignal` phổ biến | `off` / `{ signal }` |
+| Hủy | tùy API | `AbortSignal` phổ biến | `off` / `addAbortListener` / `events.on(..., { signal })` |
 | TypeScript | `(err, data) => void` | `Promise<T>` | generic event map |
 
 ### 2.7 Typed err-first (khi bắt buộc)
 
+Dùng chữ ký callback chuẩn `NodeCb<T>` (như `readJson` ở §2.2) và chuẩn hóa lỗi trong `catch` bằng `Error.isError(e)` (không ép kiểu mù `e as NodeJS.ErrnoException`):
+
 ```ts
-import fs from "node:fs";
+type LegacyCb<T> = (err: Error | null, result?: T) => void;
 
-type NodeCb<T> = (err: NodeJS.ErrnoException | null, result?: T) => void;
-
-function readJson(path: string, cb: NodeCb<unknown>) {
-  fs.readFile(path, "utf8", (err, data) => {
-    if (err) return cb(err);
-    try {
-      cb(null, JSON.parse(data));
-    } catch (e) {
-      cb(e as NodeJS.ErrnoException);
-    }
-  });
+function wrapPromiseToCb<T>(task: () => Promise<T>, cb: LegacyCb<T>): void {
+  Promise.try(task).then(
+    (value) => cb(null, value),
+    (reason) => cb(Error.isError(reason) ? reason : new Error(String(reason))),
+  );
 }
 ```
+
+- `this` trong err-first: Node gọi bare. Class method cần `this.read = this.read.bind(this)` hoặc wrap arrow trước khi đưa vào API kiểu `fs` — xem [functions-methods.md](functions-methods.md).
+- `domain` module (legacy) đã bỏ qua trên Node 26 — không dùng để gắn context cho callback; dùng `AsyncLocalStorage` cho request context (không thay `this`).
 
 > API **mới** của bạn: đừng invent err-first. Nếu phải giữ callback surface (C++ addon / legacy), cung cấp thêm bản Promise — và gắn `promisify.custom` nếu `promisify` cần đi đường tắt.
 
@@ -378,33 +394,15 @@ ee.on("error", …);
 
 Err-first callback sync có thể gây reentrancy. Promise handlers luôn chạy qua microtask; bản thân Promise có thể settle đồng bộ. API có hợp đồng async cần giữ callback async cả cache-hit và cache-miss. Xem [event-loop.md](event-loop.md).
 
-`process.nextTick(cb)` đói I/O nếu lặp — không dùng làm “debounce”.
+`queueMicrotask(() => cb(null, cached))` khi wrap sync cache thành “async callback” để không reentrant. Đừng `setTimeout(0)` trừ khi muốn macrotask (chậm hơn, khác thứ tự).
 
-HOF `memoize` sync: lần 1 throw, lần 2 retry — chọn explicit. Promise memoize: cache in-flight `Map<K, Promise<V>>` + xóa khi reject.
+`process.nextTick(cb)` đói I/O nếu lặp — không dùng làm “debounce”.
 
 ### 2.10 Callback arity & `fn.length`
 
 Err-first: `cb.length === 2` không đảm bảo (arrow rest, default). Node **không** nhìn `length` để quyết định overload luôn — `fs.readFile` nhìn số arg runtime. Wrap: đừng tin `cb.length` để “có error handler”. Truyền luôn `(err, value)`.
 
-`Function.prototype.call.length === 1` (thisArg). Không liên quan số param hàm đích.
-
-Mặc định EventEmitter không await/catch Promise listener. `captureRejections: true` gắn rejection handler rồi chuyển sang `captureRejectionSymbol` hoặc event `error`; vẫn phải xử lý error và tránh error listener async gây vòng rejection. Có thể bọc task bằng `.catch` khi không dùng option. [Capture rejections](https://nodejs.org/api/events.html#capture-rejections-of-promises).
-
-`once(ee, "e", { signal })` hủy chờ khi abort — [abort-context.md](abort-context.md).
-
-`callbackify` chuyển rejection sang `cb(reason)`; falsy reason được bọc bằng Error có code `ERR_FALSY_VALUE_REJECTION` và `.reason`, truthy reason không nhất thiết là Error. Hàm async throw sync cũng thành rejection. Callback tự throw là lỗi riêng ở turn gọi callback. [callbackify](https://nodejs.org/api/util.html#utilcallbackifyoriginal).
-
-`util.promisify` + `fs.exists` (deprecated) là ví dụ custom symbol lịch sử — dùng `fs.promises.access` / `stat` thay `exists`.
-
-`queueMicrotask(() => cb(null, cached))` khi wrap sync cache thành “async callback” để không reentrant. Đừng `setTimeout(0)` trừ khi muốn macrotask (chậm hơn, khác thứ tự). Chi tiết queue: [event-loop.md](event-loop.md).
-
-Variance `err`: producer gọi `cb(err: unknown)` đòi handler chấp nhận `unknown`. Handler `(err: Error) => void` **quá hẹp** (contra) — hẹp bằng type guard trong body, không hẹp chữ ký callback.
-
-`this` trong err-first: Node gọi bare. Class method `this.read = this.read.bind(this)` trước đưa vào `fs` style. Arrow field: xem [functions-methods.md](functions-methods.md).
-
-`domain` module (legacy) không phải cách bind callback trên Node 26 — bỏ. `AsyncLocalStorage` cho request context, không thay `this`.
-
-`unhandledRejection` từ listener `async` trên EventEmitter: bọc `.catch` hoặc chuyển Promise API. Đừng im lặng nuốt trừ khi log.
+`Function.prototype.call.length === 1` (`thisArg`). Không liên quan số param hàm đích. Chi tiết `length` wrapper → [functions-methods.md](functions-methods.md) §8.3.
 
 ---
 
@@ -437,7 +435,7 @@ const ok: Effect = () => 1; // cho phép — caller kiểu void bỏ qua return
 
 - `void` ở return của callback: “caller không dùng giá trị trả về”.
 - Public API đồng bộ nên dùng kiểu cụ thể / `undefined` nếu caller cần giá trị.
-- `() => undefined` **không** nhận `() => 1` chặt như `void` (tùy `strictNullChecks`).
+- `() => undefined` **chặt hơn** `() => void`: luôn từ chối `() => 1` và bắt buộc hàm phải trả về `undefined` (dưới `strict`).
 - `() => void` cho phép callback trả giá trị bị bỏ qua, kể cả Promise. Nhưng `() => Promise<void>` **không** nhận `() => Promise<number>`: quy tắc discard return không đi sâu vào generic Promise. `void promise` không xử lý rejection; fire-and-forget cần `.catch` theo policy.
 
 ### 3.4 Union của function types
@@ -453,9 +451,18 @@ Union hàm gần như **không gọi được** (intersection của param). Pref
 
 ```ts
 type BoundGreet = (this: { name: string }, punct: string) => string;
+
+type GreetReceiver = ThisParameterType<BoundGreet>; // { name: string }
+type StandaloneGreet = OmitThisParameter<BoundGreet>; // (punct: string) => string
+
+function greetWithThis(this: { name: string }, punct: string) {
+  return `Hi, ${this.name}${punct}`;
+}
+const greetLan: StandaloneGreet = greetWithThis.bind({ name: "Lan" });
+greetLan("!"); // "Hi, Lan!"
 ```
 
-Gán arrow vào `BoundGreet`: `this` lexical vs annotated — TS có thể lỗi. Method extract: `OmitThisParameter`. Chi tiết binding → [functions-methods.md](functions-methods.md) §2.
+Gán arrow vào `BoundGreet`: `this` lexical vs annotated — TS có thể lỗi. Dùng `ThisParameterType<F>` để rút kiểu receiver và `OmitThisParameter<F>` để lấy kiểu hàm sau khi đã `.bind(receiver)`. Chi tiết binding → [functions-methods.md](functions-methods.md) §2.
 
 ---
 
@@ -505,7 +512,7 @@ type DateCtor = {
 };
 ```
 
-Class TS emit cả hai nếu `class` — `typeof MyClass` là construct type. Arrow **không** construct. Mixin / DI: nhận `new (...args: A) => T` chứ không `(...args: A) => T`.
+JS/TS `class` **chỉ có construct signature** (`typeof MyClass` là `new (...) => MyClass`), **không** có call signature (gọi không `new` → `TypeError`). Arrow **không** construct. Mixin / DI: nhận `new (...args: A) => T` chứ không `(...args: A) => T`.
 
 `Function.prototype[Symbol.hasInstance]` tùy biến `instanceof` — hiếm; đừng dùng để nhận diện callback. Nhận diện “thenable”: chỉ khi assimilate Promise, không phải type guard an toàn.
 
@@ -556,8 +563,12 @@ Dùng predicate có tên thay anonymous trong hot filter khi tái sử dụng / 
 
 ```ts
 const mixed: Array<string | number> = ["a", 1];
-mixed.filter((x) => typeof x === "string"); // TS 5.5+: string[] nhờ inferred predicate
-mixed.filter((x): x is string => typeof x === "string"); // string[]
+mixed.filter((x) => typeof x === "string"); // TS 5.5+/7: string[] nhờ inferred type predicate
+mixed.filter((x): x is string => typeof x === "string"); // string[] tường minh
+
+// Gán vào kiểu `Predicate<T>` (`=> boolean`) tường minh sẽ mất inferred predicate:
+const isStrBool: Predicate<string | number> = (x) => typeof x === "string";
+mixed.filter(isStrBool); // (string | number)[] — không thu hẹp!
 ```
 
 `Boolean` / `Boolean` constructor **không** phải type guard chuẩn cho `T | null` trên mọi version — viết `isDefined`:
@@ -581,7 +592,7 @@ function asUser(x: unknown): x is { id: string } {
 
 Guard nên kiểm tra **đủ field** cần dùng (zod/valibot cho I/O). Nội bộ: `typeof` / `instanceof` / discriminant `kind`.
 
-`instanceof` cross-realm (`vm`, worker) fail — [oop.md](oop.md) §8, [exceptions.md](exceptions.md).
+`instanceof` cross-realm (`vm`, worker) fail — với `Error`, ưu tiên **`Error.isError(e)`** (ES2026 / Node 26), xem [oop.md](oop.md) §8, [exceptions.md](exceptions.md).
 
 ### 5.3 Discriminated union > ad-hoc guard
 
@@ -603,7 +614,7 @@ function isOpen(e: Ev): e is Extract<Ev, { type: "open" }> {
 | Dùng | `if (isT(x))` / `filter` | `assertT(x)` rồi dùng tiếp |
 | Sai | nhánh else | ném — control flow hẹp sau câu lệnh |
 
-`asserts` không dùng trong `filter`. `assert` Node (`node:assert`) **không** hẹp TS trừ wrapping.
+`asserts` không dùng trong `filter`. `node:assert` (`import assert from "node:assert/strict"`) **có** khai báo `: asserts value` trong `@types/node` nên `assert(x != null)` tự hẹp kiểu TS trực tiếp (nhớ giữ tên/type annotation tường minh khi alias vì quy tắc TS cho assertion functions).
 
 ---
 
@@ -641,7 +652,7 @@ Khác `type Identity<T> = (value: T) => T` — generic trên alias cố định 
 ```ts
 function map<T, U>(arr: readonly T[], fn: (item: T, index: number) => U): U[] {
   const out: U[] = [];
-  for (let i = 0; i < arr.length; i++) out.push(fn(arr[i]!, i));
+  for (let i = 0; i < arr.length; i++) out.push(fn(arr[i] as T, i));
   return out;
 }
 
@@ -662,6 +673,17 @@ function callApi<T>(parse: (raw: unknown) => T, raw: unknown): T {
 
 Truyền `parse` quá rộng `(x: unknown) => unknown` → `T = unknown`. Annotate `callApi<User>(…)` hoặc predicate `x is User`. Context-sensitive inference: `(n) => n * 2` trong `map` infer `n` từ mảng; **tách biến** `const fn = (n) => n * 2` có thể thành implicit `any` nếu không annotate — bật `noImplicitAny`.
 
+**`NoInfer<T>` (TS 5.4+/7):** chặn một tham số (vd giá trị mặc định / callback) tham gia suy luận `T`, buộc TS chỉ suy luận từ nguồn chính:
+
+```ts
+function createFsm<S extends string>(states: readonly S[], initial: NoInfer<S>) {
+  return { states, initial };
+}
+
+createFsm(["idle", "running"], "idle"); // OK — S = "idle" | "running"
+// createFsm(["idle", "running"], "typo"); // Lỗi! Nếu thiếu NoInfer, TS sẽ widen S gồm cả "typo"
+```
+
 ---
 
 ## 7. Higher-order, curry nhẹ
@@ -670,6 +692,9 @@ Higher-order function (HOF): nhận và/hoặc trả về hàm.
 
 ```ts
 function withRetry<T>(fn: () => Promise<T>, attempts = 3): () => Promise<T> {
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new RangeError("attempts must be a positive integer");
+  }
   return async () => {
     let last: unknown;
     for (let i = 0; i < attempts; i++) {
@@ -683,6 +708,8 @@ function withRetry<T>(fn: () => Promise<T>, attempts = 3): () => Promise<T> {
   };
 }
 ```
+
+Khi HOF cần nhận callback `fn` có thể đồng bộ hoặc async (vừa có thể `throw` sync vừa có thể trả `Promise`), bọc gọi bằng **`Promise.try(fn, ...args)`** (ES2025 / Node 26, §2.4) để mọi lỗi đi chung một đường Promise rejection.
 
 ### 7.1 Wrapper timed
 
@@ -700,7 +727,23 @@ function timed<A extends unknown[], R>(
     }
   };
 }
+
+function timedAsync<A extends unknown[], R>(
+  label: string,
+  fn: (...args: A) => Promise<R>,
+): (...args: A) => Promise<R> {
+  return async (...args: A) => {
+    const t0 = performance.now();
+    try {
+      return await fn(...args);
+    } finally {
+      console.log(`${label}: ${(performance.now() - t0).toFixed(2)}ms`);
+    }
+  };
+}
 ```
+
+> **Cảnh báo:** `timed` đồng bộ chỉ đo thời gian **tạo Promise** nếu bạn truyền vào một `async fn` (`finally` chạy ngay trước khi Promise settle). Luôn dùng `timedAsync` (có `await`) để đo toàn bộ thời gian hoàn tất của tác vụ bất đồng bộ.
 
 Giữ `this` nếu wrap method: `function (this: This, ...args: A)` + `fn.apply(this, args)`. Copy `name`/`length` nếu stack/ops quan trọng — [functions-methods.md](functions-methods.md) §8.
 
@@ -725,7 +768,7 @@ function partialRight<A, B, R>(fn: (a: A, b: B) => R, b: B) {
 ```ts
 function once<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
   let done = false;
-  let value: R;
+  let value!: R;
   return (...args: A) => {
     if (!done) {
       value = fn(...args);
@@ -753,7 +796,7 @@ function memoize<K, V>(fn: (key: K) => V): (key: K) => V {
 }
 ```
 
-`getOrInsertComputed` (Node 26) đúng “compute một lần / key”. Key primitive OK trên `Map`; object key = reference. Không JSON.stringify key phức tạp (thứ tự field, `undefined`).
+`Map.prototype.getOrInsertComputed` / `WeakMap.prototype.getOrInsertComputed` là chuẩn **ES2026** (hỗ trợ native trên **Node 26**), đúng ngữ nghĩa “compute một lần / key”. Key primitive OK trên `Map`; object key = reference. Không `JSON.stringify` key phức tạp (thứ tự field, `undefined`). Với `memoize` sync: lần 1 throw → lần 2 sẽ retry (chọn explicit nếu muốn cache lỗi). Với `memoize` async: cache in-flight `Map<K, Promise<V>>` và xóa entry khi reject để tránh kẹt lỗi vĩnh viễn.
 
 `once` event (`ee.once`) ≠ `once(fn)` HOF.
 
@@ -772,6 +815,7 @@ function debounce<A extends unknown[]>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const abort = () => {
     if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
   };
   signal?.addEventListener("abort", abort, { once: true });
   return (...args: A) => {
@@ -784,24 +828,42 @@ function debounce<A extends unknown[]>(
 function throttle<A extends unknown[]>(
   fn: (...args: A) => void,
   ms: number,
+  signal?: AbortSignal,
 ): (...args: A) => void {
   let locked = false;
   let pending: A | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const cancel = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+    pending = undefined;
+    locked = false;
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+
+  const release = () => {
+    timer = undefined;
+    if (pending) {
+      const args = pending;
+      pending = undefined;
+      locked = true;
+      timer = setTimeout(release, ms); // giữ cooldown mới sau trailing call
+      fn(...args);
+    } else {
+      locked = false;
+    }
+  };
+
   return (...args: A) => {
+    if (signal?.aborted) return;
     if (locked) {
-      pending = args; // trailing sketch
+      pending = args;
       return;
     }
-    fn(...args);
     locked = true;
-    setTimeout(() => {
-      locked = false;
-      if (pending) {
-        const p = pending;
-        pending = undefined;
-        fn(...p);
-      }
-    }, ms);
+    timer = setTimeout(release, ms);
+    fn(...args);
   };
 }
 ```
@@ -848,9 +910,21 @@ Giả sử `Dog extends Animal`. Cột “gán vào biến kiểu…”.
 | `() => Animal` | — | — | OK | **Không** |
 | `() => Dog` | — | — | OK (co) | OK |
 
-Return **covariant**; param **contravariant**. Generic default invariant trừ `in`/`out` (TS 4.7+; dùng khi viết thư viện container).
+Return **covariant**; param **contravariant**. Với generic container/callback tự định nghĩa, có thể chú thích tường minh variance **`in` / `out`** (TS 4.7+/7) để compiler kiểm tra hướng truyền kiểu và tăng tốc type-check:
 
-`Promise<T>`: `T` covariant trên fulfill value — `Promise<Dog>` ~ `Promise<Animal>` (readonly). **Mutable** `Array<Dog>` gán `Array<Animal>` là lỗ TS có chủ đích (bivariant array historically / covariant unsound) — [collections-generics.md](collections-generics.md).
+```ts
+type Consumer<in T> = (value: T) => void; // contravariant
+type Producer<out T> = () => T;           // covariant
+type StateBox<in out T> = { get(): T; set(v: T): void }; // invariant
+
+declare const feedAnimal: Consumer<Animal>;
+const feedDog: Consumer<Dog> = feedAnimal; // OK (in = contra)
+
+declare const makeDog: Producer<Dog>;
+const makeAnimal: Producer<Animal> = makeDog; // OK (out = co)
+```
+
+`Promise<T>`: `T` covariant trên fulfill value — `Promise<Dog>` gán được vào `Promise<Animal>` (readonly). **Mutable** `Array<T>` trong TS cũng là **covariant** (`Array<Dog>` gán được cho `Array<Animal>`) — đây là lựa chọn unsound có chủ đích vì sự tiện dụng (xuất phát từ method parameter bivariance như `push(item: T)`), xem [collections-generics.md](collections-generics.md).
 
 ### 8.3 Method syntax vs function syntax trong object type
 
@@ -898,7 +972,7 @@ Hàm **ít param hơn** gán được vào kiểu nhiều param (param extra b�
 
 TS `strictBindCallApply` (trong `strict`): `fn.call`/`apply`/`bind` kiểm tra list đối số. Tắt flag để “cho qua” `apply(null, unknown[])` — đừng; annotate tuple. `this` param mismatch bắt ở `call`. Liên quan [functions-methods.md](functions-methods.md) §8.
 
-Callback Node `(err, v) => void` gán vào `(err: Error | null, v?: T) => void` — `err` variance: listener hẹp hơn (`ErrnoException`) **không** an toàn nếu producer gửi `Error` thường — dùng `unknown` rồi hẹp. Xem §8.
+Callback Node `(err, v) => void` gán vào `(err: Error | null, v?: T) => void` — variance `err`: nếu producer gọi `cb(err: unknown)`, handler `(err: Error) => void` là **quá hẹp** (contra), nên nhận `unknown` rồi hẹp bằng `Error.isError(err)` trong body. Xem §8.1.
 
 `noUncheckedIndexedAccess` làm `args[0]` optional khi wrap rest — annotate tuple generic `A extends unknown[]`.
 
@@ -1025,16 +1099,20 @@ HOF `memoize` / `once` **giữ** `fn` + cache mãi — gỡ reference nếu requ
 ### 10.4 Callback queues & stale closure
 
 ```ts
-function makeHandler(version: number) {
-  return () => version; // đóng over `version` lúc tạo
+let activeConfig = { version: 1, endpoint: "/v1" };
+
+function scheduleSync(snapshot = activeConfig) {
+  // Closure chụp `snapshot` (v1) tại thời điểm đăng ký; sau `await` / timer có thể đã lỗi thời
+  setTimeout(async () => {
+    await fetch(snapshot.endpoint); // vẫn gọi "/v1" dù `activeConfig` đã đổi sang "/v2"!
+  }, 1_000);
 }
-let v = 1;
-const h = makeHandler(v);
-v = 2;
-h(); // 1 — primitive capture-by-value qua binding lúc gọi makeHandler
+
+scheduleSync();
+activeConfig = { version: 2, endpoint: "/v2" };
 ```
 
-Object capture-by-reference: mutate field vẫn thấy. Stale: debounce giữ `args` cuối — OK; giữ `req` object rồi reuse sau `await` khi request đã abort — bug. Kết hợp `AbortSignal.aborted` trước khi gọi `fn`.
+Stale closure thường xảy ra khi callback async/timer chụp một **snapshot cũ** (hoặc `req`/token cũ) rồi tiếp tục dùng sau `await` khi trạng thái hiện tại đã thay đổi hoặc request đã bị abort. Giải pháp: đọc qua getter/ref mới nhất khi cần trạng thái live, hoặc kiểm tra `signal.aborted` / so `version` trước khi commit kết quả.
 
 Listener đăng ký trong vòng `for (const item of items) ee.on("x", () => item)`: `const` mỗi vòng một binding — đúng. `var` — sai.
 
@@ -1104,17 +1182,28 @@ Chi tiết: [nodejs-apis.md](nodejs-apis.md), [event-loop.md](event-loop.md). So
 
 | API | Ý nghĩa |
 |---|---|
-| `on` / `addListener` | Đăng ký, gọi mỗi emit |
+| `on` / `addListener` | Đăng ký, gọi mỗi emit (**không** nhận `{ signal }` trực tiếp trên `EventEmitter.prototype.on`) |
 | `once` | Tự `off` sau lần 1 |
 | `off` / `removeListener` | Gỡ **cùng reference** — arrow mới mỗi lần không gỡ được |
 | `removeAllListeners(evt?)` | Nặng tay; test teardown |
-| `{ signal }` trên `on` (Node hiện đại) | Abort → gỡ listener |
+| `events.addAbortListener(signal, fn)` | Gỡ listener khi abort; trả `Disposable` (dùng được với `using`) |
+| `events.on(ee, evt, { signal })` / `events.once(ee, evt, { signal })` | Async iterator / Promise một lần hỗ trợ `{ signal }` |
 
 ```ts
+import { addAbortListener, EventEmitter } from "node:events";
+
+const ee = new EventEmitter();
 const ac = new AbortController();
-ee.on("data", onData, { signal: ac.signal });
-ac.abort(); // listener gỡ
+const onData = (chunk: unknown) => console.log(chunk);
+
+ee.on("data", onData);
+// addAbortListener trả về Disposable — tự dọn listener nếu rời block sớm hoặc khi ac.abort()
+using _cleanup = addAbortListener(ac.signal, () => ee.off("data", onData));
+
+ac.abort(); // gỡ onData an toàn
 ```
+
+> **Cảnh báo:** `EventEmitter.prototype.on` **không** có tham số thứ 3 `{ signal }` (khác Web API `EventTarget.prototype.addEventListener("data", onData, { signal })`). Dùng `events.addAbortListener`, `events.on(ee, "data", { signal })`, hoặc `events.once(ee, "data", { signal })` — xem [abort-context.md](abort-context.md).
 
 Hai arrow khác reference: `off` không match. Giữ `const onData = …`.
 
@@ -1122,7 +1211,9 @@ Hai arrow khác reference: `off` không match. Giữ `const onData = …`.
 
 ### 12.2 `"error"` đặc biệt
 
-Không có listener `error` → `EventEmitter` throw (có thể crash process / `uncaughtException`). Stream pipe: luôn `.on("error")` hoặc `pipeline`. Promise `once(ee, "evt")` reject khi `error` trong lúc chờ — đừng quên.
+Không có listener `error` → `EventEmitter` throw (có thể crash process / `uncaughtException`). Stream pipe: luôn `.on("error")` hoặc `pipeline`. Promise `once(ee, "evt", { signal })` reject khi `error` phát ra hoặc khi `signal` abort.
+
+Mặc định `EventEmitter` **không** `await` hay catch Promise từ `async` listener (dễ gây `unhandledRejection`). Có thể bật `new EventEmitter({ captureRejections: true })` để chuyển rejection sang `[Symbol.for("nodejs.rejection")]` hoặc event `"error"` (tránh gắn `async` listener cho chính `"error"` kẻo tạo vòng rejection), hoặc bọc tác vụ bằng `.catch(...)` / chuyển sang Promise API. [Capture rejections](https://nodejs.org/api/events.html#capture-rejections-of-promises).
 
 ---
 
@@ -1132,7 +1223,7 @@ Không có listener `error` → `EventEmitter` throw (có thể crash process / 
 2. `if (err)` cho Node core; không dùng falsy làm error; không `cb(err, result)` đồng thời.
 3. Đặt tên kiểu rõ: `Predicate<T>`, `Mapper<T,U>`, `Middleware`. Identity generic **trên hàm** khi infer từng call.
 4. HOF cho cross-cutting (retry, timeout, log) thay copy-paste. Debounce/throttle có `AbortSignal`; memoize bounded / `getOrInsertComputed`.
-5. `unknown` cho `err` rồi thu hẹp — [exceptions.md](exceptions.md). Type guard phải sound; `filter` cần `x is T`.
+5. `unknown` cho `err` rồi thu hẹp bằng `Error.isError(err)` (ES2026 / Node 26) — [exceptions.md](exceptions.md). Type guard phải sound; inline arrow trong `.filter()` được TS 5.5+/7 tự suy luận predicate, nhưng hàm gán rõ `Predicate<T>` (`=> boolean`) sẽ mất narrowing và cần tường minh `x is T`.
 6. Giữ `strictFunctionTypes`; sửa chữ ký thay vì nới lỏng. Callback API = **function property**, không method bivariant.
 7. Overload khi return phụ thuộc arg; discriminated union khi domain phức tạp; union param khi cùng shape.
 8. Curry nhẹ (1–2 tầng); tránh curry framework.
@@ -1188,7 +1279,9 @@ function f(x: string | number): number | string {
 }
 
 import { promisify } from "node:util";
-fn[promisify.custom] = (a: A) => Promise.resolve(/* … */);
+const customFn = Object.assign(legacyFn, {
+  [promisify.custom]: (a: A) => Promise.resolve(/* … */),
+});
 ```
 
 | Cần | Chọn |
@@ -1213,15 +1306,16 @@ fn[promisify.custom] = (a: A) => Promise.resolve(/* … */);
 |---|---|
 | ES2015 | arrow, rest/default, Promise |
 | ES2017 | async/await |
+| ES2025 | `Promise.try(fn, ...args)` |
+| ES2026 | `Map.prototype.getOrInsertComputed` / `WeakMap.prototype.getOrInsertComputed`; `Error.isError` |
 | Node cổ điển | err-first callback |
-| Node hiện đại | `fs/promises`, `fetch`, `util.promisify` / `promisify.custom` |
-| `events.once` | Promise cho một event |
-| TS | function types, call/construct signatures, overload, `x is T` |
+| Node hiện đại | `fs/promises`, `fetch`, `util.promisify` / `promisify.custom`, `events.once` / `events.on` / `events.addAbortListener` |
+| TS 4.7–5.5 | `in`/`out` variance (4.7); `NoInfer<T>` (5.4); inferred type predicates trong `.filter()` (5.5); `node:assert` `: asserts value` |
 | TS `strictFunctionTypes` | param callback contravariant (trong `strict`) |
-| **TS 7** | `strict` mặc định → variance chặt hơn codebase cũ |
-| **Node 26** | Promise-first builtins; AbortSignal phổ biến; `Map.getOrInsertComputed` cho memoize |
+| **TS 7.0** | native Go compiler; `strict` mặc định → variance chặt hơn codebase cũ |
+| **Node 26 Active LTS** | V8 14.6+; Promise-first builtins; `Promise.try`, `Error.isError`, `Map.prototype.getOrInsertComputed` / `WeakMap.prototype.getOrInsertComputed` (ES2026) native |
 
-Baseline: **Node 26** + **TS 7**.
+Baseline: **Node 26 Active LTS** + **TS 7.0**.
 
 ---
 
@@ -1236,5 +1330,4 @@ Baseline: **Node 26** + **TS 7**.
 - [Node.js built-ins](nodejs-apis.md) — `events`
 - [Tập hợp & Generics](collections-generics.md) — `getOrInsertComputed`, variance Array/Map
 - [Event loop & concurrency model](event-loop.md)
-
 - [Mocks, async cleanup & contracts](testing.md)

@@ -51,6 +51,7 @@ Baseline: **Node.js 26**. Mô hình cốt lõi ổn định qua các major; hi�
   - [15.3 Addon C++ & threadpool](#153-addon-c--threadpool)
   - [15.4 Cây quyết định lên lịch](#154-cây-quyết-định-lên-lịch)
   - [15.5 `close` vs `finish` vs unref — CLI vs server](#155-close-vs-finish-vs-unref--cli-vs-server)
+  - [15.6 Ghi chú nhanh về timers, profiling & internals](#156-ghi-chú-nhanh-về-timers-profiling--internals)
 - [16. Best practices](#16-best-practices)
 - [17. Checklist](#17-checklist)
 - [18. Cheat sheet](#18-cheat-sheet)
@@ -99,8 +100,10 @@ Khác mô hình “mỗi request một thread”: concurrency I/O dựa trên **
 2. Xả **`process.nextTick`** đến khi trống (đệ quy `nextTick` trong bước này **không** thoát — §4).
 3. Xả **microtask** (`Promise.then`, `queueMicrotask`, resume `await`) đến khi trống.
 4. Nếu microtask enqueue `nextTick`, quay lại xả tick rồi microtask — đến khi cả hai rỗng.
-5. Chạy macrotask thuộc **phase** hiện tại.
-6. Lặp từ bước 2 sau mỗi callback / giữa phases.
+5. Chạy một macrotask callback thuộc **phase** hiện tại.
+6. Lặp từ bước 2 **sau MỖI callback riêng lẻ** (không chờ chạy hết cả phase).
+
+> **Lưu ý Node 11+:** Từ Node 11 trở đi (gồm Node 24/26), Node xả toàn bộ `process.nextTick` và microtask queue **sau mỗi callback riêng lẻ** (ví dụ giữa hai callback `setTimeout` cùng phase timers hoặc giữa hai `setImmediate`), chứ không đợi kết thúc toàn bộ phase như Node ≤ 10. Hành vi này đồng bộ hơn với microtask checkpoint của browser.
 
 Nếu một hàm sync chạy 2 giây → **không** timer / I/O / HTTP handler nào chạy trong khoảng đó. Loop bị **block**, không phải “chậm một chút”.
 
@@ -148,12 +151,16 @@ Hai hàng đợi **khác nhau**:
 | Portable | Không (browser không có) | Có (`queueMicrotask`) |
 
 ```js
+// Bên trong callback I/O / timer hoặc CJS top-level:
 process.nextTick(() => console.log("nextTick"));
 Promise.resolve().then(() => console.log("promise"));
 queueMicrotask(() => console.log("queueMicrotask"));
 console.log("sync");
-// sync → nextTick → promise / queueMicrotask (FIFO trong microtask queue)
+// CJS top-level / trong callback: sync → nextTick → promise → queueMicrotask
+// ESM top-level ("type":"module" / .mjs): sync → promise → queueMicrotask → nextTick
 ```
+
+> **Bẫy ESM top-level:** Trên baseline **ESM** (`"type": "module"` / `.mjs`), thân module top-level được V8 evaluate bên trong một microtask checkpoint (Promise reaction). Do đó mọi microtask enqueue ở top-level (`Promise.then`, `queueMicrotask`) sẽ xả hết **trước** khi Node rời microtask checkpoint để chạy `process.nextTick` (`promise → queueMicrotask → nextTick`). Ngược lại, trong **CJS top-level** hoặc **bên trong callback I/O / timer**, `process.nextTick` luôn chạy **trước** Promise / `queueMicrotask`.
 
 API hiện đại: `queueMicrotask` / Promise; `nextTick` khi cần semantics legacy (emit sau constructor, trước I/O).
 
@@ -189,11 +196,13 @@ Interleave: `then` enqueue `nextTick`, `nextTick` enqueue `then` — Node xả *
 **Lối thoát** — nhường **macrotask** (`check` / timers):
 
 ```js
+import { setImmediate as nextTurn } from "node:timers/promises";
+
 async function processChunked(items) {
   for (let i = 0; i < items.length; i++) {
     work(items[i]);
-    if (i % 1000 === 0) {
-      await new Promise((r) => setImmediate(r));
+    if (i > 0 && i % 1000 === 0) {
+      await nextTurn(); // gọn hơn new Promise((r) => setImmediate(r))
     }
   }
 }
@@ -328,7 +337,9 @@ process.nextTick(() => console.log("tick"));
 Promise.resolve().then(() => console.log("micro"));
 setTimeout(() => console.log("timeout0"), 0);
 console.log("B");
-// A B tick micro … rồi timeout0 ở phase timers
+// CJS top-level / trong callback I/O-timer: A → B → tick → micro → timeout0
+// ESM top-level ("type":"module"):          A → B → micro → tick → timeout0
+// (Cả hai đều chạy tick + micro TRƯỚC timeout0 ở phase timers)
 ```
 
 | | `nextTick` / microtask | `setTimeout(fn, 0)` |
@@ -360,7 +371,7 @@ setImmediate(() => console.log("immediate"));
 // thứ tự: phụ thuộc load / khi vào poll — đừng branch logic
 ```
 
-Vào loop lần đầu: có thể timers phase trước (timeout) hoặc poll→check (immediate) tùy thời điểm hết hạn và event loop start.
+Vào loop lần đầu: Node clamp `setTimeout(..., 0)` thành **`1` ms** (§9), nên thứ tự phụ thuộc việc thời gian chuẩn bị vào vòng loop đầu tiên đã chạm mốc 1ms hay chưa (nếu đã ≥ 1ms → timers fire `timeout` trước; nếu < 1ms → sang poll→check chạy `immediate` trước).
 
 ### 8.2 Trong I/O callback — immediate thường trước
 
@@ -403,13 +414,13 @@ setImmediate(() => {
 ## 9. Timer coalescing & delay tối thiểu
 
 ```js
-setTimeout(() => console.log("t"), 0);
+setTimeout(() => console.log("t"), 0); // Node clamp mọi delay < 1 (0, âm, NaN) thành 1ms
 ```
 
-- Delay là **tối thiểu**, không phải “chính xác ms”.
-- Loop bận → trễ thêm (đúng thứ `monitorEventLoopDelay` đo).
+- **Clamp tối thiểu `1` ms:** Node.js chuyển mọi delay `< 1` (gồm `0`, số âm, `NaN`) về `1` ms (`setTimeout(fn, 0)` thực tế tương đương `setTimeout(fn, 1)`). Đây là lý do cốt lõi khiến `setTimeout(0)` vs `setImmediate` ở top-level không xác định (§8.1).
+- Delay là **tối thiểu**, không phải “chính xác ms”; loop bận → trễ thêm (đúng thứ `monitorEventLoopDelay` đo).
 - `setInterval` **drift**: mỗi lần schedule từ lúc callback chạy, không phải lưới tường realtime.
-- libuv giữ heap timer; nhiều timer **cùng hạn** fire cùng phase timers (coalescing) — thứ tự giữa chúng **không** phải spec để dựa logic.
+- **Cơ chế nội bộ:** Node quản lý toàn bộ JS timers bằng các **`TimersList`** (gom theo cùng `msecs`) sắp trong JS **`PriorityQueue`** và chỉ dùng **một `uv_timer_t` duy nhất** của libuv hẹn cho hạn gần nhất. Nhiều timer cùng hạn fire liên tiếp trong cùng phase timers (coalescing) — thứ tự giữa các timer khác duration không phải spec để dựa logic.
 - Độ phân giải: phụ thuộc OS / `uv_hrtime`; đừng dùng timer 0–1ms làm clock nguồn.
 
 ```js
@@ -450,14 +461,10 @@ Promise.resolve().then(() => console.log("promise"));
 console.log("B");
 ```
 
-```
-A
-B
-nextTick
-promise
-```
-
-rồi `timeout` / `immediate` (**không** ổn định ngoài I/O).
+- **CJS top-level** (hoặc bên trong callback I/O / timer):
+  `A → B → nextTick → promise` rồi `timeout` / `immediate` (**không** ổn định ngoài I/O).
+- **ESM top-level** (`.mjs` / `"type": "module"`):
+  `A → B → promise → nextTick` (vì ESM body chạy trong microtask checkpoint), rồi mới tới `timeout` / `immediate`.
 
 ```js
 console.log("sync");
@@ -467,7 +474,8 @@ process.nextTick(() => {
   console.log("tick");
   Promise.resolve().then(() => console.log("micro-after-tick"));
 });
-// sync → tick → micro → micro-after-tick → (timeout|immediate)
+// CJS top-level / trong callback: sync → tick → micro → micro-after-tick → macrotask
+// ESM top-level ("type":"module"): sync → micro → tick → micro-after-tick → macrotask
 ```
 
 ### 10.1 `nextTick` bên trong I/O (poll)
@@ -521,7 +529,7 @@ node app.js
 UV_THREADPOOL_SIZE=16 node app.js
 ```
 
-Set env **trước** khi start process — đổi lúc runtime **không** resize pool đã tạo.
+Set env **trước** khi start process — đổi lúc runtime **không** resize pool đã tạo. `UV_THREADPOOL_SIZE` nhận tối đa **1024** (từ libuv 1.30+); threadpool được libuv khởi tạo **lazy** ở tác vụ pool đầu tiên (vì module/loader có thể chạm `fs` rất sớm lúc boot, gán `process.env.UV_THREADPOOL_SIZE` trong code JS không đáng tin — luôn đặt từ ngoài process).
 
 ### 11.1 Contention recipes (fs + crypto)
 
@@ -563,6 +571,7 @@ Promise fan-out không giới hạn trên `fs/promises` = queue libuv ẩn — [
 
 ```js
 import fs from "node:fs";
+import crypto from "node:crypto";
 const data = fs.readFileSync("/huge/file"); // ❌
 JSON.parse(hugeString);
 crypto.pbkdf2Sync(password, salt, 100000, 64, "sha512");
@@ -586,7 +595,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 
 const h = monitorEventLoopDelay({ resolution: 20 });
 h.enable();
-setInterval(() => {
+const iv = setInterval(() => {
   console.log({
     meanMs: h.mean / 1e6,
     p99Ms: h.percentile(99) / 1e6,
@@ -595,11 +604,12 @@ setInterval(() => {
   });
   h.reset();
 }, 5000);
+iv.unref(); // không giữ process sống khi shutdown (xem §13.2)
 ```
 
 - Histogram đơn vị **nanosecond** → chia `1e6` ra ms.
 - `resolution`: chu kỳ sample (ms). Thô quá → bỏ sót spike ngắn; mịn quá → overhead.
-- `exceeds`: số lần delay **vượt** resolution.
+- `exceeds`: số lần delay **vượt ngưỡng tối đa `highest`** của histogram (mặc định ~1 giờ, không lọt vào bucket nào) — **không phải** số lần vượt `resolution`.
 - **p99 delay ≠ p99 latency HTTP** — chỉ “main thread bị giữ bao lâu giữa các tick”.
 - Idle vẫn có noise ~ resolution; đừng alert mean 0.5ms. Nhìn **p99/max cửa sổ 5–15s**.
 - `reset()` giữa các cửa sổ để không trộn warmup.
@@ -623,12 +633,12 @@ console.log(end.idle, end.active, end.utilization); // utilization 0..1
 
 `utilization ≈ active / (active + idle)`. Có thể truyền hai sample.
 
-| ELU | Delay p99 | Đọc |
-|-----|-----------|-----|
-| Cao, delay thấp | Bận **có ích** (nhiều callback ngắn) — scale/fan-out | |
-| Cao, delay cao | Quá tải hoặc **block** | Tìm sync CPU |
-| Thấp, delay cao | Ít callback nhưng kẹt lâu (GC pause, sync hiếm) | Profile |
-| Thấp, delay thấp | Nhàn | |
+| ELU | Delay p99 | Đọc / hành động |
+|-----|-----------|-----------------|
+| Cao | Thấp | Bận **có ích** (nhiều callback ngắn) — cân nhắc scale ngang / cắt fan-out |
+| Cao | Cao | Quá tải hoặc **block** main thread — tìm sync CPU / `*Sync` |
+| Thấp | Cao | Ít callback nhưng kẹt lâu (GC pause, sync hiếm) — profile heap / CPU |
+| Thấp | Thấp | Nhàn (idle bình thường) |
 
 ELU không nói “threadpool đầy”. Kết hợp: ELU thấp + fs chậm → nghi pool (§11).
 
@@ -683,8 +693,18 @@ function runInWorker(data) {
     const w = new Worker(new URL("./cpu-job.js", import.meta.url), {
       workerData: data,
     });
-    w.on("message", resolve);
-    w.on("error", reject);
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      void w.terminate();
+      fn(value);
+    };
+    w.once("message", (msg) => finish(resolve, msg));
+    w.once("error", (err) => finish(reject, err));
+    w.once("exit", (code) => {
+      finish(reject, new Error(`Worker exited with code ${code} without posting a message`));
+    });
   });
 }
 ```
@@ -709,7 +729,9 @@ Giữ bước 2 và 5 mỏng. Fan-out 100 `readFile` trong bước 4: Promise co
 
 Handle “ref’d” giữ process sống. `timeout.unref()`: timer không chặn thoát. Server socket listen thường ref. Worker mặc định ref — `worker.unref()` nếu background thuần và bạn chấp nhận process thoát khi hết handle khác.
 
-CLI: `unref` timer heartbeat. Server: ít khi `unref` request timer — request dở chết silent.
+CLI: `unref` timer heartbeat / metric. Server: ít khi `unref` request timer — request dở chết silent.
+
+**Debug handle đang giữ process không thoát:** gọi **`process.getActiveResourcesInfo()`** (trả mảng tên loại resource đang ref như `["Timeout", "TCPSERVERWRAP", "Worker"]`) — hữu ích khi test hoặc CLI bị treo lúc exit.
 
 ---
 
@@ -775,10 +797,10 @@ Worker browser (`new Worker`) ≈ isolate + message; **không** có `parentPort`
 // Block — đừng
 while (Date.now() < t) {}
 
-// Yield mỗi N item
+// Yield mỗi N item (gợi ý: import { setImmediate } from "node:timers/promises")
 for (let i = 0; i < n; i++) {
   work(i);
-  if (i % 500 === 0) await new Promise((r) => setImmediate(r));
+  if (i > 0 && i % 500 === 0) await new Promise((r) => setImmediate(r));
 }
 
 // Sai yield
@@ -821,7 +843,7 @@ Debug thứ tự: log timestamp `performance.now()` trong từng callback, **đ�
 
 `node --inspect` + Performance tab: nhìn idle vs script. Không thay histogram ns.
 
-`setTimeout(fn, 1)` vs `0`: trên Node hiện đại gần nhau; **cả hai** vẫn phase timers, không nextTick. Đừng viết `delay || 0` nghĩ đã microtask.
+`setTimeout(fn, 1)` vs `0`: Node clamp mọi delay `< 1` thành `1` ms nên hai lệnh này tương đương; **cả hai** vẫn phase timers, không phải nextTick. Đừng viết `delay || 0` nghĩ đã microtask.
 
 Port code browser→Node: xóa giả định rAF và 4ms clamp; thêm `nextTick` chỉ khi thật sự emit-after-construct.
 
@@ -835,60 +857,38 @@ Port code browser→Node: xóa giả định rAF và 4ms clamp; thêm `nextTick`
 
 ```js
 import { createWriteStream } from "node:fs";
+import { finished } from "node:stream/promises";
 
 const ws = createWriteStream("out.bin");
 ws.write("x");
 ws.end();
 ws.on("finish", () => console.log("flushed"));
 ws.on("close", () => console.log("fd closed"));
-// process có thể thoát trước close nếu không await finished() — CLI hay dính
+await finished(ws); // đợi flush + bắt lỗi ghi sạch trước khi thoát
 ```
 
-Server: listen handle ref. CLI file write: `await finished(ws)` hoặc `ws.ref()` mặc định thường đủ nếu stream còn; `unref` nhầm = mất dữ liệu.
+- **`fs.WriteStream` không có `.ref()` / `.unref()`** (gọi `ws.ref()` sẽ ném `TypeError`). Các fs request đang pending trên libuv tự giữ event loop sống đến khi I/O hoàn tất, nhưng CLI vẫn nên `await finished(ws)` để chờ `finish`/`close` và bắt lỗi ghi rõ ràng.
+- **`process.exit(0)`** bỏ qua close callbacks đang chờ và có thể cắt ngang flush — ưu tiên đặt `process.exitCode` rồi để loop tự drain (graceful shutdown: [main-function.md](main-function.md)).
+- **`setImmediate` / `setInterval` + `unref`:** gọi `.unref()` làm handle không giữ process sống — hợp cho metric/heartbeat (CLI hoặc background), nhưng không `unref` tác vụ request-scoped trên server.
+- **`setImmediate` trong `'close'` callback:** chạy ở phase `check` của **vòng sau**; giữ `'close'` nhẹ, không nhét CPU nặng.
 
-`process.exit(0)` bỏ qua close callbacks đang chờ — flush sync hoặc `exitCode` + để loop drain. Graceful: [main-function.md](main-function.md).
+### 15.6 Ghi chú nhanh về timers, profiling & internals
 
-`setImmediate` + `unref`: immediate không giữ process — CLI script + unref immediate = không chạy. Server đừng unref immediate request-scoped.
-
-`fs.watch` / `net.Socket` timeout: macrotask từ I/O, không phải timer JS `setTimeout` (một số API dùng libuv timer nội bộ). `AbortSignal.timeout` là timer JS/web — khác `socket.setTimeout`.
-
-`process.nextTick` trong `'uncaughtException'` — nguy hiểm; shutdown sync. Xem [exceptions.md](exceptions.md).
-
-`performance.nodeTiming` / `mark` / `measure`: đo đoạn user, không thay ELU. `monitorEventLoopDelay` `disable()` khi test xong — tránh leak histogram trong unit test song song.
-
-`setTimeout(fn, ms, arg)` truyền arg — tránh closure; vẫn timers phase.
-
-`clearTimeout` / `clearImmediate` trước abort cleanup — đôi khi abort và timer fire cùng turn; idempotent callback.
-
-`util.promisify(setTimeout)` legacy khác `timers/promises.setTimeout` (thứ tự arg). Baseline: `node:timers/promises`.
-
-`setImmediate` trong `close` callback: check **vòng sau** close phase. Cleanup nặng: đừng nhét CPU vào `'close'`.
-
-`poll` chờ khi threadpool busy: poll vẫn chạy (network); chỉ fs/crypto chậm — “HTTP OK, disk đơ”.
-
-`dns.setDefaultResultOrder("ipv4first")` đổi thứ tự lookup, không đổi việc lookup dùng pool.
-
-`setInterval` + `unref` + server: interval không giữ process nếu mọi thứ khác unref — health ping biến mất. Server: interval ref mặc định OK.
-
-`loop delay` cao lúc GC: `max` spike đơn lẻ vs p99 bền. Alert p99 cửa sổ, không max một sample.
-
-`--max-old-space-size` ảnh hưởng GC pause (delay) — không phải `UV_THREADPOOL_SIZE`.
-
-`--trace-sync-io` in stderr: parse CI fail-on-warn. Kết hợp `--trace-uncaught` khi debug rejection — [exceptions.md](exceptions.md), [async.md](async.md).
-
-`idle, prepare` phase: không có API user; đừng log “vào idle”.
-
-`UV_RUN_DEFAULT` vs `UV_RUN_ONCE` (C++): JS không gọi trực tiếp; `process.exit` / hết handle = loop stop. Test: `setImmediate` giữ loop nếu còn ref.
-
-`async_hooks` `executionAsyncId` debug ALS — đắt, đừng bật full hooks production. ALS đã tối ưu hơn raw hooks.
-
-`queueMicrotask` vs `setImmediate` cho “chia batch”: micro starve I/O; immediate không. Mặc định yield = `setImmediate`. Xem §15.4.
-
-`timers/promises.setImmediate(value)` fulfill `value` — khác `setImmediate(fn)`. Đừng nhầm callback vs promise API.
-
-`setTimeout` 32-bit delay: delay cực lớn bị clamp (spec/web-ish) — đừng `timeout(2**40)`. Deadline dài: timer 24h max rồi re-arm, hoặc scheduler ngoài.
-
-`Date.now()` vs `hrtime`: timer libuv dùng monotonic clock nội bộ — nhảy NTP không “bỏ” timer như tường.
+- **Timers & clock:**
+  - `setTimeout(fn, ms, arg)` truyền arg trực tiếp để tránh tạo closure; `clearTimeout` / `clearImmediate` khi cleanup abort nên viết idempotent phòng trường hợp abort và timer fire cùng turn.
+  - Delay vượt quá 32-bit signed integer (`> 2_147_483_647` ms ≈ 24.8 ngày) bị clamp về `1` ms — với deadline dài, hẹn tối đa 24h rồi re-arm hoặc dùng scheduler ngoài.
+  - Timer libuv chạy trên monotonic clock nội bộ — nhảy giờ tường NTP (`Date.now()`) không làm rớt timer.
+  - `util.promisify(setTimeout)` legacy khác thứ tự tham số với `node:timers/promises`; baseline dùng `node:timers/promises` (`setImmediate(value)` fulfill `value`, khác `setImmediate(fn)`).
+  - `fs.watch` / `net.Socket` timeout là cơ chế I/O / libuv nội bộ, khác JS timer như `AbortSignal.timeout`.
+- **Diagnostics & GC:**
+  - `performance.nodeTiming` / `mark` / `measure` đo đoạn user code (không thay ELU). Nhớ gọi `h.disable()` trên `monitorEventLoopDelay` sau unit test để tránh leak histogram.
+  - GC pause tạo spike `max` đơn lẻ; alert theo p99 trên cửa sổ thời gian. `--max-old-space-size` ảnh hưởng GC pause, không liên quan `UV_THREADPOOL_SIZE`.
+  - `--trace-sync-io` in cảnh báo ra stderr (dùng parse fail-on-warn trên CI); kết hợp `--trace-uncaught` khi debug rejection ([exceptions.md](exceptions.md)).
+- **Internals & context:**
+  - `poll` vẫn phục vụ network khi threadpool bị bão hòa — triệu chứng “HTTP OK nhưng disk/crypto đơ”. `dns.setDefaultResultOrder("ipv4first")` đổi thứ tự kết quả, không đổi việc `dns.lookup` dùng threadpool.
+  - `AsyncLocalStorage` trên **Node 24/26** mặc định dùng **V8 `AsyncContextFrame`** (overhead thấp, không còn phụ thuộc `async_hooks`); tránh bật `async_hooks` thô (`createHook`) ở production.
+  - `process.nextTick` trong `'uncaughtException'` rất nguy hiểm — shutdown sync ([exceptions.md](exceptions.md)).
+  - Phase `idle, prepare` và `UV_RUN_DEFAULT` / `UV_RUN_ONCE` là nội bộ libuv (JS không gọi trực tiếp); chia batch luôn ưu tiên `setImmediate` thay `queueMicrotask` (§15.4).
 
 ---
 

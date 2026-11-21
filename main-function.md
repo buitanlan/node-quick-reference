@@ -2,7 +2,7 @@
 
 Trong Node.js **không có** hàm `Main` bắt buộc như C# / `func main` như Go. Điểm vào do cách **gọi runtime**, trường `package.json` (`main` / `exports` / `bin`), hoặc shebang CLI quyết định.
 
-Baseline: **Node.js 26** (Current; LTS dự kiến Oct 2026) + **TypeScript 7**. Node **24** còn Active LTS tại ngày rà soát; xem [README](README.md). Ưu tiên **ESM + TypeScript**; CJS ghi rõ khi cần.
+Baseline: **Node.js 26 Active LTS** ("Lithium", từ 2026-10-28, v26.13.0+, V8 14.6+, Undici 8+) + **TypeScript 7.0** (native Go compiler). Node **24** đã sang Maintenance LTS (2026-10-20); xem [README](README.md). Ưu tiên **ESM + TypeScript**; CJS ghi rõ khi cần.
 
 > **Callout:** Node 26: **type stripping ổn định, mặc định** cho `.ts` — `node file.ts` (không type-check). Chỉ cú pháp **erasable**; `--experimental-transform-types` **đã gỡ**. Prod thường `tsc`/bundler emit JS; CI luôn `tsc --noEmit`.
 
@@ -19,6 +19,7 @@ Baseline: **Node.js 26** (Current; LTS dự kiến Oct 2026) + **TypeScript 7**.
   - [2.5 `package.json` `exports` / `bin`](#25-packagejson-exports--bin)
   - [2.6 Shebang & CLI](#26-shebang--cli)
   - [2.7 So sánh ba pipeline (quyết định)](#27-so-sánh-ba-pipeline-quyết-định)
+  - [2.8 `node --run`, SEA (`--build-sea`) & `node.config.json`](#28-node---run-sea---build-sea--nodeconfigjson)
 - [3. `process.argv` & `util.parseArgs`](#3-processargv--utilparseargs)
   - [3.1 `strict`](#31-strict)
   - [3.2 `tokens: true`](#32-tokens-true)
@@ -61,9 +62,9 @@ Baseline: **Node.js 26** (Current; LTS dự kiến Oct 2026) + **TypeScript 7**.
 - So Go: không `init()` bắt buộc; hạn chế side-effect import ở thư viện.
 
 ```ts
-// src/index.ts
+// src/index.ts (chạy trực tiếp bằng `node src/index.ts`; bật `rewriteRelativeImportExtensions: true` khi emit `dist/`)
 import { parseArgs } from "node:util";
-import { main } from "./app.js";
+import { main } from "./app.ts";
 
 const { values, positionals } = parseArgs({
   options: { port: { type: "string", default: "3000" } },
@@ -81,19 +82,33 @@ try {
 Nhận biết “đây là entry” (để file vừa lib vừa CLI):
 
 ```ts
+// Node 26+: chuẩn, gọn, xử lý đúng cả symlink
+if (import.meta.main) {
+  await runCli();
+}
+```
+
+Fallback khi cần hỗ trợ phiên bản Node cũ hơn chưa có `import.meta.main` — **bắt buộc dùng `fs.realpathSync`** để không sai lệch khi chạy qua symlink (như shim trong `node_modules/.bin`):
+
+```ts
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const thisFile = import.meta.filename ?? fileURLToPath(import.meta.url);
-const invoked = process.argv[1] && path.resolve(process.argv[1]);
-const isEntry = Boolean(invoked) && path.resolve(thisFile) === invoked;
+const thisFile = fs.realpathSync(
+  import.meta.filename ?? fileURLToPath(import.meta.url),
+);
+const invoked = process.argv[1]
+  ? fs.realpathSync(path.resolve(process.argv[1]))
+  : "";
+const isEntry = invoked !== "" && thisFile === invoked;
 
 if (isEntry) {
   await runCli();
 }
 ```
 
-CJS: `require.main === module`. ESM **không** có `require.main`; so path như trên. Worker thread: `isMainThread` từ `node:worker_threads` — khác khái niệm “CLI entry”.
+CJS: `require.main === module`. ESM trên Node 26: dùng **`import.meta.main`** (fallback `fs.realpathSync` với `process.argv[1]` cho Node cũ). Worker thread: `isMainThread` từ `node:worker_threads` — khác khái niệm “CLI entry”.
 
 > **Callout:** Library import entry có TLA / `listen()` → side-effect khi test. Tách `app.ts` (export `run`) khỏi `index.ts` (parse + gọi).
 
@@ -145,7 +160,8 @@ Source map: strip giữ số dòng gần đúng (whitespace). Stack trace trỏ 
 | **tsc emit** | Prod/CI rõ; gần runtime Node nhất (JS thuần) |
 
 - `module` / `moduleResolution`: **`NodeNext`** khớp `"type": "module"`.
-- Import ESM: đuôi `.js` theo convention emit Node.
+- **Đồng nhất đuôi import giữa `dev` và `build`:** Node strip **không** remap `.js` sang `.ts`. Nếu dùng `"dev": "node --watch src/index.ts"` cùng `"build": "tsc"`, nguồn phải import đuôi **`.ts`** và bật `"rewriteRelativeImportExtensions": true` để `tsc` đổi sang `.js` khi emit vào `dist/`. Ngược lại, nếu giữ convention import `.js` trong `src/`, tách hẳn dev sang `tsx watch src/index.ts` hoặc biên dịch `tsc -w` rồi chạy `dist/index.js`.
+- Với **TypeScript 7.0 (native Go compiler)**, tốc độ `tsc` tăng mạnh (~10× so với `tsc` JS cũ) — pipeline build trước hoặc `tsc -w` + chạy `dist/` đủ nhanh cho nhiều repo cần type-check liên tục hoặc dùng cú pháp non-erasable.
 
 Prod: chạy **`dist/*.js`**, không `tsx` trên máy user / image. Image Docker `CMD ["node", "dist/index.js"]`.
 
@@ -174,7 +190,7 @@ Prod: chạy **`dist/*.js`**, không `tsx` trên máy user / image. Image Docker
 | Kích hoạt | `"type":"module"` / `.mjs` | mặc định / `.cjs` |
 | Top-level `await` | Có | Không (async IIFE) |
 | `__dirname` | `import.meta.dirname` / `fileURLToPath` | Có sẵn |
-| Entry detect | so `argv[1]` | `require.main === module` |
+| Entry detect | `import.meta.main` (fallback `realpathSync(argv[1])`) | `require.main === module` |
 
 ```ts
 import { fileURLToPath } from "node:url";
@@ -232,7 +248,7 @@ if (values.help) {
 - Dòng **đầu tiên** phải shebang, không BOM, không comment trước.
 - `#!/usr/bin/env node` linh hoạt hơn `#!/usr/bin/node` (nvm/fnm/volta).
 - Unix: `chmod +x bin/cli.js` trong repo; pack npm giữ mode nếu git `100755`.
-- **Windows:** npm tạo `my-tool.cmd` / `.ps1` wrapper gọi `node bin/cli.js` — shebang bị bỏ qua. User `node bin/cli.js` vẫn chạy. Git Bash đọc shebang.
+- **Windows:** Windows OS (cmd/PowerShell) bỏ qua shebang lúc thực thi, nhưng **npm/pnpm đọc `#!/usr/bin/env node` lúc install** để sinh wrapper `my-tool.cmd` / `.ps1` gọi `node bin/cli.js` (thiếu shebang → shim có thể chạy thẳng file thay vì qua `node`). Chạy `node bin/cli.js` trực tiếp vẫn hoạt động; Git Bash đọc trực tiếp shebang.
 - Đừng shebang `tsx` / `ts-node` trên binary publish.
 - `env node` lấy `node` trên `PATH` của user — document `engines.node`.
 
@@ -255,7 +271,19 @@ Chọn:
 
 `--watch` + strip: restart process, không HMR. `tsx watch` tương tự về process, khác transpile.
 
-Dual: `dev` strip, `start` dist — nguồn import **`.ts`** và bật `rewriteRelativeImportExtensions` để emit thành `.js`. Node strip không remap `.js` sang `.ts`; convention `.js` trong nguồn dành cho pipeline emit hoặc runner có remap.
+Dual: `dev` strip, `start` dist — nguồn import **`.ts`** và bật `rewriteRelativeImportExtensions` để emit thành `.js`. Node strip không remap `.js` sang `.ts`; convention `.js` trong nguồn dành cho pipeline emit hoặc runner có remap. Với tốc độ của **TS 7 Go compiler**, biên dịch `tsc` sang `dist/` trên CI và thậm chí trong dev watch ít tốn chờ đợi hơn trước rõ rệt.
+
+### 2.8 `node --run`, SEA (`--build-sea`) & `node.config.json`
+
+- **`node --run <script>`:** chạy trực tiếp script trong `package.json` bằng chính binary Node (bỏ qua overhead khởi động `npm`/`pnpm`, tự thêm `node_modules/.bin` vào `PATH`, truyền args sau `--`):
+
+```bash
+node --run typecheck
+node --run dev -- --port 8080
+```
+
+- **Single Executable Applications (`node --build-sea`):** đóng gói ứng dụng Node thành một binary độc lập bằng file cấu hình JSON (`sea-config.json`). Trên Node 26, `node --build-sea sea-config.json` gom sẵn bước tạo blob + nhúng vào bản sao binary Node mà không cần công cụ `postject` thủ công cho luồng tiêu chuẩn (lưu ý: native addon `.node` và `require` động vẫn cần cấu hình asset/cẩn trọng khi đóng gói).
+- **`--experimental-config-file` (`node.config.json`):** gom các CLI flag (`nodeOptions`, permission model, v.v.) vào file JSON để kiểm soát tập trung thay vì chuỗi `NODE_OPTIONS` dài khó audit (tính năng còn experimental — kiểm tra ổn định trước khi dùng rộng ở prod).
 
 ---
 
@@ -266,7 +294,7 @@ node app.js --port 3000 input.txt
 argv[0]=node  argv[1]=script  argv.slice(2)=args người dùng
 ```
 
-`argv[1]` có thể là path tương đối; `path.resolve(process.argv[1])` khi so với `import.meta.filename`.
+`argv[1]` có thể là path tương đối hoặc symlink; trên Node 26 ưu tiên `import.meta.main`, còn khi fallback so path thì dùng `fs.realpathSync(path.resolve(process.argv[1]))`.
 
 ```ts
 import { parseArgs } from "node:util";
@@ -290,7 +318,7 @@ const { values, positionals } = parseArgs({
 | `allowPositionals` | Arg không phải flag | `false` nếu `strict` |
 | `strict` | Từ chối flag lạ / type sai | **`true`** |
 | `tokens` | Trả token thô theo thứ tự | `false` |
-| `allowNegative` | `--no-color` cho boolean | theo docs minor |
+| `allowNegative` | Cho phép `--no-<flag>` cho boolean (`--no-color`) | `false` |
 | `args` | Override `argv` (test) | `argv` bỏ exec+script |
 
 - Subcommand phức tạp: parse hai pha hoặc lib (`commander`, `cac`).
@@ -345,27 +373,39 @@ Token **theo thứ tự gặp**. `-xy` tách thành hai option token. `--port=30
 Hai pha subcommand:
 
 ```ts
+const rawArgs = process.argv.slice(2);
 const first = parseArgs({
-  args: process.argv.slice(2),
+  args: rawArgs,
+  options: {
+    // Phải khai báo các global flag nhận giá trị (như -c/--config) ở pha 1,
+    // nếu không `--config app.json serve` sẽ bị nhầm "app.json" là subcommand.
+    config: { type: "string", short: "c" },
+  },
   allowPositionals: true,
   strict: false,
   tokens: true,
 });
-const cmd = first.positionals[0];
-const restStart = first.tokens?.find((t) => t.kind === "positional")?.index ?? 0;
-const rest = process.argv.slice(2 + restStart + 1);
 
-if (cmd === "serve") {
-  const { values } = parseArgs({
-    args: rest,
-    options: { port: { type: "string", short: "p" } },
-    strict: true,
-  });
-  void values;
+const cmdToken = first.tokens.find((t) => t.kind === "positional");
+if (!cmdToken) {
+  console.error("usage: my-tool [-c <file>] <serve|migrate> [options]");
+  process.exitCode = 2;
+} else {
+  const cmd = cmdToken.value;
+  const rest = rawArgs.slice(cmdToken.index + 1);
+
+  if (cmd === "serve") {
+    const { values } = parseArgs({
+      args: rest,
+      options: { port: { type: "string", short: "p" } },
+      strict: true,
+    });
+    void values;
+  }
 }
 ```
 
-`strict: false` pha 1 tránh ném khi flag thuộc subcommand. Pha 2 `strict: true` cho lệnh đó.
+`strict: false` pha 1 tránh ném khi flag thuộc subcommand (nhưng phải khai báo global flag có giá trị trước subcommand để parser không lấy nhầm value làm `cmd`). Kiểm tra `if (!cmdToken)` trước khi `slice` để không cắt sai khi thiếu subcommand. Pha 2 `strict: true` cho lệnh đó.
 
 `args` mặc định đã **bỏ** `argv[0]`/`[1]`. Truyền `args: process.argv.slice(2)` tường minh khi test.
 
@@ -405,18 +445,25 @@ process.exitCode = await main();
 `process.exit(0)` giữa `stdout.write` lớn → user mất output. Stdout pipe (`| jq`) buffer — `exit()` cắt. `exitCode` + để loop drain.
 
 ```ts
+// Khuyến nghị: quan sát mà KHÔNG chặn hành vi crash mặc định của Node
+process.on("uncaughtExceptionMonitor", (err, origin) => {
+  console.error("fatal", origin, err); // sync log / telemetry
+});
+
+// Nếu tự bắt trực tiếp: gắn listener sẽ TẮT crash mặc định.
+// Phải gọi process.exit(1) — chỉ set process.exitCode = 1 sẽ giữ HTTP server sống trong trạng thái hỏng!
 process.on("uncaughtException", (err) => {
   console.error("fatal", err);
   process.exit(1); // process không tin cậy — thoát ngay
 });
 
 process.on("unhandledRejection", (reason) => {
-  console.error("unhandled", reason);
-  process.exitCode = 1;
+  console.error("unhandledRejection", reason);
+  process.exit(1); // KHÔNG chỉ gán exitCode = 1 rồi để server chạy tiếp
 });
 ```
 
-> **Callout:** Unhandled rejection trên Node hiện đại thường **fail** process. Đừng nuốt rejection ở entry. `exitCode` sau rejection **không** thay policy crash nếu runtime đã quyết định abort.
+> **Callout:** Node 26 mặc định **crash** process khi có unhandled rejection (`--unhandled-rejections=throw`). Gắn `process.on("unhandledRejection", ...)` mà chỉ đặt `process.exitCode = 1` sẽ **tắt cơ chế crash mặc định** và để HTTP server tiếp tục phục vụ trên state hỏng. Dùng `uncaughtExceptionMonitor` để ghi nhận trước khi crash, hoặc gọi `process.exit(1)` ngay sau khi log/flush sync.
 
 `process.exitCode` có thể gán nhiều lần; giá trị **cuối** trước khi thoát thắng. Signal default POSIX: 128+signal — handler tự gán `exitCode` nếu muốn 0 sau graceful.
 
@@ -462,7 +509,7 @@ process.on("exit", (code) => {
 |---|---|
 | SIGTERM / SIGINT / (Unix) SIGHUP có chủ đích | Graceful: `ready=false` → `server.close` → abort in-flight → `exitCode` |
 | `uncaughtException` | State **không xác định**. Log (sync/stderr) + **`process.exit(1)`**. Không cố drain request “cho đẹp” |
-| `unhandledRejection` | Coi như bug. Fail process (mặc định hiện đại) hoặc `exitCode=1` + thoát; **không** nuốt |
+| `unhandledRejection` | Coi như bug. Mặc định Node 26 crash; dùng `uncaughtExceptionMonitor` để quan sát hoặc tự log + `process.exit(1)` — **không** chỉ set `exitCode = 1` trên server |
 | Lỗi trong `shutdown()` | Force timeout rồi `process.exit(1)` — đừng treo |
 
 ```ts
@@ -476,7 +523,7 @@ process.on("uncaughtException", (err, origin) => {
 
 > **Callout:** Graceful **chỉ** cho tín hiệu/orchestrator. Uncaught = **crash**. Trộn hai lối → server “sống” với heap hỏng.
 
-`uncaughtExceptionMonitor` (nếu có trên dòng bạn chạy): quan sát **trước** khi crash — vẫn không biến uncaught thành graceful.
+`uncaughtExceptionMonitor` (ổn định trên Node 26): quan sát **trước** khi crash mà **không** chặn hành vi thoát mặc định — vẫn không biến uncaught thành graceful.
 
 ---
 
@@ -487,16 +534,34 @@ Tinh thần tương đương `signal.NotifyContext` (Go):
 ```ts
 import http from "node:http";
 
-const server = http.createServer((_req, res) => res.end("ok"));
+let ready = false;
+const server = http.createServer((req, res) => {
+  if (req.url === "/ready") {
+    res.statusCode = ready ? 200 : 503;
+    res.end(ready ? "ready" : "draining");
+    return;
+  }
+  if (!ready) {
+    res.statusCode = 503;
+    res.setHeader("Connection", "close");
+    res.end("shutting down");
+    return;
+  }
+  res.end("ok");
+});
 await new Promise<void>((r) => server.listen(3000, r));
+ready = true;
 
-let ready = true;
 const ac = new AbortController();
+let shuttingDown = false;
 
 async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.error("shutdown", signal);
   ready = false; // readiness fail trước
   ac.abort(new Error(signal));
+  server.closeIdleConnections();
   await new Promise<void>((resolve, reject) => {
     server.close((err) => (err ? reject(err) : resolve()));
   });
@@ -504,8 +569,14 @@ async function shutdown(signal: string) {
   process.exitCode = 0;
 }
 
-process.once("SIGINT", () => void shutdown("SIGINT"));
-process.once("SIGTERM", () => void shutdown("SIGTERM"));
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.once(sig, () => {
+    shutdown(sig).catch((err) => {
+      console.error("shutdown failed", err);
+      process.exit(1);
+    });
+  });
+}
 
 // truyền ac.signal xuống fetch / queue / run()
 ```
@@ -524,12 +595,15 @@ Windows service / Docker Desktop: thường nhận **SIGINT** hoặc kill cứng
 
 ```ts
 const FORCE_MS = 10_000;
-let shuttingDown = false;
+let forceScheduled = false;
 
 function onSignal(signal: string) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  void shutdown(signal);
+  if (forceScheduled) return;
+  forceScheduled = true;
+  shutdown(signal).catch((err) => {
+    console.error("shutdown failed", err);
+    process.exit(1);
+  });
   setTimeout(() => process.exit(1), FORCE_MS).unref();
 }
 
@@ -541,11 +615,11 @@ for (const s of ["SIGINT", "SIGTERM"] as const) {
 `server.close` **không** destroy connection keep-alive đang treo. Kết hợp:
 
 ```ts
-server.closeIdleConnections?.(); // nếu có trên minor
+server.closeIdleConnections(); // ổn định từ Node 18.2+
 // hoặc theo dõi req/res: res.on("finish"), timeout destroy
 ```
 
-`http.Server` hiện đại có `closeAllConnections()` / `closeIdleConnections()` (Node 18.2+) — drain: idle trước, đợi in-flight, rồi all + `exit`. Đọc docs đúng minor trước khi gọi.
+`http.Server` có sẵn `closeAllConnections()` / `closeIdleConnections()` (ổn định từ Node 18.2+ trên Node 26) — drain: đóng idle trước, đợi in-flight hoàn tất, quá hạn mới `closeAllConnections()` + `process.exit(1)`.
 
 `AbortSignal` xuống `fetch` / queue: request mới reject; in-flight tự quyết (abort vs hoàn tất). Readiness fail **trước** để LB ngừng gửi.
 
@@ -575,7 +649,7 @@ Primary nhận SIGTERM: **không** giả định worker tự nhận cùng lúc m
 
 Windows cluster: round-robin **khác** Unix (docs `cluster`). Test load trên OS prod. Sticky session: `cluster` không sticky HTTP/1 keep-alive luôn như mong đợi — LB ngoài hoặc Redis session.
 
-Single process + `AbortSignal` + readiness: mặc định khuyến nghị. `cluster` khi đo được bottleneck CPU và không đi replica. Primary log `worker.id` khi debug request — `X-Worker` header chỉ dev.
+Primary log `worker.id` khi debug request — header `X-Worker` chỉ nên bật ở dev.
 
 `process.exitCode` trên worker **không** tự thành exit code primary. Primary lắng `exit` + `worker.process.exitCode`. Orchestrator: replica > cluster trong một pod.
 
@@ -628,12 +702,7 @@ TLA **block cả graph**: `import "./entry.js"` từ test / tool chờ `listen()
 ```ts
 export async function run(signal: AbortSignal): Promise<void> { /* ... */ }
 
-const isEntry =
-  import.meta.filename &&
-  process.argv[1] &&
-  /* resolve so sánh — xem §1 */;
-
-if (isEntry) {
+if (import.meta.main) { // fallback realpathSync(argv[1]) cho Node cũ — xem §1
   const ac = new AbortController();
   process.once("SIGINT", () => ac.abort());
   try {
@@ -664,6 +733,7 @@ node --watch-path=./src --watch-path=./config dist/index.js
 | `--watch` | Restart khi file import / entry đổi |
 | `--watch-path=` | Thêm thư mục/file (config JSON không import) |
 | `--watch-preserve-output` | Không xóa console mỗi restart |
+| `--watch-kill-signal=` | Tín hiệu gửi process con khi reload (mặc định `SIGTERM`; vd `SIGINT`/`SIGKILL`) |
 
 `--watch` **không** type-check. Kết hợp strip hoặc JS emit. `tsx watch` transpile + reload.
 
@@ -675,18 +745,19 @@ Hạn chế:
 - Windows file events khác Unix (đôi khi double-fire) — restart hai lần: chấp nhận hoặc debounce tool.
 - `--watch` restart **cả** process: connection HTTP drop; dev client phải retry. Không phải HMR.
 
-Kết hợp emit:
+Kết hợp emit (cross-platform — **không** dùng `&` của POSIX shell trong `package.json`, vì lỗi trên Windows cmd/PowerShell và để lại process mồ côi khi Ctrl+C):
 
 ```json
 {
   "scripts": {
     "dev": "node --watch src/index.ts",
-    "dev:dist": "tsc -b -w & node --watch dist/index.js"
+    "build:watch": "tsc -b -w",
+    "dev:dist": "concurrently \"node --run build:watch\" \"node --watch dist/index.js\""
   }
 }
 ```
 
-Hai process (`tsc -w` + `node --watch dist`) dễ race: node restart trước khi emit xong. `tsx watch` một process — đơn giản hơn cho TS không erasable.
+Hoặc chạy `build:watch` và `node --watch dist/index.js` ở hai terminal riêng (dùng `concurrently` / `npm-run-all2` nếu cần một lệnh). Hai process vẫn có thể race ngắn khi emit chưa xong; `tsx watch` một process gọn hơn nếu dự án còn cú pháp không erasable. Với **TS 7 Go compiler**, pha `tsc -b -w` cực nhanh nên vòng lặp `build:watch` + `--watch` rất mượt.
 
 `node --watch` **bỏ qua** `node_modules` theo mặc định (tránh restart khi install). Config ngoài repo: `--watch-path`.
 
@@ -703,10 +774,20 @@ node --env-file=.env dist/index.js   # Node 20.6+; ổn định trên 26
 node --env-file=.env --env-file=.env.local dist/index.js
 ```
 
-Nhiều `--env-file`: file **sau** ghi đè key trùng (theo docs dòng bạn chạy — xác nhận minor). `--env-file-if-exists` (nếu có trên 26) không fail khi thiếu file.
+Nhiều `--env-file`: file **sau** ghi đè key của file **trước**, nhưng **không** ghi đè biến đã có sẵn trong environment của process. `--env-file-if-exists` (ổn định trên Node 26) hoạt động tương tự nhưng không báo lỗi khi thiếu file.
 
 ```ts
-const port = Number(process.env.PORT ?? "3000");
+function parsePort(raw = "3000"): number {
+  const trimmed = raw.trim();
+  if (!trimmed) throw new Error("PORT cannot be empty");
+  const port = Number(trimmed);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid PORT: ${raw}`);
+  }
+  return port;
+}
+
+const port = parsePort(process.env.PORT);
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -715,9 +796,21 @@ function requireEnv(name: string): string {
 }
 ```
 
+**Nạp & parse `.env` programmatic (built-in Node 26):** thay vì cài `dotenv`, có thể dùng `process.loadEnvFile()` (nạp vào `process.env`, không ghi đè key đã tồn tại) và `util.parseEnv()` (parse thuần sang object, không đụng `process.env` — rất tiện cho test/tooling):
+
+```ts
+import { parseEnv } from "node:util";
+
+process.loadEnvFile(".env"); // ném lỗi nếu file không tồn tại; gọi sớm trước khi đọc config
+
+const parsed = parseEnv("PORT=3000\nDEBUG=true\n");
+// { PORT: "3000", DEBUG: "true" }
+```
+
 | Cách | Khi dùng |
 |---|---|
-| `--env-file` | Dev/prod đơn giản; **không** cần package `dotenv` |
+| `--env-file` / `--env-file-if-exists` | Dev/prod đơn giản; load **trước** user code, không cần `dotenv` |
+| `process.loadEnvFile()` / `util.parseEnv()` | Cần nạp có điều kiện trong code boot hoặc parse chuỗi `.env` thuần (test) |
 | `dotenv` package | Legacy — cẩn thận load order; không gắn CLI Node |
 | Secret manager / K8s Secret | Prod — không commit secret |
 | Hardcode fallback | Chỉ default an toàn (port), không API key |
@@ -725,11 +818,11 @@ function requireEnv(name: string): string {
 - Đừng `dotenv.config()` **sau** khi module khác đã đọc `process.env` lúc import.
 - `.env.example` không secret; validate env lúc boot → fail fast.
 - `NODE_OPTIONS` ảnh hưởng mọi entry — document trong README.
-- `--env-file` load **trước** user code; TLA/`import` đã thấy biến. `dotenv` trong `index.ts` **sau** import `./config.js` thì muộn.
+- `--env-file` load **trước** user code; TLA/`import` đã thấy biến. `dotenv` trong `index.ts` **sau** import `./config.ts` thì muộn.
 
 ```ts
-// config.ts — đọc env lúc evaluate
-export const port = Number(process.env.PORT ?? "3000");
+// config.ts — đọc & validate env lúc evaluate (tránh "" → 0 hoặc "abc" → NaN)
+export const port = parsePort(process.env.PORT);
 ```
 
 ```bash
@@ -754,7 +847,7 @@ node dist/index.js
 
 `NODE_OPTIONS` áp **mọi** Node con (test, husky) — document. Cấm nhét secret vào `NODE_OPTIONS` (log CI). `--inspect` trên prod: bind cẩn thận.
 
-`node --print "process.execArgv"` debug flag thực. `--env-file` là flag CLI, thường **không** nằm trong `NODE_OPTIONS` mọi phiên bản giống nhau — ưu tiên argv tường minh.
+`node --print "process.execArgv"` debug flag thực. Lưu ý: Node **cấm** `--env-file` và `--env-file-if-exists` trong `NODE_OPTIONS` (`node: --env-file= is not allowed in NODE_OPTIONS`) — phải truyền trực tiếp qua CLI argv, `node.config.json`, hoặc gọi `process.loadEnvFile()`.
 
 `DEBUG=*` convention không phải core Node — `util.debuglog` / `NODE_DEBUG=fs,net` (core). `NODE_DEBUG` ồn; đừng bật mặc định prod.
 
@@ -766,9 +859,9 @@ Kubernetes `envFrom` ConfigMap: không commit secret; `Secret` volume. `--env-fi
 
 Prod K8s: inject env; không copy `.env` vào image. `--env-file` cho compose/dev.
 
-> **Callout:** `--env-file` không thay `engines` / secrets. Không commit `.env`. Parse số/URL tường minh — `process.env` luôn string | undefined.
+> **Callout:** `--env-file` không thay `engines` / secrets. Không commit `.env`. Parse số/URL tường minh — `process.env` luôn `string | undefined`.
 
-`NODE_OPTIONS=--env-file=.env` áp cho **mọi** node con (test, tooling) — tiện monorepo, dễ lộ khi CI log command. Prefer flag trên script `start` hơn global shell.
+**Không** cố đặt `NODE_OPTIONS=--env-file=.env` — Node từ chối ngay lúc khởi động (`--env-file= is not allowed in NODE_OPTIONS`). Truyền `--env-file` tường minh trong script `start`/`dev`, dùng `node.config.json`, hoặc gọi `process.loadEnvFile()` lúc boot.
 
 `process.env` mutable. Gán `process.env.FOO = "1"` **sau** khi module khác đã capture `const foo = process.env.FOO` lúc import thì **không** cập nhật. Validate + freeze-by-convention (object `config` const) lúc boot.
 
@@ -825,14 +918,39 @@ import os from "node:os";
 import http from "node:http";
 
 if (cluster.isPrimary) {
+  let shuttingDown = false;
   const n = os.availableParallelism();
   for (let i = 0; i < n; i++) cluster.fork();
+
   cluster.on("exit", (worker) => {
     console.error("worker down", worker.process.pid);
-    cluster.fork();
+    // Chặn respawn vô hạn khi đang shutdown có chủ đích
+    if (!shuttingDown && !worker.exitedAfterDisconnect) {
+      cluster.fork();
+    }
   });
+
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.once(sig, () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      for (const w of Object.values(cluster.workers ?? {})) {
+        w?.disconnect();
+      }
+      setTimeout(() => {
+        for (const w of Object.values(cluster.workers ?? {})) {
+          w?.process.kill();
+        }
+        process.exit(1);
+      }, 10_000).unref();
+    });
+  }
 } else {
-  http.createServer((_req, res) => res.end("ok")).listen(3000);
+  const server = http.createServer((_req, res) => res.end("ok")).listen(3000);
+  process.once("disconnect", () => {
+    server.closeIdleConnections();
+    server.close(() => process.exit(0));
+  });
 }
 ```
 
@@ -853,23 +971,7 @@ Node 26 I/O: **một** process thường đủ (async). `cluster` khi:
 
 K8s/N replicas **thường tốt hơn** `cluster` trong một pod (một process/pod, scale HPA). `cluster` trong pod vừa nhân RAM vừa khó probe (sẵn sàng khi **mọi** worker listen).
 
-Primary nên `disconnect` / `worker.kill` có timeout khi SIGTERM:
-
-```ts
-if (cluster.isPrimary) {
-  process.once("SIGTERM", () => {
-    for (const w of Object.values(cluster.workers ?? {})) {
-      w?.disconnect();
-    }
-    setTimeout(() => {
-      for (const w of Object.values(cluster.workers ?? {})) {
-        w?.process.kill();
-      }
-      process.exit(1);
-    }, 10_000).unref();
-  });
-}
-```
+Primary phải đặt cờ `shuttingDown` + kiểm tra `!worker.exitedAfterDisconnect` trong listener `"exit"` trước khi `cluster.fork()` (xem ví dụ trên), nếu không mỗi `worker.disconnect()` lúc SIGTERM sẽ kích hoạt respawn vô hạn.
 
 `cluster.isPrimary` (tên mới) thay `isMaster` deprecated. Worker: `cluster.isWorker`. IPC `process.send` / `worker.on("message")` — JSON-like, không share memory (khác `worker_threads`).
 
@@ -983,18 +1085,18 @@ main().catch((err) => {
 
 | Dòng / feature | Ghi chú |
 |---|---|
-| **Node 26** (baseline) | Type stripping mặc định; transform-types đã gỡ |
-| Node 24 LTS | Type stripping ổn định (lịch LTS ở README) |
-| Node 20.6+ | `--env-file` |
-| Node 18+ | `node --watch`, `node --test` |
-| `util.parseArgs` | Ổn định; `tokens` / `strict` |
+| **Node 26 Active LTS** ("Lithium", từ 2026-10-28, v26.13.0+) | Baseline; V8 14.6+, Undici 8+; type stripping mặc định; `--experimental-transform-types` đã gỡ; `import.meta.main`, `node --build-sea`, `--watch-kill-signal` |
+| Node 24 Maintenance LTS (từ 2026-10-20) | Type stripping ổn định từ 24.12.0 (lịch LTS ở README) |
+| Node 20.6+ / 22+ | `--env-file`, `--env-file-if-exists`, `process.loadEnvFile()`, `util.parseEnv()`, `node --run` (đều ổn định trên 26) |
+| Node 18+ | `node --watch`, `node --test`, `closeIdleConnections` (18.2+) |
+| `util.parseArgs` | Ổn định; `tokens` / `strict` / `allowNegative` |
 | Top-level await | ESM only; chặn `require(esm)` nếu TLA |
-| Unhandled rejection | Fail process (policy hiện đại) |
+| Unhandled rejection | Fail process (policy hiện đại); `uncaughtExceptionMonitor` quan sát không chặn crash |
 | Signals | POSIX thật; Windows emulation — SIGTERM hạn chế |
 | `cluster` | Vẫn core; replica K8s thường thay |
-| **TypeScript 7** | `erasableSyntaxOnly` / `verbatimModuleSyntax` khớp strip |
-| `import.meta.dirname` | Node 20.11+; fallback `fileURLToPath` |
-| `closeIdleConnections` | Node 18.2+ trên `http.Server` |
+| **TypeScript 7.0** (Go compiler) | `erasableSyntaxOnly` / `verbatimModuleSyntax` khớp strip; biên dịch cực nhanh (~10×) |
+| `import.meta.dirname` / `.main` | `.dirname` từ Node 20.11+; `.main` chuẩn trên Node 26 (fallback `fs.realpathSync`) |
+| `--experimental-config-file` | `node.config.json` gom CLI flags (còn experimental) |
 
 `node --watch` không typecheck; `--env-file` không override env đã set (thường). Windows: bắt **SIGINT** cùng SIGTERM.
 

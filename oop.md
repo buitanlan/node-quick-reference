@@ -2,7 +2,7 @@
 
 TypeScript bổ sung class, access modifier, `abstract`, `implements`… trên JavaScript. Hệ thống kiểu là **structural** (theo hình dạng), không nominal như C#/Java — class và interface thường thay thế lẫn nhau tùy nhu cầu **runtime**.
 
-> Baseline: **Node.js 26** + **TypeScript 7**, ESM. Method / `this` / overload sâu hơn: [functions-methods.md](functions-methods.md). Decorator gắn class: [decorators.md](decorators.md). Strip / `erasableSyntaxOnly`: [tsconfig.md](tsconfig.md).
+> Baseline: **Node.js 26 Active LTS ("Lithium", V8 14.6+, Undici 8+)** + **TypeScript 7.0**, ESM. Method / `this` / overload sâu hơn: [functions-methods.md](functions-methods.md). Decorator gắn class: [decorators.md](decorators.md). Strip / `erasableSyntaxOnly`: [tsconfig.md](tsconfig.md).
 
 ---
 
@@ -14,6 +14,7 @@ TypeScript bổ sung class, access modifier, `abstract`, `implements`… trên J
   - [1.3 Definite assignment / `!`](#13-definite-assignment--)
   - [1.4 Thứ tự khởi tạo](#14-thứ-tự-khởi-tạo)
   - [1.5 `readonly`](#15-readonly)
+  - [1.6 `useDefineForClassFields` & `declare` fields](#16-usedefineforclassfields--declare-fields)
 - [2. Access modifiers (TS-only erase)](#2-access-modifiers-ts-only-erase)
 - [3. Native `#private` & brand check](#3-native-private--brand-check)
   - [3.1 Brand check vs WeakMap cũ](#31-brand-check-vs-weakmap-cũ)
@@ -40,6 +41,7 @@ TypeScript bổ sung class, access modifier, `abstract`, `implements`… trên J
   - [8.3 Cross-realm pitfall](#83-cross-realm-pitfall)
   - [8.4 Class có `private` → gần nominal hơn](#84-class-có-private--gần-nominal-hơn)
 - [9. Accessors vs methods](#9-accessors-vs-methods)
+  - [9.1 Auto-accessors (`accessor`)](#91-auto-accessors-accessor)
 - [10. `this` trong method vs arrow](#10-this-trong-method-vs-arrow)
   - [10.1 Prototype method — `this` động](#101-prototype-method--this-động)
   - [10.2 Arrow field — lexical `this`](#102-arrow-field--lexical-this)
@@ -128,13 +130,13 @@ class User {
 | Cú pháp | `erasableSyntaxOnly` | `node file.ts` (Node 26) |
 |---------|----------------------|--------------------------|
 | Field tường minh + gán constructor | ✓ | OK |
-| `constructor(private x: T)` | **✗** | còn `private` → SyntaxError JS |
+| `constructor(private x: T)` | **✗** | `SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]` |
 | `public x = 1` trên class body | ✓ (modifier xóa) | field còn |
 | `abstract` / `implements` / `override` | ✓ (xóa) | class thường |
 | `#private` | ✓ (là JS) | OK |
-| `enum` trong class file | ✗ | không transform |
+| `enum` / `namespace` runtime | **✗** | `SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]` |
 
-> **Strip-types / `erasableSyntaxOnly`:** parameter properties **không erasable**. Node 26 chỉ strip types — dùng field tường minh nếu chạy `node file.ts`. Xem [tsconfig.md](tsconfig.md), [typesystem.md](typesystem.md) §16.
+> **Strip-types / `erasableSyntaxOnly`:** parameter properties **không erasable**. Node 26 mặc định chỉ strip types (đã gỡ cờ `--experimental-transform-types`) và chủ động ném `SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]` cho cú pháp non-erasable — dùng field tường minh nếu chạy `node file.ts`. Xem [tsconfig.md](tsconfig.md), [typesystem.md](typesystem.md) §16.
 
 **Khi nào KHÔNG dùng parameter properties:** mọi workflow `node *.ts` / CI `erasableSyntaxOnly`; lib publish nguồn TS chạy trực tiếp.
 
@@ -198,10 +200,11 @@ class Child extends Base {
 
 ```ts
 class Point {
-  constructor(
-    readonly x: number,
-    readonly y: number,
-  ) {
+  readonly x: number;
+  readonly y: number;
+  readonly #origin = 0; // kết hợp ẩn runtime (#private) + cấm gán lại trong chính class lúc compile-time
+
+  constructor(x: number, y: number) {
     this.x = x;
     this.y = y;
   }
@@ -211,7 +214,32 @@ const p = new Point(1, 2);
 // p.x = 3; // lỗi TS — chỉ compile-time
 ```
 
-`readonly` là kiểm tra TypeScript; runtime vẫn có thể ghi nếu bỏ qua kiểu. `#field` không writable từ ngoài dù không `readonly`.
+`readonly` là kiểm tra TypeScript (erasable hoàn toàn khi strip); runtime vẫn có thể ghi nếu bỏ qua kiểu. Kết hợp **`readonly #field`** vừa ẩn slot ở runtime vừa chặn gán lại ngoài constructor bên trong chính class.
+
+### 1.6 `useDefineForClassFields` & `declare` fields
+
+Từ **ES2022+ / TypeScript 7.0**, `useDefineForClassFields` mặc định là `true` (khớp hoàn toàn với ngữ nghĩa chuẩn ECMAScript trên Node 26):
+
+- Mỗi public class field được khởi tạo bằng **`[[Define]]`** (`Object.defineProperty`), **không** phải **`[[Set]]`** (`this.x = ...`).
+- Hệ quả 1: field trên class con **không** kích hoạt `set` accessor của class cha (nó định nghĩa own data property đè lên).
+- Hệ quả 2: khai báo `x: string;` (không có initializer) vẫn emit/chạy `x;` → định nghĩa `this.x = undefined` **sau** `super()`, có thể ghi đè giá trị mà constructor cha vừa gán!
+- Giải pháp khi chỉ muốn **thu hẹp kiểu** của field đã tồn tại ở class cha mà không phát sinh field runtime: dùng **`declare`** (erasable hoàn toàn):
+
+```ts
+class Animal {
+  resident: { name: string };
+  constructor(resident: { name: string }) {
+    this.resident = resident;
+  }
+}
+
+class DogHouse extends Animal {
+  declare resident: { name: string; breed: string }; // chỉ thu hẹp kiểu, KHÔNG emit field runtime
+  constructor(dog: { name: string; breed: string }) {
+    super(dog);
+  }
+}
+```
 
 ---
 
@@ -347,7 +375,7 @@ new A().hasX({}); // false
 
 `#x in o` là **private brand check** không throw — hữu ích type guard runtime.
 
-**Khi nào KHÔNG dùng WeakMap cho private:** class mới trên Node 26 — `#field` đủ, rõ hơn, không giữ map. WeakMap còn hợp khi ẩn data trên object **không phải instance** (decorate DOM node — không có trên Node thuần).
+**Khi nào KHÔNG dùng WeakMap cho private:** class mới trên Node 26 — `#field` đủ, rõ hơn, không giữ map. Ngược lại, `WeakMap` vẫn rất hữu dụng trên Node khi cần gắn metadata cho object **ngoại lai** không sở hữu class (như `IncomingMessage`, `Socket`, `Request`, AST node) mà không sửa property hay gây leak bộ nhớ.
 
 ### 3.2 `#private` method / getter
 
@@ -417,9 +445,9 @@ class Env {
   static #secrets: Map<string, string>;
   static {
     this.isProd = process.env.NODE_ENV === "production";
-    this.#secrets = new Map();
+    Env.#secrets = new Map();
     try {
-      this.#secrets.set("boot", "ok");
+      Env.#secrets.set("boot", "ok");
     } catch (e) {
       throw new Error("Env static init", { cause: e });
     }
@@ -430,24 +458,37 @@ class Env {
 }
 ```
 
+> **Pitfall `this.#staticPrivate` khi có kế thừa:** private static field chỉ gắn brand lên **đúng constructor khai báo nó** (`Base`), không gắn lên subclass (`Sub`). Gọi `Sub.bad()` với `this.#secret` sẽ ném `TypeError` — luôn truy cập bằng tên class (`Base.#secret`):
+>
+> ```ts
+> class Base {
+>   static #secret = 42;
+>   static bad() { return this.#secret; }   // Sub.bad() → TypeError!
+>   static good() { return Base.#secret; }  // Sub.good() → 42
+> }
+> class Sub extends Base {}
+> ```
+
 | Quy tắc | Chi tiết |
 |---------|----------|
 | Thời điểm | Khi **đánh giá** class (load module), không phải `new` |
 | `this` | constructor / class |
-| Truy cập `#private` static | được |
-| `await` | **không** — sync; async IIFE cấm trong static block thuần |
+| Truy cập `#private` static | được (ưu tiên `ClassName.#field` tránh bẫy subclass) |
+| `await` | **không** — `await` trực tiếp trong `static {}` là `SyntaxError`; async IIFE hợp lệ cú pháp nhưng là anti-pattern floating promise |
 | Nhiều block | xen kẽ field static theo thứ tự nguồn |
 | Exception | module fail load — không “lazy” |
 
 ```ts
 class T {
   static a = 1;
+  static b: number; // PHẢI đặt trước static {} (hoặc dùng `declare static b: number`)
   static {
-    this.b = this.a + 1;
+    this.b = this.a + 1; // 2
   }
-  static b: number;
 }
 ```
+
+> **Pitfall thứ tự `static {}` & `useDefineForClassFields`:** Nếu đặt `static b: number;` **sau** `static {}`, khi chạy với `useDefineForClassFields: true` (TS 7) hoặc strip-types Node 26, dòng `static b;` thực thi *sau* block và định nghĩa lại `T.b = undefined`, ghi đè mất kết quả khởi tạo! Luôn khai báo field trước `static {}` (hoặc dùng `declare static b: number;`).
 
 Static cũng có `private` / `#private` / `protected` (protected static dùng từ subclass).
 
@@ -510,7 +551,7 @@ class Counter {
 const a = new Counter();
 const b = new Counter();
 a.inc === b.inc; // true
-a.count === b.count; // value bằng, key riêng
+a.count === b.count; // true (cùng giá trị 0, nhưng là own property riêng trên từng instance)
 ```
 
 `extends` constructor: `Derived.[[Prototype]]` → `Base` (static kế thừa). `Derived.create` tìm lên `Base.create` nếu không khai.
@@ -536,8 +577,8 @@ class JsonLogger extends Logger {
 |-----|---------|
 | Gán `const f = obj.method` rồi `f()` | `this` mất; `super` **vẫn** theo HomeObject gốc |
 | `Object.assign(dest, src.prototype)` copy method có `super` | `super` **không** đổi sang dest — vẫn HomeObject cũ |
-| Arrow `f = () => super.x` | **SyntaxError** — arrow không có `[[HomeObject]]` |
-| `function` thường trong constructor | không `super` |
+| Arrow field `f = () => super.x` | **Hợp lệ từ ES2022+** — arrow kế thừa `[[HomeObject]]` từ field initializer |
+| `function` thường trong constructor / field | **SyntaxError** — `function` thường không có `[[HomeObject]]` |
 
 ```ts
 class A {
@@ -546,7 +587,7 @@ class A {
   }
 }
 class B extends A {
-  hello() {
+  override hello() {
     return super.hello() + "B";
   }
 }
@@ -558,9 +599,13 @@ Constructor con **phải** gọi `super(...)` trước `this`. `super()` trong c
 
 ```ts
 class JsonLogger extends Logger {
-  constructor(readonly prefix: string) {
+  readonly prefix: string;
+
+  constructor(prefix: string) {
     super();
+    this.prefix = prefix;
   }
+
   override log(msg: string) {
     super.log(`${this.prefix} ${msg}`);
   }
@@ -610,7 +655,7 @@ Bật `noImplicitOverride` trên TS 7 khuyến nghị (không nằm trong `stric
 
 ### 5.4 Override vs overload
 
-Con override phải **gán được** vào signature cha (param bivariant method — [typesystem.md](typesystem.md) §13). Thắt param / nới return theo subtype. Overload list trên class: [functions-methods.md](functions-methods.md).
+Con override phải **gán được** vào signature cha: nguyên tắc an toàn kiểu là **nới param (contravariant)** và **thắt return (covariant)** (dù method syntax trong TS có ngoại lệ bivariant cho param — xem [typesystem.md](typesystem.md) §13). Overload list trên class: [functions-methods.md](functions-methods.md).
 
 ---
 
@@ -650,7 +695,7 @@ function open(C: RepoCtor, url: string) {
 }
 ```
 
-Abstract: §7.2 `abstract new`.
+Abstract: §7.1 `abstract new`.
 
 ### 6.2 Class như interface — `typeof Class` vs `InstanceType`
 
@@ -677,10 +722,10 @@ type Params = ConstructorParameters<typeof Service>; // []
 | `x: User` | instance |
 | `x: typeof User` | constructor (có static) |
 | `x: InstanceType<typeof User>` | instance (khi `User` là type param giá trị) |
-| `x: InstanceType<T>` với `T extends new (...args: never[]) => unknown` | instance từ ctor generic |
+| `x: InstanceType<T>` với `T extends new (...args: any[]) => unknown` | instance từ ctor generic |
 
 ```ts
-function factory<T extends new (...args: never[]) => unknown>(
+function factory<T extends new (...args: any[]) => unknown>(
   C: T,
   ...args: ConstructorParameters<T>
 ): InstanceType<T> {
@@ -688,7 +733,7 @@ function factory<T extends new (...args: never[]) => unknown>(
 }
 ```
 
-`new (...args: never[]) => T` cấm extra args không an toàn; thực dụng hay `any[]` / `unknown[]` — cân bằng.
+Constraint constructor generic cần `...args: any[]` (không phải `never[]`): vì tham số hàm contravariant, `new (...args: never[]) => unknown` sẽ từ chối mọi class có constructor nhận tham số (`TS2345`).
 
 ### 6.3 Interface vs type alias
 
@@ -734,11 +779,11 @@ abstract class Storage {
 class MemoryStorage extends Storage {
   #map = new Map<string, string>();
 
-  async get(key: string) {
+  override async get(key: string) {
     return this.#map.get(key);
   }
 
-  async set(key: string, value: string) {
+  override async set(key: string, value: string) {
     this.#map.set(key, value);
   }
 }
@@ -761,8 +806,8 @@ class MemoryStorage extends Storage {
 ### 7.1 Abstract construct signatures
 
 ```ts
-type AbstractConstructor<T = object> = abstract new (...args: never[]) => T;
-type ConcreteConstructor<T = object> = new (...args: never[]) => T;
+type AbstractConstructor<T = object> = abstract new (...args: any[]) => T;
+type ConcreteConstructor<T = object> = new (...args: any[]) => T;
 
 function register(C: AbstractConstructor<Storage>) {
   // new C(); // lỗi — abstract
@@ -870,12 +915,16 @@ function isErrorLike(e: unknown): e is { name: string; message: string } {
   return (
     typeof e === "object" &&
     e !== null &&
+    typeof (e as { name?: unknown }).name === "string" &&
     typeof (e as { message?: unknown }).message === "string"
   );
 }
 
+// ES2026 / V8 14.6 / Node 26 — chuẩn ECMAScript cross-realm (không phụ thuộc node:util)
+Error.isError(new Error("x")); // true
+
 import { types } from "node:util";
-types.isNativeError(new Error("x"));
+types.isNativeError(new Error("x")); // true (kể cả DOMException trên Node 26)
 ```
 
 Prefer: kiểm tra shape / `err.code` / branded type; `instanceof` chỉ khi chắc cùng module graph + cùng realm. [exceptions.md](exceptions.md).
@@ -954,6 +1003,19 @@ JSON.stringify(new Mix()); // '{"own":1}' — không có computed
 ```
 
 **Khi nào KHÔNG dùng getter:** async, I/O, throw thường xuyên, chi phí nặng. Method `getX()` rõ ràng. Chi tiết getter `this`: [functions-methods.md](functions-methods.md).
+
+### 9.1 Auto-accessors (`accessor`)
+
+TypeScript 4.9+ / Stage 3 Decorators hỗ trợ từ khóa `accessor` để sinh tự động cặp getter/setter gắn với một backing private slot ẩn:
+
+```ts
+class Counter {
+  accessor count = 0; // tự tạo private storage + get count() / set count(v)
+}
+```
+
+- Hữu ích khi kết hợp Stage 3 decorator để chặn/quan sát đọc-ghi field mà không phải tự viết `#count` + `get`/`set` thủ công ([decorators.md](decorators.md)).
+- **Không erasable:** `accessor` chưa có native syntax rộng khắp không qua transform; chạy trực tiếp trên Node 26 type-stripping sẽ ném `SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]` — cần `tsc` hoặc bundler nếu sử dụng.
 
 ---
 
@@ -1069,10 +1131,16 @@ class Clock {
 }
 
 class OrderService {
+  private readonly db: { query: (sql: string) => Promise<unknown> };
+  private readonly clock: Clock;
+
   constructor(
-    private readonly db: { query: (sql: string) => Promise<unknown> },
-    private readonly clock: Clock,
-  ) {}
+    db: { query: (sql: string) => Promise<unknown> },
+    clock: Clock,
+  ) {
+    this.db = db;
+    this.clock = clock;
+  }
 
   async place(id: string) {
     const at = this.clock.now();
@@ -1146,6 +1214,8 @@ Bảng quyết định:
 | `extends EventEmitter` mọi service | Prefer compose `EventEmitter` hoặc trả typed bus |
 
 ```ts
+import { EventEmitter } from "node:events";
+
 class JobRunner {
   readonly events = new EventEmitter<{ done: [id: string] }>();
 }
@@ -1158,7 +1228,7 @@ class JobRunner {
 JS/TS **không** đa kế thừa class. Mixin = hàm nhận base class, trả subclass đã “trộn” hành vi.
 
 ```ts
-type Constructor<T = object> = new (...args: never[]) => T;
+type Constructor<T = object> = new (...args: any[]) => T;
 
 function Timestamped<TBase extends Constructor>(Base: TBase) {
   return class extends Base {
@@ -1176,7 +1246,11 @@ function Activatable<TBase extends Constructor>(Base: TBase) {
 }
 
 class Entity {
-  constructor(public id: string) {}
+  id: string;
+
+  constructor(id: string) {
+    this.id = id;
+  }
 }
 
 const User = Activatable(Timestamped(Entity));
@@ -1217,7 +1291,7 @@ type UserInst = InstanceType<typeof User>;
 Thực dụng:
 
 - Share behavior ngang hàng khi không muốn cây kế thừa sâu.
-- Typing mixin phức tạp (construct params `never[]` vs rest thật); nhiều team prefer **composition**.
+- Typing mixin phức tạp (constraint constructor `...args: any[]` thay vì rest tuple chính xác); nhiều team prefer **composition**.
 - Mixin class ẩn danh khó `instanceof` ổn định trừ khi `class User extends Mixin(Base) {}`.
 - Decorators (khi bật) là hướng khác cho cross-cutting — [decorators.md](decorators.md).
 
@@ -1226,7 +1300,7 @@ Thực dụng:
 ### 13.1 Constructor args xuyên mixin
 
 ```ts
-type Ctor<T = object, A extends unknown[] = never[]> = new (...args: A) => T;
+type Ctor<T = object, A extends any[] = any[]> = new (...args: A) => T;
 
 function Tagged<TBase extends Ctor>(Base: TBase) {
   return class extends Base {
@@ -1251,11 +1325,19 @@ Không `super()` thiếu args của base. Field mixin init **sau** `super` — c
 
 ```ts
 class Person {
-  constructor(public name: string) {}
+  name: string;
+
+  constructor(name: string) {
+    this.name = name;
+  }
 }
 
 class Dog {
-  constructor(public name: string) {}
+  name: string;
+
+  constructor(name: string) {
+    this.name = name;
+  }
 }
 
 const p: Person = new Dog("Mun"); // OK về kiểu — cùng shape
@@ -1266,7 +1348,11 @@ Branded / private field khi cần phân biệt:
 ```ts
 class UserId {
   private readonly brand = "UserId";
-  constructor(public readonly value: string) {}
+  readonly value: string;
+
+  constructor(value: string) {
+    this.value = value;
+  }
 }
 ```
 
@@ -1424,7 +1510,7 @@ class Account {}
 □ override + noImplicitOverride khi kế thừa
 □ super() trước this; hiểu [[HomeObject]] khi copy method
 □ Callback method: bind / arrow field / wrap — không detach trần
-□ instanceof chỉ cùng realm; Error → util.types / shape
+□ instanceof chỉ cùng realm; Error → Error.isError / util.types / shape
 □ Hierarchy nông; composition cho service (forward, không embed ma thuật)
 □ Không god class; DTO ≠ service
 □ Strip-types? tránh parameter properties / enum / namespace merge
@@ -1473,7 +1559,7 @@ class Impl extends Base implements Disposable {
 }
 
 obj instanceof Impl;
-Even[Symbol.hasInstance];
+// Custom instanceof: static [Symbol.hasInstance](value: unknown): boolean
 
 type Inst = Impl;
 type Ctor = typeof Impl;
@@ -1507,10 +1593,10 @@ type I2 = InstanceType<typeof Impl>;
 | TS 4.3+ | `override` keyword |
 | TS 4.2+ | `abstract` construct signatures (`abstract new`) |
 | TS 5+/7 | Stage 3 decorators (tách khỏi legacy) — [decorators.md](decorators.md) |
-| **Node 26** | full class fields / `#private`; strip-types **không** chạy parameter props |
-| **TS 7** | `strict` mặc định; `noImplicitOverride` khuyến nghị; `node10` resolution error |
+| **Node 26** | full class fields / `#private`, `Error.isError`; strip-types ném `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` cho parameter props / `accessor` / `enum` |
+| **TS 7.0** | `strict` + `useDefineForClassFields` mặc định; `noImplicitOverride` khuyến nghị; native Go compiler |
 
-Baseline: **Node 26** + **TS 7**.
+Baseline: **Node 26 Active LTS (V8 14.6+)** + **TS 7.0**.
 
 ---
 
@@ -1527,7 +1613,4 @@ Baseline: **Node 26** + **TS 7**.
 - [Modules & Packages](modules-packages.md)
 - [Keywords](keywords.md) — `class` / `extends` / `super`
 - [Main / entry](main-function.md) — không I/O trong `static {}` lúc import
-
----
-
 - [Kiểm hợp đồng public và lifecycle](testing.md)

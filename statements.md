@@ -337,7 +337,8 @@ function grade(score: number): string {
 
 Thứ tự `case` quan trọng (đánh giá tuần tự). `case score` **không** chạy như C `switch` range — `score === true` hầu như false.
 
-```ts
+```js
+// JS runtime (TS báo lỗi TS2678 vì 1 không phải boolean)
 switch (true) {
   case 1: // 1 === true → false
     break;
@@ -400,13 +401,17 @@ for (let i = 0; i < list.length; i++) {
 
 `for...in` đi **chuỗi prototype**, mọi enumerable **string** keys (không symbol).
 
-```ts
-Object.prototype.polluted = "x"; // minh họa — đừng làm thật
+```js
+// JS runtime — minh họa prototype pollution, đừng làm thật
+Object.prototype.polluted = "x";
 const obj = { a: 1 };
 for (const key in obj) {
-  console.log(key); // "a", và có thể "polluted"
+  console.log(key); // "a", và "polluted"
 }
+```
 
+```ts
+const obj = { a: 1 };
 for (const key in obj) {
   if (!Object.hasOwn(obj, key)) continue;
   console.log(key, obj[key as keyof typeof obj]);
@@ -434,7 +439,7 @@ for (const k in arr) {
 
 ```ts
 for (const line of lines) {
-  console.log(line);
+  console.log(line); // hợp lệ với `const`: mỗi iteration tạo một binding mới riêng
 }
 for (const [k, v] of map) {
   console.log(k, v);
@@ -447,11 +452,13 @@ async function readAll(iterable: AsyncIterable<string>) {
 }
 ```
 
+> Vì sao `for (const x of xs)` hợp lệ dù `x` đổi qua mỗi vòng? Theo spec ES2015+, mỗi lần lặp `for...of` / `for...in` tạo một **lexical environment (binding) mới** cho `x`, không phải gán lại biến cũ (ngược với `for (const i = 0; i < n; i++)` nơi `i++` rebind cùng một binding → `TypeError`).
+
 | | `for...of` | `for await...of` |
 |--|------------|------------------|
 | Sync iterable | lấy `next().value` | **cũng được** — `await` từng value nếu thenable |
-| Async iterable | lấy object iterator **sai** (không unwrap async) | đúng |
- | Promise trong mảng | **không** unwrap | unwrap từng `await` |
+| Async iterable thuần | ném ngay **`TypeError: x is not iterable`** (thiếu `Symbol.iterator`) | đúng (gọi `Symbol.asyncIterator`) |
+| Promise trong mảng | **không** unwrap | unwrap từng `await` |
 | Ngữ cảnh | sync/async | **chỉ** async function / TLA |
 
 ```ts
@@ -464,7 +471,8 @@ for await (const x of ps) {
 }
 ```
 
-- Node `Readable` hiện đại thường async iterable — `for await` chunks.
+- **Bẫy `for await (const x of promiseArray)`:** các Promise trong mảng đã chạy sẵn từ trước; nếu Promise phía sau (vd `ps[1]`) **reject trước** khi vòng lặp `await` tới nó (vì `ps[0]` còn đang pending hoặc bị `break`/`throw`), Node sẽ phát **`UnhandledPromiseRejection`** (có thể crash process). Khi xử lý mảng Promise song song đã khởi chạy, dùng `Promise.all` / `Promise.allSettled` thay vì `for await` trên mảng Promise.
+- Node `Readable` hiện đại là `AsyncIterable` — `for await` chunks.
 - Sửa collection đang `of` → copy / index tự quản.
 - `await` tuần tự trong vòng = waterfall; batch `Promise.all` khi độc lập.
 
@@ -487,8 +495,8 @@ async function dump(path: string) {
 |-----|----------|-----------|
 | `for...in` array | index string + proto | `for...of` / index `for` |
 | `for...in` không `hasOwn` | inherited | `Object.keys` / `hasOwn` |
-| `for...of` async iterable | không await next | `for await` |
-| `for await` mảng Promise **cố ý** | tuần tự | `Promise.all` nếu song song |
+| `for...of` async iterable | ném ngay `TypeError: x is not iterable` | `for await` |
+| `for await` mảng Promise | tuần tự **và** dễ gây `UnhandledPromiseRejection` nếu Promise sau reject sớm | `Promise.all` / `Promise.allSettled` |
 | `await` trong `for-of` sync | chậm | pool / `all` |
 | Sửa mảng đang duyệt `of` | skip/dup | copy snapshot |
 
@@ -528,12 +536,11 @@ block: {
 
 ```ts
 class AppError extends Error {
-  constructor(
-    message: string,
-    readonly code: string,
-  ) {
+  readonly code: string;
+  constructor(message: string, code: string) {
     super(message);
     this.name = "AppError";
+    this.code = code;
   }
 }
 ```
@@ -567,10 +574,11 @@ loop: for (const x of xs) {
 
 `new Ctor()`:
 
-1. Tạo object, `[[Prototype]]` = `Ctor.prototype`.
+1. Tạo object, `[[Prototype]]` = `Ctor.prototype` (với base class/function).
 2. Gọi `Ctor` với `this` = object đó.
 3. Nếu constructor `return` một **object** (kể cả function) → **đó** là kết quả `new`.
-4. Nếu `return` primitive / `return;` / không `return` → kết quả là `this`.
+4. Với **base class / function**: `return` primitive / `return;` / không `return` → bỏ qua giá trị primitive, kết quả là `this`.
+5. Với **derived class (`extends`)**: `return` bất kỳ **primitive ≠ `undefined`** (vd `return 1`, `return null`, `return "x"`) sẽ ném ngay **`TypeError: Derived constructors may only return object or undefined`**. Chỉ `return;` / `return undefined;` mới trả về `this` (và phải đã gọi `super()` trước đó, nếu không ném `ReferenceError`).
 
 ```ts
 class Hijack {
@@ -581,16 +589,27 @@ class Hijack {
 const h = new Hijack();
 h instanceof Hijack; // false
 h; // { hijacked: true }
+```
 
+```js
+// JS runtime (TS báo lỗi TS2322 khi return primitive trong constructor)
 class Keep {
   constructor() {
-    return 1; // ignored
+    return 1; // base class: bị bỏ qua → trả `this`
   }
 }
 new Keep() instanceof Keep; // true
-```
 
-```ts
+class Base {}
+class BadDerived extends Base {
+  constructor() {
+    super();
+    return 1; // TypeError: Derived constructors may only return object or undefined
+  }
+}
+// new BadDerived(); // TypeError!
+
+// JS runtime (TS báo TS7009 nếu gọi new F() khi không có kiểu constructor)
 function F() {
   if (new.target === undefined) {
     return new F(); // factory dual
@@ -608,6 +627,7 @@ function F() {
 | Bẫy | Chi tiết | Cách đúng |
 |-----|----------|-----------|
 | `return {}` vô tình | mất instance/class fields | không return object trừ factory |
+| `return` primitive trong derived class (`extends`) | ném `TypeError: Derived constructors may only return object or undefined` | chỉ `return;` (sau `super()`) hoặc trả object |
 | `instanceof` sau factory | false | brand / không dùng `new` |
 | `return Promise` trong ctor | object → `new` ra Promise, **không** await fields | `async` factory, không ctor async |
 | Param properties + strip | không erasable | field tường minh |
@@ -622,6 +642,9 @@ try {
 } catch (e) {
   if (e instanceof AppError) {
     console.error(e.code, e.message);
+  } else if (Error.isError(e)) {
+    // ES2026 / Node 26 — nhận diện Error an toàn cả cross-realm (vm / worker)
+    console.error(e.message);
   } else {
     throw e;
   }
@@ -631,9 +654,9 @@ try {
 ```
 
 - `catch` optional binding: `catch { }`.
-- TS `useUnknownInCatchVariables`: `e` là `unknown`.
+- TS `useUnknownInCatchVariables`: `e` là `unknown`; dùng **`Error.isError(e)`** (ES2026 / Node 26) khi cần kiểm tra `Error` an toàn qua realm (`vm`, `worker_threads`), nơi `e instanceof Error` có thể trả `false`.
 - Không có `catch when` như C# — lọc bằng `if` trong catch.
-- `try` có thể chứa `using` — dispose theo scope khi rời block (phối hợp thứ tự với `finally` theo spec ERM: dispose `using` **trước** khi chạy `finally` của cùng block? Thực tế: `using` gắn block; rời block chạy dispose; `try/finally` là statement — đặt `using` **trong** `try` để dispose trước `finally` của `try` đó).
+- `using` gắn với **block** chứa nó: khi đặt `using` bên trong block `try { ... }`, resource được dispose ngay khi rời block `try` — tức **trước** khi `finally` của `try` đó chạy (xem §11).
 
 ### Completion: `return` / `throw` trong `finally`
 
@@ -746,7 +769,7 @@ async function query() {
 | API chỉ `.close()` | wrapper `Symbol.dispose` | gọi `close()` trong `finally` |
 | Hỗ trợ Node 26 | ngữ pháp native | luôn có |
 
-Nhiều API Node **chưa** expose Disposable — wrapper gọi `.close()`. Kiểm tra docs major hiện tại.
+Một số handle chuẩn trên **Node 26** (như `FileHandle` từ `node:fs/promises` `fs.open`, đã có native `[Symbol.asyncDispose]` từ Node 20.4+) dùng được trực tiếp với `await using`; nhiều API/thư viện legacy khác chỉ có `.close()` — khi đó bọc wrapper hoặc dùng `AsyncDisposableStack.adopt`.
 
 Thứ tự khi **lồng** `try` + `using` cùng hàm:
 
@@ -765,6 +788,8 @@ function mixed() {
 
 - `using` gắn **block** chứa nó, không gắn `try` trừ khi khai báo bên trong `try`.
 - `finally` của `try` chạy khi rời `try` statement — dispose `using` **trong** `try` chạy như một phần rời block `try` (trước `finally` của cùng `try`).
+- **`using` trong `switch` case:** cả `switch` dùng chung một block scope, nên nếu đặt `using` trực tiếp trong `case` mà không bọc `{ }`, resource sống tới hết `switch` (và dễ trùng tên giữa các case). Luôn bọc `{ }` cho `case` chứa `using` để dispose ngay cuối case đó.
+- **`using` / `await using` không hỗ trợ destructuring** (`using { fh } = open()` → `SyntaxError`); luôn khai báo bằng một identifier đơn.
 - Test một lần với log nếu cleanup thứ tự quan trọng (lock vs socket).
 
 ### `for (using x of iterable)`
@@ -783,20 +808,22 @@ for await (await using c of getConns()) {
 
 Cặp với mục 7: đừng `for...of` resource rồi quên close; `using` trong header là hình thức gọn. Không kết hợp `for...in`.
 
----
+Trên **Node 26**, `fs.open` trả `FileHandle` đã có native `[Symbol.asyncDispose]` — dùng trực tiếp trong vòng:
 
 ```ts
+import fs from "node:fs/promises";
+
 async function processFiles(paths: string[]) {
   for (const p of paths) {
-    await using f = await openTracked(p); // wrapper minh họa
-    await handle(f);
-  } // dispose mỗi file trước file sau
+    await using fh = await fs.open(p); // FileHandle native [Symbol.asyncDispose] (Node 20.4+ / 26)
+    await handle(fh);
+  } // dispose (close) mỗi file trước file sau
 }
 ```
 
 Chọn:
 
-- Có `[Symbol.dispose]` / tự viết wrapper ổn định → `using`.
+- Có `[Symbol.dispose]` / `[Symbol.asyncDispose]` (như `FileHandle`) hoặc tự viết wrapper ổn định → `using` / `await using`.
 - Cleanup một lần, API callback cũ, hoặc logic nhánh phức tạp → `try`/`finally` vẫn đúng.
 - **Không** mix `return` trong `finally` với `using` cùng block mà không hiểu thứ tự.
 
@@ -805,7 +832,9 @@ Chọn:
 | Bẫy | Chi tiết | Cách đúng |
 |-----|----------|-----------|
 | Sync `using` + async close | không `await` close | `await using` |
-| Kỳ vọng mọi `fs` Disposable | chưa chắc | wrapper |
+| Kỳ vọng mọi API Node đều Disposable | `fs.open` (`FileHandle`) đã native từ Node 20.4+, nhưng nhiều handle legacy chỉ có `.close()` | kiểm tra docs hoặc bọc wrapper / `adopt` |
+| `using` trong `switch` thiếu `{ }` | sống tới cuối `switch` / trùng tên giữa case | bọc `{ }` cho từng `case` |
+| Destructuring với `using` | `using { a } = res` → `SyntaxError` | gán 1 identifier |
 | `using` cả hàm lớn | sống quá lâu | `{ }` hẹp |
 | `finally` + `using` nghĩ thay nhau thứ tự | đọc block | một cơ chế / test |
 
@@ -822,7 +851,7 @@ throw new AppError("nope", "E_NOPE");
 
 - `throw expr` — `expr` bắt buộc; `throw;` SyntaxError.
 - Nên `Error` + `cause` / `code`. Primitive string: khó lọc.
-- `throw` xuống dòng → ASI giống `return` (bảng mục 13).
+- `throw` xuống dòng → **LUÔN là `SyntaxError`** theo quy tắc grammar `[no LineTerminator here]` (khác `return` chèn `;` thành `return;` — bảng mục 13).
 
 ### Empty statement `;`
 
@@ -835,7 +864,7 @@ if (ok); // empty — thân if là no-op
 }
 
 for (let i = 0; i < n; i++); // vòng không làm gì
-  process(i); // i có thể ngoài scope / chạy 1 lần
+  process(i); // với `let i`: chắc chắn ngoài scope (ReferenceError); chỉ với `var i` mới chạy 1 lần với i === n
 ```
 
 - Empty `;` cố ý (hiếm) — comment `/* no-op */`.
@@ -858,13 +887,16 @@ Automatic Semicolon Insertion — engine chèn `;` khi newline + token không ti
 | Hazard | Code | Parse thực | Cách đúng |
 |--------|------|------------|-----------|
 | `return` xuống dòng | `return\nvalue` | `return;` rồi `value;` | `return value` / `return (value)` |
-| `throw` xuống dòng | `throw\nerr` | SyntaxError hoặc không như ý | cùng dòng |
+| `throw` xuống dòng | `throw\nerr` | **LUÔN `SyntaxError`** (`[no LineTerminator here]`) | cùng dòng |
 | `yield` xuống dòng | `yield\nx` | `yield;` | cùng dòng |
+| `break` / `continue` trước label | `break\nouter;` | `break;` rồi `outer;` (`[no LineTerminator here]`) | `break outer;` cùng dòng |
+| `async` trước `function` / arrow | `async\nfunction f() {}` / `async\n() => {}` | `async;` (identifier) rồi hàm sync (`[no LineTerminator here]`) | cùng dòng `async function` / `async () =>` |
+| Trước `=>` | `(x)\n=> x` | **`SyntaxError`** (`[no LineTerminator here]` trước `=>`) | đặt `=>` cùng dòng với danh sách param |
 | Object sau `return` | `return\n{ a: 1 }` | `return;` + block | `return { a: 1 }` |
 | `(` đầu dòng | `a\n(b)` | `a(b)` — gọi hàm | `;` trước `(b)` hoặc cùng dòng |
 | `[` đầu dòng | `a\n[0]` | `a[0]` | `;` trước `[` nếu statement mới |
 | `` ` `` đầu dòng | `fn\n\`x\`` | tagged call | `;` nếu không phải tag |
-| `++` đầu dòng | `a\n++b` | `a; ++b` (thường) | cùng dòng `a++` |
+| `++` / `--` đầu dòng | `a\n++b` | **LUÔN `a; ++b;`** (`[no LineTerminator here]` trước postfix) | viết cùng dòng `a++` nếu muốn postfix |
 | `if (c);` | empty | không phải ASI thuần nhưng cặp nguy hiểm | `{ }` |
 
 ```ts
@@ -1035,14 +1067,15 @@ switch (ev.type) {
 
 | Giai đoạn | Liên quan statement |
 |-----------|---------------------|
-| ES5 | `try`/`finally`; strict cấm `with` |
+| ES3 | `try`/`catch`/`finally`, `throw` |
+| ES5 | strict mode cấm `with` |
 | ES2015–18 | `let`/`const`; `for...of`; `async`/`await`; `for await...of` |
-| ES2020+ | top-level await |
-| ERM hiện đại | `using` / `await using` / `for (using of)` / `SuppressedError` / `DisposableStack` |
-| TS | `assertNever`; `useUnknownInCatchVariables` |
-| Node 26 | baseline — kiểm tra API có `Disposable` hay không; ESM strict |
+| ES2022 | Top-Level Await (TLA) |
+| ES2026 | ERM (`using` / `await using` / `for (using of)` / `SuppressedError` / `DisposableStack`); `Error.isError` |
+| TS / TS 7.0 | `assertNever`; `useUnknownInCatchVariables`; native Go compiler |
+| Node 26 Active LTS | V8 14.6+; ESM strict; `FileHandle` (`fs.open`) native `[Symbol.asyncDispose]`; ERM & `Error.isError` native |
 
-Baseline: **Node 26** + **TS 7**.
+Baseline: **Node 26 Active LTS** + **TS 7.0**.
 
 ---
 

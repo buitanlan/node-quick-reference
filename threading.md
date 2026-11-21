@@ -91,10 +91,16 @@ Triệu chứng “cần thread”: `monitorEventLoopDelay` p99 cao **và** CPU 
 - Library đồng bộ-only (một số native) mà bạn không muốn block main — lúc đó worker là “ghetto thread” cho sync API, không phải vì I/O async.
 
 ```ts
-// ✅ main I/O, worker CPU
-const buf = await readFile(path); // hoặc fetch arrayBuffer
-worker.postMessage({ buf }, [buf.buffer]);
+// ✅ main I/O, worker CPU — tách ArrayBuffer riêng trước khi transfer
+const buf = await readFile(path); // Buffer nhỏ có thể dùng chung slab pool 8 KiB!
+const owned =
+  buf.byteOffset === 0 && buf.byteLength === buf.buffer.byteLength
+    ? buf.buffer
+    : buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+worker.postMessage({ bytes: new Uint8Array(owned) }, [owned]);
 
+// ❌ BẪY SLAB CORRUPTION: worker.postMessage({ buf }, [buf.buffer])
+// Nếu buf nằm trong pool slab 8 KiB chung, detach buf.buffer sẽ làm hỏng các Buffer khác chia sẻ cùng slab!
 // ❌ spawn worker chỉ để fs.readFile — overhead
 ```
 
@@ -145,14 +151,16 @@ worker.on("exit", (code) => {
 ```
 
 ```ts
-// heavy-worker.js
+// heavy-worker.ts (chạy trực tiếp với Node strip hoặc tsc emit ra heavy-worker.js)
 import { parentPort, workerData } from "node:worker_threads";
+
+if (!parentPort) throw new Error("Must run inside a worker thread");
 
 function fib(n: number): number {
   return n < 2 ? n : fib(n - 1) + fib(n - 2);
 }
 
-parentPort!.postMessage(fib(workerData.n as number));
+parentPort.postMessage(fib((workerData as { n: number }).n));
 ```
 
 | Option | Ý nghĩa |
@@ -162,7 +170,7 @@ parentPort!.postMessage(fib(workerData.n as number));
 | `execArgv` | Flag V8/Node cho worker |
 | `resourceLimits` | Giới hạn heap / young gen — §3.8 |
 | `transferList` | Transferables kèm `workerData` |
-| `name` / `threadName` | Tên debug (Inspector) |
+| `name` | Tên debug cho Inspector (đọc lại qua property `worker.threadName` / export `threadName`, không dùng làm security id) |
 | `stdin` / `stdout` / `stderr` | Pipe stdio worker |
 
 > ESM: `new URL("./w.js", import.meta.url)` ổn định khi CWD đổi / systemd. Prod: file `.js` đã emit.
@@ -215,15 +223,16 @@ const moved = structuredClone({ ab }, { transfer: [ab] });
 
 | Transferable (Node) | Ghi chú |
 |---|---|
-| `ArrayBuffer` | Sender `byteLength === 0` (detached) |
+| `ArrayBuffer` | Sender `byteLength === 0` (detached); **cẩn thận `Buffer` dùng chung 8 KiB slab pool** (§1.2) |
 | `MessagePort` | Bắt buộc liệt kê nếu nằm trong `value` — thiếu → `ERR_MISSING_MESSAGE_PORT_IN_TRANSFER_LIST` |
+| `ReadableStream` / `WritableStream` / `TransformStream` | WHATWG Web Streams là Transferable chuẩn trên Node 26 (liệt kê trong `transferList`) |
 | `FileHandle` | Chuyển fd sang isolate kia |
 | `net.Server` / `net.Socket` (TCP) | Có trong docs **26.10.0**; điều kiện ownership và gate ở §7.2, không suy ra mọi 26.x/24 |
 | Không: `SharedArrayBuffer` | Share, **không** transfer — không đưa vào list |
 
-Object trong `transferList` nhưng không reachable từ `value` vẫn bị detach. Untransferable trong list → throw (Node 21+). `ArrayBuffer` **không** trong list → **copy**.
+Object trong `transferList` nhưng không reachable từ `value` vẫn bị detach. Untransferable trong list → throw (Node 21+). `ArrayBuffer` **không** trong list → **copy**. Dùng **`markAsUntransferable(obj)`** (từ `node:worker_threads`) khi muốn chặn object/buffer cụ thể vô tình bị transfer (ví dụ buffer thuộc slab pool nội bộ).
 
-> Buffer lớn: **transfer** khi sender không còn cần. Message JSON-like + typed buffer; đừng gửi class có method. Web Streams transferable tùy phiên — đừng giả định mọi `ReadableStream` chuyển được như `MessagePort`.
+> Buffer lớn: **transfer** khi sender không còn cần (và đã xác nhận là standalone `ArrayBuffer`, không chung pool slab). Message JSON-like + typed buffer; đừng gửi class có method. WHATWG Web Streams (`ReadableStream`/`WritableStream`/`TransformStream`) transfer được chuẩn trên Node 26 qua `transferList`.
 
 ### 3.4 `MessageChannel` / `MessagePort`
 
@@ -309,44 +318,100 @@ import os from "node:os";
 type Job = { id: number; payload: unknown };
 type Result = { id: number; ok: boolean; value?: unknown; error?: string };
 
+type Pending = {
+  resolve: (r: Result) => void;
+  reject: (err: Error) => void;
+  timer: NodeJS.Timeout;
+};
+
 export class WorkerPool {
+  #script: URL;
   #free: Worker[] = [];
   #queue: Job[] = [];
-  #pending = new Map<number, { resolve: (r: Result) => void; timer: NodeJS.Timeout }>();
+  #pending = new Map<number, Pending>();
+  #inFlight = new Map<Worker, number>();
+  #workers = new Set<Worker>();
+  #respawnTimers = new Set<NodeJS.Timeout>();
   #nextId = 1;
-  #workers: Worker[] = [];
   #maxQueue: number;
+  #closed = false;
+  #consecutiveBootFailures = 0;
+  readonly #maxBootFailures = 5;
 
   constructor(script: URL, size = os.availableParallelism(), maxQueue = 100) {
+    this.#script = script;
     this.#maxQueue = maxQueue;
-    for (let i = 0; i < size; i++) this.#spawn(script);
+    for (let i = 0; i < size; i++) this.#spawn();
   }
 
-  #spawn(script: URL) {
-    const w = new Worker(script);
+  #spawn() {
+    if (this.#closed) return;
+    const w = new Worker(this.#script);
+    let handledJob = false;
+
     w.on("message", (result: Result) => {
+      handledJob = true;
+      this.#consecutiveBootFailures = 0;
+      this.#inFlight.delete(w);
       const p = this.#pending.get(result.id);
       if (p) {
         clearTimeout(p.timer);
-        p.resolve(result);
         this.#pending.delete(result.id);
+        p.resolve(result);
       }
-      this.#free.push(w);
-      this.#drain();
+      if (!this.#closed) {
+        this.#free.push(w);
+        this.#drain();
+      }
     });
+
     w.on("error", (err) => {
       console.error("worker error", err);
     });
+
     w.on("exit", (code) => {
-      this.#workers = this.#workers.filter((x) => x !== w);
+      this.#workers.delete(w);
       this.#free = this.#free.filter((x) => x !== w);
-      if (code !== 0) this.#spawn(script);
+
+      // Reject ngay job đang in-flight trên worker bị chết thay vì treo tới timeout
+      const activeId = this.#inFlight.get(w);
+      if (activeId !== undefined) {
+        this.#inFlight.delete(w);
+        const p = this.#pending.get(activeId);
+        if (p) {
+          clearTimeout(p.timer);
+          this.#pending.delete(activeId);
+          p.reject(new Error(`worker exited (${code}) during job ${activeId}`));
+        }
+      }
+
+      if (this.#closed || code === 0) return;
+
+      // Giới hạn retry + backoff khi worker crash loop ngay lúc boot
+      if (!handledJob) {
+        this.#consecutiveBootFailures++;
+        if (this.#consecutiveBootFailures > this.#maxBootFailures) {
+          console.error("worker boot crash loop; stop respawning");
+          return;
+        }
+      }
+      const delayMs = handledJob ? 0 : Math.min(1_000 * 2 ** (this.#consecutiveBootFailures - 1), 10_000);
+      const t = setTimeout(() => {
+        this.#respawnTimers.delete(t);
+        this.#spawn();
+      }, delayMs);
+      this.#respawnTimers.add(t);
     });
-    this.#workers.push(w);
+
+    this.#workers.add(w);
     this.#free.push(w);
+    this.#drain();
   }
 
   run(payload: unknown, timeoutMs = 30_000): Promise<Result> {
+    if (this.#closed) {
+      return Promise.reject(new Error("worker pool closed"));
+    }
     if (this.#queue.length >= this.#maxQueue) {
       return Promise.reject(new Error("worker queue full")); // backpressure
     }
@@ -355,22 +420,40 @@ export class WorkerPool {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(id);
+        // Xóa khỏi queue nếu job timeout khi chưa kịp dispatch
+        const idx = this.#queue.findIndex((j) => j.id === id);
+        if (idx >= 0) this.#queue.splice(idx, 1);
         reject(new Error(`job ${id} timeout`));
       }, timeoutMs);
-      this.#pending.set(id, { resolve, timer });
+      this.#pending.set(id, { resolve, reject, timer });
       this.#queue.push(job);
       this.#drain();
     });
   }
 
   #drain() {
+    if (this.#closed) return;
     while (this.#free.length && this.#queue.length) {
-      this.#free.pop()!.postMessage(this.#queue.shift()!);
+      const w = this.#free.pop()!;
+      const job = this.#queue.shift()!;
+      this.#inFlight.set(w, job.id);
+      w.postMessage(job);
     }
   }
 
   async close() {
-    await Promise.all(this.#workers.map((w) => w.terminate()));
+    this.#closed = true;
+    for (const t of this.#respawnTimers) clearTimeout(t);
+    this.#respawnTimers.clear();
+    this.#queue.length = 0;
+    const err = new Error("worker pool closed");
+    for (const p of this.#pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(err);
+    }
+    this.#pending.clear();
+    this.#inFlight.clear();
+    await Promise.all([...this.#workers].map((w) => w.terminate()));
   }
 }
 ```
@@ -442,7 +525,7 @@ parentPort!.on("message", (msg) => {
 | Job đang CPU | Cần check flag định kỳ | Cắt ngay |
 | Pool | Reuse worker | Mất worker — spawn lại; reject job parent |
 
-AbortSignal **không** structured-clone như live signal sang worker (đừng `workerData: { signal }`). Pattern: parent abort → message abort; timeout vẫn treo → `terminate()` last resort.
+AbortSignal chuẩn **không** structured-clone như live signal sang worker (đừng `workerData: { signal }`). `util.transferableAbortController()` có cho phép chuyển `AbortSignal` giữa worker trong cùng process, nhưng giới hạn rõ: vẫn truyền tín hiệu qua event loop nội bộ của worker nên **không** tự ngắt được vòng lặp CPU đồng bộ (và vẫn ở diện hạn chế/experimental). Với tác vụ CPU-bound trong worker, dùng **cờ `SharedArrayBuffer` + `Atomics`** để hủy hợp tác và `terminate()` làm last resort (§7.6).
 
 ```ts
 worker.on("error", (err) => console.error("worker error", err));
@@ -470,15 +553,17 @@ new Worker(script, { env: { ...process.env, FOO: "2" } }); // snapshot
 Stability **1.1** (active development, Node 22.5+ / 20.19+). Gửi theo `threadId` khi **không** phải cặp parent/child trực tiếp (cây worker lồng). Parent↔child: `worker.postMessage` / `parentPort`.
 
 ```ts
-import { postMessageToThread, threadId } from "node:worker_threads";
+import { postMessageToThread, threadId, workerData } from "node:worker_threads";
 import process from "node:process";
 
 process.on("workerMessage", (value, source) => {
-  // main nhận từ thread khác
+  // nhận từ thread khác
   console.log(value, source);
 });
 
-await postMessageToThread(0, { from: threadId, ping: true });
+// Truyền targetThreadId qua workerData thay vì hardcode threadId === 0
+const targetId = (workerData as { parentThreadId: number }).parentThreadId;
+await postMessageToThread(targetId, { from: threadId, ping: true });
 ```
 
 - Không listener `workerMessage` ở đích → `ERR_WORKER_MESSAGING_FAILED`.
@@ -589,7 +674,7 @@ const { stdout } = await execFile("node", ["-v"]);
 await execFile("node", ["script.js"], { signal: AbortSignal.timeout(5_000) });
 ```
 
-- `{ signal }` hủy subprocess (Node hiện đại).
+- `{ signal, killSignal }` hoạt động trực tiếp trên cả **`spawn`**, **`fork`**, lẫn **`execFile`** (mặc định `killSignal: "SIGTERM"`). Khi `signal` abort, Node tự gửi `killSignal` tới child và emit `AbortError` — tránh phải gắn/gỡ `addEventListener("abort")` thủ công.
 - `maxBuffer` giới hạn — tăng có chủ đích hoặc dùng `spawn` stream.
 - Xử lý `error` (ENOENT khi thiếu binary) và `close`/`exit`.
 
@@ -605,7 +690,7 @@ child.stderr?.on("data", onLog);
 
 Không đọc `stdout`/`stderr` khi `pipe` → OS buffer đầy → **child block** (trông như hang). `stdio: "ignore"` nếu không cần output. `inherit` để debug. `detached` + `unref` cho daemon — đừng trên request path.
 
-`kill('SIGTERM')` rồi timeout `SIGKILL`: giống abort vs terminate. `{ signal }` trên promises API gửi hủy; Windows tín hiệu khác Unix — test trên OS deploy.
+`kill('SIGTERM')` rồi timeout `SIGKILL`: giống abort vs terminate. `{ signal, killSignal }` trên `spawn`/`fork`/`execFile` gửi hủy tự động; Windows tín hiệu khác Unix — test trên OS deploy.
 
 `execFile` buffer cả stdout: file 100MB → `maxBuffer` error. Video/ffmpeg: **luôn** `spawn` stream.
 
@@ -613,18 +698,24 @@ Không đọc `stdout`/`stderr` khi `pipe` → OS buffer đầy → **child bloc
 import { spawn } from "node:child_process";
 
 function runFfmpeg(args: string[], signal: AbortSignal): Promise<void> {
+  // Kiểm tra trước khi spawn để không tạo process thừa khi đã aborted
+  if (signal.aborted) return Promise.reject(signal.reason);
+
   return new Promise((resolve, reject) => {
-    const child = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
-    const onAbort = () => child.kill("SIGTERM");
-    if (signal.aborted) onAbort();
-    else signal.addEventListener("abort", onAbort, { once: true });
-    child.stderr?.resume(); // drain — tránh block
-    child.on("error", reject);
-    child.on("close", (code) => {
-      signal.removeEventListener("abort", onAbort);
+    // Dùng "ignore" cho stdout nếu không đọc — để "pipe" mà không drain sẽ deadlock OS pipe buffer!
+    const child = spawn("ffmpeg", args, {
+      stdio: ["ignore", "ignore", "pipe"],
+      signal,
+      killSignal: "SIGTERM",
+    });
+    child.stderr?.resume(); // drain stderr để tránh block
+    child.once("error", (err) => {
+      reject(signal.aborted ? signal.reason : err);
+    });
+    child.once("close", (code) => {
       if (signal.aborted) reject(signal.reason);
       else if (code === 0) resolve();
-      else reject(new Error(`ffmpeg ${code}`));
+      else reject(new Error(`ffmpeg exited ${code}`));
     });
   });
 }
@@ -632,7 +723,7 @@ function runFfmpeg(args: string[], signal: AbortSignal): Promise<void> {
 
 `shell: true` + user args = injection dù `spawn`. Allowlist binary path; args từng phần tử.
 
-Windows: không `SIGKILL` như Unix — `child.kill()` thường terminate process. `signal` names khác. `execFile("script.cmd")` vs `.exe`: cmd có thể đi shell-ish — ưu tiên `.exe` + argv. `windowsHide` option spawn: ẩn console window.
+Windows: không `SIGKILL` như Unix — `child.kill()` thường terminate process. **CVE-2024-27980** (Node 20.12.2+ / 24 / 26): gọi `spawn` hoặc `execFile` với file `.bat`/`.cmd` trên Windows mà **không** có `{ shell: true }` sẽ **throw `EINVAL`** ngay lập tức để chặn argument injection; ưu tiên binary `.exe` + mảng argv, nếu buộc gọi `.cmd`/`.bat` phải validate/escape nghiêm ngặt trước khi bật `shell: true`. `windowsHide` option của `spawn`: ẩn console window.
 
 `cwd` / `env` snapshot lúc spawn — đổi `process.env` sau không vào child trừ `SHARE_ENV` (worker) hoặc truyền `env` mới.
 
@@ -756,10 +847,10 @@ test("worker fib", async () => {
 
 ### 7.1 Inspector & debug
 
-- Chrome DevTools: `node --inspect` inspect **main**; worker hiện dưới Threads / attach `inspector` trong worker (`inspector.open()`).
-- `--title` / `name` option Worker: nhận diện dump.
-- `worker.threadId` log mọi message `{ tid, jobId }`.
-- Heap: `worker.getHeapSnapshot()` (parent gọi) khi nghi leak isolate — file lớn, đừng production mỗi request.
+- Chrome DevTools: `node --inspect` inspect **main**; worker hiện dưới Threads / attach `inspector` trong worker (`inspector.open()`). Lưu ý `execArgv` kế thừa flag parent trừ khi override — `--inspect` trên mọi worker gây xung đột port; đặt `execArgv: []` hoặc `--inspect-port=0` khi debug (prod tắt inspect).
+- `--title` / `name` option của `Worker` (`worker.threadName`): nhận diện dump.
+- `worker.threadId`: log mọi message `{ tid, jobId }`.
+- ELU & Heap: parent có thể đọc trực tiếp **`worker.performance.eventLoopUtilization()`** để theo dõi độ bận của từng worker mà không cần gửi message ngược (trong khi `monitorEventLoopDelay` chạy nội bộ isolate phải gửi metric qua message). Dùng `worker.getHeapSnapshot()` khi nghi leak isolate — file lớn, không gọi theo request.
 
 Protocol job tối thiểu:
 
@@ -810,23 +901,43 @@ Không `stdout: true` thì `console.log` worker trộn stdout parent — khó l�
 
 ### 7.6 Abort job trong pool (cooperative → terminate)
 
+**Lưu ý quan trọng:** Một vòng `for` CPU đồng bộ sẽ **chặn event loop của worker**, nên gửi message `"abort"` qua `parentPort.on("message")` sẽ không bao giờ chạy kịp cho tới khi vòng `for` kết thúc! Để hủy hợp tác thật sự giữa vòng lặp CPU, dùng **`SharedArrayBuffer` + `Int32Array` + `Atomics.load()`** (hoặc rút message đồng bộ bằng `receiveMessageOnPort` trên port riêng):
+
 ```ts
-// parent
-worker.postMessage({ id, type: "abort" });
-const killer = setTimeout(() => void worker.terminate().then(() => this.#spawn(script)), 2_000);
+// parent — cấp SAB flag cho mỗi job (hoặc tái sử dụng và reset trước khi dispatch)
+const cancelSab = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+const cancelFlag = new Int32Array(cancelSab);
+
+async function runWithAbort(worker: Worker, id: number, payload: unknown, signal: AbortSignal) {
+  Atomics.store(cancelFlag, 0, 0); // reset flag cho job mới
+  let killer: NodeJS.Timeout | undefined;
+  const onAbort = () => {
+    Atomics.store(cancelFlag, 0, 1); // worker thấy ngay qua Atomics.load
+    killer = setTimeout(() => void worker.terminate(), 2_000);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    worker.postMessage({ id, payload, cancelSab });
+    return await waitReply(worker, id);
+  } finally {
+    clearTimeout(killer);
+    signal.removeEventListener("abort", onAbort);
+  }
+}
 
 // worker
-let abort = false;
-parentPort.on("message", async (msg) => {
-  if (msg.type === "abort") {
-    abort = true;
-    return;
-  }
+import { parentPort } from "node:worker_threads";
+
+if (!parentPort) throw new Error("Must run inside a worker thread");
+const port = parentPort;
+
+port.on("message", (msg: { id: number; payload: unknown; cancelSab: SharedArrayBuffer }) => {
+  const cancelFlag = new Int32Array(msg.cancelSab);
   try {
-    const value = await job(msg.payload, () => abort);
-    parentPort.postMessage({ id: msg.id, ok: true, value });
+    const value = crunchJob(msg.payload, cancelFlag);
+    port.postMessage({ id: msg.id, ok: true, value });
   } catch (e) {
-    parentPort.postMessage({
+    port.postMessage({
       id: msg.id,
       ok: false,
       error: { message: e instanceof Error ? e.message : String(e) },
@@ -834,33 +945,24 @@ parentPort.on("message", async (msg) => {
   }
 });
 
-async function job(payload: unknown, aborted: () => boolean) {
+function crunchJob(payload: unknown, cancelFlag: Int32Array) {
   for (const chunk of chunks(payload)) {
-    if (aborted()) throw new Error("aborted");
-    crunch(chunk); // CPU — check giữa các chunk
+    if (Atomics.load(cancelFlag, 0) !== 0) {
+      throw new DOMException("aborted", "AbortError");
+    }
+    crunch(chunk); // CPU — check giữa các chunk (~1–5ms/chunk)
   }
+  return done();
 }
 ```
 
-`terminate()` giữa `crunch` mất worker — pool spawn lại; job parent reject. SAB flag: `Atomics.load` giữa chunk, rẻ hơn message nếu spin. **Không** `Atomics.wait` trên main.
+`terminate()` giữa `crunch` mất worker — pool spawn lại; job parent reject. **Không** `Atomics.wait` trên main thread. Timeout Promise phía parent **không** dừng CPU — luôn cặp SAB abort flag (hoặc `receiveMessageOnPort`) + `terminate()` budget.
 
-Timeout Promise phía parent **không** dừng CPU — luôn cặp abort message + terminate budget.
+`chunks` CPU: kích thước sao cho mỗi chunk ~1–5ms — đủ nhạy mà không overhead. Benchmark `performance.now()` trong worker.
 
-`chunks` CPU: kích thước sao cho mỗi chunk 1–5ms — `throwIfAborted` / flag đủ mượt mà không spam message. Benchmark `performance.now()` trong worker.
+Pool `close()`: ngừng nhận job, đánh dấu abort in-flight, chờ timeout ngắn, `terminate` phần còn lại, `await Promise.all`. SIGTERM → `close()` — [main-function.md](main-function.md).
 
-Pool `close()`: ngừng nhận job, `abort` in-flight, chờ timeout, `terminate` rest, `await Promise.all`. SIGTERM → `close()` — [main-function.md](main-function.md).
-
-Job id monotonic: wrap `number` (2^53) không vấn đề thực tế; đừng reuse id trước khi timeout xong.
-
-`os.availableParallelism()` trong cgroup: nhỏ hơn `os.cpus().length` — pool size theo parallelism, không phải “số core máy host”. Oversubscribe worker CPU-bound → context switch, p99 xấu hơn pool = parallelism.
-
-`UV_THREADPOOL_SIZE` và số worker JS là **hai** nút khác nhau — đừng tăng cả hai mù.
-
-`cluster.worker` / `cluster.workers`: map id → worker; `worker.id` ≠ `threadId` (process vs thread). Log cả `process.pid` và `threadId`.
-
-`process.channel` (fork IPC): `ref`/`unref` kênh — unref IPC khi child “daemon” cẩn thận, parent có thể thoát.
-
-`exec` `encoding: 'buffer'` khi output không UTF-8. `maxBuffer` mặc định ~1MB — đừng tăng vô hạn; stream.
+`os.availableParallelism()` trong cgroup nhỏ hơn `os.cpus().length` — đặt pool size theo `availableParallelism()`, không theo số core máy host. `UV_THREADPOOL_SIZE` và số worker JS là hai nút độc lập — đừng tăng cả hai mù. `cluster.worker.id` ≠ `worker_threads.threadId` (process vs thread) — log cả `process.pid` và `threadId`.
 
 ### 7.7 `child_process` vs worker — bảng quyết định CPU native
 
@@ -873,69 +975,13 @@ Job id monotonic: wrap `number` (2^53) không vấn đề thực tế; đừng r
 | Sandbox untrusted script | `vm` không đủ; process/container | spawn + rlimit/cgroup |
 | Cùng heap debug | Dễ hơn (inspector threads) | pid khác |
 
-`vm.runInContext` **không** phải worker — cùng thread, không isolation CPU. Đừng nhầm.
+Ghi chú vận hành nhanh theo nhóm:
 
-Untrusted user code: worker vẫn đọc `fs` nếu không restricted — `--experimental-permission` / process riêng / container. Ngoài phạm vi sâu permission model; đừng tin worker là sandbox.
-
-`MessagePort` `close()` một phía: phía kia `'close'`, `postMessage` sau đó throw. Pool recycle: **không** close `parentPort`. Channel phụ (job stream): close khi job xong.
-
-`port.postMessage` trong `'close'` handler: quá muộn. `terminate()` đang pending message: message có thể mất — protocol phải tolerate.
-
-`worker.moveMessagePortToContext` / `vm`: hiếm; object Node trong vm.Context dễ `messageerror`. Tránh trừ khi nhúng VM.
-
-`BroadcastChannel.close()` mọi replica; quên close = handle ref giữ process (CLI). `ref`/`unref` trên BroadcastChannel / MessagePort khi CLI.
-
-`postMessageToThread` Stability 1.1: listener `workerMessage` trên `process` — đừng nhầm `'message'` của fork. Test feature-detect hoặc pin Node 26.
-
-`threadName` (22.20+ / 24.6+): `worker.threadName` debug; không dùng làm security id.
-
-`Worker` `trackUnmanagedFds`: option đóng fd không quản lý khi worker exit — đọc docs khi native fd. Mặc định thường track.
-
-`resourceLimits.stackSizeMb`: stack overflow worker vs main — đệ quy JS sâu. Không thay `maxOldGenerationSizeMb`.
-
-`terminate()` Promise: await trong `finally` pool; ignore nếu đã exit. Double terminate an toàn (đã dừng).
-
-`fork` `serialization: 'advanced'` gửi `Date`/`Map`; `'json'` thì Date thành string. Pin option, test payload.
-
-`child.pid` `undefined` trước spawn thành công / sau exit. `kill` khi pid undefined throw — check `child.exitCode === null`.
-
-`execFile` `timeout` option (ms) vs AbortSignal: cả hai tồn tại trên một số API; signal chuẩn hóa hơn. Đừng mix hai timeout chồng.
-
-`stdio: [stdin, stdout, stderr, ipc]` — `fork` thêm fd IPC. `spawn` không IPC trừ khi tự pipe protocol.
-
-`cluster` `worker.process` là ChildProcess — `send`/`kill` tương tự fork.
-
-ELU/`monitorEventLoopDelay` **trong** worker chỉ mô tả isolate đó — gửi metric qua message; đừng giả định bằng main.
-
-`stdin: 'ipc'` không hợp lệ; IPC là fd riêng trên fork.
-
-`execArgv` worker kế thừa flag parent trừ khi override — `--inspect` trên mọi worker = port conflict. Set `execArgv: []` hoặc inspect-port riêng.
-
-`--inspect-port=0` worker: port ngẫu nhiên, đọc inspector URL log. Prod: tắt inspect.
-
-`worker.setMaxListeners` nếu fan-in nhiều `'message'` — hiếm; thường một handler multiplex `id`.
-
-`once(worker, "exit")` trong test + `terminate` — tránh leak handle Jest/node:test.
-
-`node:test` `t.after(() => w.terminate())` nếu không `finally`. Fake timers không điều khiển CPU worker — timeout job test dùng delay thật hoặc mock `fn` thuần.
-
-`piscina` `AbortSignal` per-task (thư viện) — đọc version; skeleton tự viết dùng message abort.
-
-`Atomics.notify` số waiter: `notify(view, index, count)` — `count` 1 vs `+Infinity`. Quên notify = hang worker; notify thừa = no-op nếu không wait.
-
-` SAB.grow` (resizable) — đừng grow khi thread khác wait không protocol; phức tạp, tránh.
-
-Growable `ArrayBuffer` (không share) transfer sau `resize` — test `byteLength`. `SharedArrayBuffer` không vào `transferList`.
-
-`parentPort.unref()`: worker có thể thoát khi hết handle dù parent còn — pool đừng unref `parentPort`.
-
-`MessageChannel` cả hai port phải `unref` nếu CLI không muốn treo. Server pool: giữ ref worker.
-
-`isMainThread` trong file test import nhầm worker entry — guard hoặc tách file.
-
-`threadId` 0 không luôn là main trên mọi API nhắn tin — dùng `threadId` export, so sánh cẩn thận với `postMessageToThread`.
-
-Main thường `threadId === 0` nhưng đừng hardcode trong protocol — đọc `threadId` runtime.
+- **Security & Isolation:** `vm.runInContext` chạy trên cùng thread, không cách ly CPU hay bảo mật. Untrusted user code trong worker vẫn đọc được `fs` trừ khi siết bằng **`--permission`** (Permission Model đã ổn định trên Node 24/26) hoặc tách process/container riêng — không coi worker là sandbox.
+- **Lifecycle, Port & `ref`/`unref`:** `MessagePort.close()` một đầu sẽ khiến đầu kia nhận `'close'` và throw nếu `postMessage` tiếp; không đóng `parentPort` trên pool recycle. `parentPort.unref()` có thể khiến worker thoát sớm khi hết handle — pool server luôn giữ ref; ngược lại CLI dùng `BroadcastChannel` hoặc `MessageChannel` nên `close()` / `unref()` cả hai đầu để không treo lúc exit. Double `terminate()` là an toàn (no-op nếu đã exit). `Worker` option `trackUnmanagedFds` mặc định `true` giúp đóng fd chưa quản lý khi worker exit.
+- **Observability & `threadId`:** Đọc ELU của worker từ parent qua **`worker.performance.eventLoopUtilization()`**. Không hardcode `threadId === 0` trong protocol (đọc `threadId` tại runtime và truyền qua `workerData`). Với `postMessageToThread` (Stability 1.1), listener đích là `process.on("workerMessage")` (khác `'message'` của `fork`).
+- **`child_process`, `fork` & `cluster`:** `fork` option `serialization: "advanced"` giữ `Date`/`Map` (mặc định `"json"` chuyển `Date` thành string). `child.pid` là `undefined` trước khi spawn thành công hoặc sau exit — kiểm tra `child.exitCode === null` trước khi `kill`. `stdin: "ipc"` không hợp lệ; IPC là fd thứ 4 (`stdio: ["pipe", "pipe", "pipe", "ipc"]`). `cluster` `worker.process` là `ChildProcess` với `send`/`kill` tương tự `fork`; `process.channel?.unref()` cẩn thận kẻo parent thoát sớm. Dùng `{ signal }` chuẩn hóa thay vì trộn lẫn với option `timeout` rời; `exec`/`execFile` có `encoding: "buffer"` cho binary và `maxBuffer` mặc định ~1 MiB (output lớn dùng `spawn`).
+- **SAB, Resizable Buffer & Testing:** `Atomics.notify(view, index, count)` quên gọi sẽ treo waiter; tránh `SharedArrayBuffer.grow()` đồng thời với `Atomics.wait` không có protocol; resizable `ArrayBuffer` (không shared) có thể transfer sau `resize()`. Trong test: tách worker entry khỏi file test (hoặc guard `isMainThread`), dùng `t.after(() => w.terminate())` + `once(w, "exit")` tránh leak handle; fake timers không điều khiển được CPU trong worker. Thư viện `piscina` hỗ trợ `AbortSignal` per-task sẵn nếu không muốn tự duy trì pool.
 
 ---
 
@@ -999,10 +1045,14 @@ import { Worker, isMainThread, parentPort } from "node:worker_threads";
 if (isMainThread) {
   const w = new Worker(new URL(import.meta.url));
   w.on("error", console.error);
+  w.once("message", async (result) => {
+    console.log(result);
+    await w.terminate();
+  });
   w.postMessage({ n: 5 });
-  w.on("message", console.log);
 } else {
-  parentPort!.on("message", ({ n }) => parentPort!.postMessage(n * 2));
+  if (!parentPort) throw new Error("Missing parentPort");
+  parentPort.on("message", ({ n }: { n: number }) => parentPort!.postMessage(n * 2));
 }
 ```
 
@@ -1012,13 +1062,17 @@ if (isMainThread) {
 
 | Dòng | Ghi chú |
 |---|---|
-| **Node 26** (baseline) | `worker_threads` / `child_process` / `cluster` ổn định |
-| Node 24 LTS | Cùng mô hình — changelog nếu API rất mới |
+| **Node 26** (baseline) | `worker_threads` / `child_process` / `cluster` ổn định; WHATWG Web Streams transferable chuẩn |
+| Node 24 LTS | Cùng mô hình — kiểm changelog nếu dùng API rất mới (như TCP handle transfer 26.10+) |
+| `--permission` | Permission Model ổn định trên Node 24/26 (thay `--experimental-permission`) |
+| `markAsUntransferable()` | `node:worker_threads` — chặn vô tình transfer object/slab buffer |
+| `worker.performance.eventLoopUtilization()` | Parent đọc trực tiếp ELU của worker isolate |
 | `os.availableParallelism()` | Ưu tiên hơn `os.cpus().length` (container-aware hơn) |
 | `structuredClone` | Global; cùng thuật toán với `postMessage` |
 | `resourceLimits` | Best-effort; không cover ArrayBuffer |
 | `cluster.isPrimary` | Thay `isMaster` deprecated |
-| `promisify(execFile)` + `AbortSignal` | Promise từ `node:child_process`; không có module `child_process/promises` |
+| `spawn` / `fork` / `promisify(execFile)` + `{ signal, killSignal }` | Hủy subprocess bằng `AbortSignal`; không có module `child_process/promises` |
+| Windows `.bat`/`.cmd` (CVE-2024-27980) | Từ Node 20.12.2+ / 26, `spawn`/`execFile` không có `{ shell: true }` throw `EINVAL` |
 | `receiveMessageOnPort` | Sync; nuốt `'message'` |
 | `await using Worker` | `Symbol.asyncDispose` → `terminate` (22.18+ / 24.2+) |
 | `Atomics.waitAsync` | Wait không block (ES2024) |

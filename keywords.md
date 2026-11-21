@@ -36,7 +36,7 @@ Từ khóa và từ khóa ngữ cảnh (contextual) quan trọng của **JavaScr
 
 ## 1. `let` / `const` và TDZ
 
-- **Loại:** reserved  
+- **Loại:** `const` là reserved word; `let` là **strict-mode reserved** (cấm dùng làm identifier trong ESM / strict mode, nhưng hợp lệ ở sloppy JS lịch sử).
 - **Mục đích:** binding block-scoped. `const` cấm **rebind**; object/array vẫn mutate được.
 
 ```ts
@@ -97,7 +97,7 @@ Prefer `const` mặc định, `let` khi cần gán lại. Hình thức statement
 
 ## 2. `var` — function-scope
 
-`var` **function-scoped** (hoặc script-scoped), hoist binding + khởi tạo `undefined`. **Không** dùng trong ESM/TS mới.
+`var` **function-scoped** (ở sloppy script top-level sẽ gắn lên `globalThis`; nhưng top-level `var` trong **ESM là module-scoped**, không gắn `globalThis`), hoist binding + khởi tạo `undefined`. **Không** dùng trong ESM/TS mới.
 
 ```ts
 function f() {
@@ -134,7 +134,7 @@ fns.map((f) => f()); // [3, 3, 3]
 | `for` + closure | mọi callback cùng `i` | `let` |
 | Leak khỏi block | `if`/`for` không tạo scope `var` | `let`/`const` |
 | Redeclare | nuốt trùng tên | `let` SyntaxError hữu ích |
-| `var` ở module ESM | vẫn function/module scope lệch thói quen block | đừng dùng |
+| `var` ở top-level ESM | là **module-scoped** (không gắn `globalThis` như script cũ), nhưng vẫn leak khỏi block `if`/`for` | dùng `const`/`let` |
 
 CJS legacy có thể còn `var`; migrate từng file, không hỗn hợp trong cùng hàm.
 
@@ -149,7 +149,10 @@ Từ khóa liên quan: `class` / `extends` / `implements` / `super` / `static` /
 ```ts
 // new A(); // ReferenceError
 class A {
-  constructor(readonly n: number) {}
+  readonly n: number;
+  constructor(n: number) {
+    this.n = n;
+  }
 }
 new A(1);
 ```
@@ -164,8 +167,10 @@ abstract class Shape {
 }
 
 class Circle extends Shape implements Printable {
-  constructor(public readonly r: number) {
+  public readonly r: number;
+  constructor(r: number) {
     super();
+    this.r = r;
   }
 
   static unit(): Circle {
@@ -249,9 +254,10 @@ function* outer() {
 function* inner() {
   yield 1;
   yield 2;
+  return "done";
 }
-function* outer() {
-  const last = yield* inner(); // last = return value của inner (undefined nếu không return)
+function* delegateOuter() {
+  const last = yield* inner(); // last === "done" (return value của inner)
   yield last;
 }
 
@@ -314,8 +320,12 @@ async function f() {
 }
 f() instanceof Promise; // true
 
-await 1;              // 1 — wrap non-thenable
-await { then() {} };  // thenable
+await 1; // 1 — wrap non-thenable
+await {
+  then(resolve: (v: number) => void) {
+    resolve(1);
+  },
+}; // 1 — thenable (nếu không gọi resolve/reject sẽ treo vĩnh viễn)
 ```
 
 **Bẫy `async`/`await`:**
@@ -350,13 +360,25 @@ export default function main() {}
 export { Circle as Disk };
 export type { Point };
 export type { User as PublicUser } from "./user.js";
+export type * from "./types.js";
+export type * as Types from "./types.js";
 ```
 
 - ESM: extension `.js` trong import path thường **bắt buộc** với `NodeNext` dù source `.ts`.
 - `import type` / `export type` **erase hoàn toàn** — an toàn type strip + `verbatimModuleSyntax`.
 - `import { type X, y }` — `X` erase, `y` runtime.
-- `export type * from "./mod.js"` không tồn tại như value `export *`; type re-export dùng `export type { A, B } from "./mod.js"`.
+- `export type * from "./mod.js"` và `export type * as ns from "./mod.js"` **được hỗ trợ từ TS 5.0+** (erase hoàn toàn), bên cạnh `export type { A, B } from "./mod.js"`.
 - `import()` động trả Promise; hỗ trợ TLA.
+- `import.meta` (ESM trên **Node 26**): chứa metadata của module hiện tại — không cần tự tính `__dirname`/`__filename`:
+
+```ts
+if (import.meta.main) {
+  console.log(import.meta.dirname);           // thư mục chứa file hiện tại
+  console.log(import.meta.filename);          // đường dẫn tuyệt đối file hiện tại
+  const url = import.meta.resolve("./cfg.json"); // resolve theo ESM specifier
+}
+```
+
 - CJS: `require` / `module.exports` — API runtime, không phải keyword TS.
 
 ```js
@@ -390,7 +412,10 @@ Explicit Resource Management (ERM): binding block-scoped, dispose khi rời scop
 
 ```ts
 class FileHandle implements Disposable {
-  constructor(private path: string) {}
+  private readonly path: string;
+  constructor(path: string) {
+    this.path = path;
+  }
   [Symbol.dispose]() {
     console.log("close", this.path);
   }
@@ -404,6 +429,9 @@ class FileHandle implements Disposable {
 
 ```ts
 class Conn implements AsyncDisposable {
+  async query(): Promise<void> {
+    /* thực thi truy vấn */
+  }
   async [Symbol.asyncDispose]() {
     await this.close();
   }
@@ -414,6 +442,7 @@ class Conn implements AsyncDisposable {
 
 async function query() {
   await using db = new Conn();
+  await db.query();
 }
 ```
 
@@ -425,6 +454,8 @@ async function query() {
 - Stack dispose: **LIFO** khi nhiều `using` cùng block.
 - Lỗi body + dispose → `SuppressedError` (`.error` lỗi mới hơn, `.suppressed` lỗi bị che — đọc cả hai).
 - `using` giống `const`: không rebind; TDZ đến init.
+- **Không hỗ trợ destructuring** (`using { a } = res` → `SyntaxError`); chỉ dùng được ở **top-level trong ESM** (không hợp lệ ở top-level classic script).
+- **Bẫy fallback của `await using`:** khi đối tượng không có `[Symbol.asyncDispose]` mà fallback sang `[Symbol.dispose]`, theo spec engine gọi `[Symbol.dispose]()` đồng bộ rồi `await undefined` — **không** `await` Promise nếu `[Symbol.dispose]` lỡ trả về Promise. Cleanup async bắt buộc dùng `[Symbol.asyncDispose]`.
 - `await using` trong vòng: dispose **mỗi** iteration trước vòng sau.
 
 ```ts
@@ -434,28 +465,39 @@ async function query() {
 } // dispose b rồi a
 ```
 
-Wrapper khi stdlib chỉ có `.close()`:
+Trên **Node 26**, `FileHandle` từ `node:fs/promises` (`fs.open`) đã có native `[Symbol.asyncDispose]` (từ Node 20.4+) — dùng trực tiếp `await using`:
 
 ```ts
 import fs from "node:fs/promises";
 
-async function openTracked(path: string) {
-  const fh = await fs.open(path);
+async function processFile(p: string) {
+  await using fh = await fs.open(p);
+  await fh.readFile("utf8");
+} // tự động gọi fh.close()
+```
+
+Wrapper khi resource legacy / thư viện ngoài chỉ có `.close()` (chưa implement `[Symbol.asyncDispose]`):
+
+```ts
+type LegacyDbHandle = { query(sql: string): Promise<unknown>; close(): Promise<void> };
+
+async function openTrackedDb(connect: () => Promise<LegacyDbHandle>) {
+  const db = await connect();
   return {
-    fh,
+    db,
     async [Symbol.asyncDispose]() {
-      await fh.close();
+      await db.close();
     },
   };
 }
 
-async function processFile(p: string) {
-  await using tracked = await openTracked(p);
-  await tracked.fh.readFile("utf8");
+async function runQuery(connect: () => Promise<LegacyDbHandle>) {
+  await using tracked = await openTrackedDb(connect);
+  await tracked.db.query("SELECT 1");
 }
 ```
 
-Một số handle Node hiện đại **có thể** đã có `[Symbol.asyncDispose]` (gọi `close`) — kiểm tra docs **đúng major**; không giả định mọi `EventEmitter` / socket.
+Kiểm tra docs của API đang dùng (vd `FileHandle`, `fs.Dir`, một số handle Node 26 đã native Disposable), nhưng không giả định mọi thư viện ngoài / native addon legacy đều có symbol.
 
 `DisposableStack` gom cleanup (cũng là `Disposable`):
 
@@ -476,15 +518,16 @@ Một số handle Node hiện đại **có thể** đã có `[Symbol.asyncDispos
 | `move()` | chuyển ownership — stack cũ emptied, không dispose khi rời |
 | `dispose()` / `[Symbol.dispose]()` | chạy ngay |
 
-`AsyncDisposableStack`: `use`/`adopt`/`defer`/`move` + `[Symbol.asyncDispose]`. Dùng khi gom nhiều handle `.close()` async trong một scope.
+`AsyncDisposableStack`: `use`/`adopt`/`defer`/`move` + `[Symbol.asyncDispose]`. Dùng `use()` cho handle đã có symbol (như `fs.open`), hoặc `adopt()` cho handle legacy chỉ có `.close()`:
 
 ```ts
-async function withMany(paths: string[]) {
+async function withMany(paths: string[], legacyConnect: () => Promise<LegacyDbHandle>) {
   await using stack = new AsyncDisposableStack();
   for (const p of paths) {
-    const fh = await fs.open(p);
-    stack.adopt(fh, (f) => f.close());
+    stack.use(await fs.open(p)); // FileHandle đã có native Symbol.asyncDispose
   }
+  const db = stack.adopt(await legacyConnect(), (h) => h.close()); // handle legacy
+  await db.query("SELECT 1");
 } // close LIFO
 ```
 
@@ -524,12 +567,14 @@ Xem [statements.md](statements.md) vòng lặp + resource.
 
 | Bẫy | Chi tiết | Cách đúng |
 |-----|----------|-----------|
-| Kỳ vọng `fs.open` luôn Disposable | nhiều API chỉ `.close()` | wrapper `[Symbol.asyncDispose]` |
+| Kỳ vọng mọi API đều Disposable | `fs.open` (`FileHandle`) đã native `Symbol.asyncDispose` từ Node 20.4+, nhưng nhiều handle legacy chỉ có `.close()` | kiểm tra docs; bọc wrapper hoặc `AsyncDisposableStack.adopt` |
 | `using` trên async resource | dispose sync trên Promise close | `await using` |
+| Fallback `await using` sang `Symbol.dispose` | spec gọi sync rồi `await undefined`, **không** `await` Promise trả về | implement `[Symbol.asyncDispose]` cho cleanup async |
+| Destructuring với `using` | `using { a } = res` là `SyntaxError` | gán 1 identifier rồi đọc property bên dưới |
 | Quên `await` factory | `using x = open()` khi `open` async | `await using x = await open()` |
 | Dispose ném nuốt lỗi gốc | `SuppressedError` | inspect `.error` / `.suppressed` |
-| `using` ngoài block hợp lệ | binding sống dài (cả hàm) | `{ }` tường minh |
-| Bound/proxy dispose function | V8 có thể từ chối “không phải function” | method thật trên object, đừng `.bind` symbol |
+| `using` ngoài block hợp lệ | binding sống dài (cả hàm); cấm ở top-level classic script | `{ }` tường minh / ESM top-level |
+| Bound/proxy dispose function | theo TC39 spec mọi callable đều hợp lệ; lỗi từ chối chỉ là **bug V8 cũ** trước Node 26 | ưu tiên method thật trên object cho rõ ràng |
 | Nhầm `await using` với `await` | syntax declaration | không `await using` như expression |
 | `null` resource | `using x = null` OK (no-op) | hữu ích nhánh tùy chọn |
 
@@ -543,7 +588,7 @@ Xem [statements.md](statements.md) § resource.
 try {
   throw new Error("boom");
 } catch (e) {
-  if (e instanceof Error) console.error(e.message);
+  if (Error.isError(e)) console.error(e.message); // ES2026 / Node 26 — an toàn cả cross-realm
   else throw e;
 } finally {
   cleanup();
@@ -573,8 +618,8 @@ function bad(): number {
 | `return` trong `finally` | nuốt lỗi / đổi giá trị | chỉ cleanup |
 | `throw "string"` | khó `instanceof` | `new Error` |
 | Catch rồi nuốt | debug khó | log + rethrow / xử lý đủ |
-| `instanceof Error` qua realm | fail | `Array.isArray`-style: brand / `error.code` |
-| `throw` xuống dòng | ASI | cùng dòng |
+| `instanceof Error` qua realm | fail giữa `vm` / worker | **`Error.isError(e)`** (ES2026 / Node 26) hoặc brand / `error.code` |
+| `throw` xuống dòng | **`SyntaxError`** (`[no LineTerminator here]`) | cùng dòng |
 
 Xem [exceptions.md](exceptions.md), [statements.md](statements.md).
 
@@ -716,7 +761,7 @@ if (typeof x === "string") {
 | `void` operator vs `void` return | khác nhau | operator: `void 0`; type: không dùng giá trị trả |
 | `in` | prototype | `Object.hasOwn` |
 | `delete` | sparse / non-configurable | `splice` / omit |
-| `instanceof` | realm | `Array.isArray` / brand |
+| `instanceof` | fail qua realm (`vm` / worker) | `Array.isArray` / **`Error.isError`** (ES2026 / Node 26) / brand |
 
 ---
 
@@ -766,10 +811,18 @@ function isStr(x: unknown): x is string {
 function assertStr(x: unknown): asserts x is string {
   if (typeof x !== "string") throw new Error();
 }
+
+// Từ khóa TS hiện đại: variance `in` / `out` (TS 4.7+) & `<const T>` (TS 5.0+)
+type Consumer<in T> = (value: T) => void;
+type Producer<out T> = () => T;
+function asTuple<const T extends readonly unknown[]>(items: T): T {
+  return items;
+}
+const pair = asTuple(["GET", 200]); // readonly ["GET", 200]
 ```
 
 - `type` / `interface` erase; `interface` có thể merge — `type` thì không.
-- `satisfies` / predicates **erase** — không thay validate I/O; predicate sai → TS tin nhầm.
+- `satisfies` / predicates / `in` / `out` / `<const T>` **erase** — không thay validate I/O; predicate sai → TS tin nhầm.
 - `declare` ambient: không emit giá trị — runtime `MAGIC` phải có thật (global / import).
 
 **Bẫy TS keywords:**
@@ -786,23 +839,28 @@ function assertStr(x: unknown): asserts x is string {
 ## 15. Modifier: `public` / `private` / `#` / `override`
 
 ```ts
-class Service {
+class BaseService {
+  toString(): string {
+    return "Service";
+  }
+}
+
+class Service extends BaseService {
   public name: string = "";
   protected url: string = "";
   private token: string = "";
   #runtimePrivate = true;
+  accessor retries = 3; // auto-accessor (TS 4.9+ / Stage 3 decorators)
 
   override toString(): string {
     return this.name;
   }
 }
-
-import type { User } from "./user.js";
-export type { User };
 ```
 
 - Visibility TS (`public`/`private`/`protected`) **erase**; `#field` mới private runtime.
-- `override` + `noImplicitOverride` bắt khớp member base.
+- `override` + `noImplicitOverride` bắt khớp member base (dùng `override` khi class không `extends` sẽ báo `TS4112`).
+- `accessor` tạo private backing storage + getter/setter tự động (hữu ích với Stage 3 decorators; lưu ý Node 26 type strip chỉ hỗ trợ cú pháp JS chuẩn nếu engine đã bật Stage 3 decorators — kiểm tra target emit).
 - `readonly` TS erase (trừ `const`); runtime vẫn ghi được nếu không freeze.
 - Parameter properties = visibility + binding — **không** erasable.
 
@@ -821,9 +879,10 @@ export type { User };
 
 | Nhóm | Ví dụ |
 |------|--------|
-| Reserved luôn | `class`, `const`, `let`, `function`, `return`, `throw`, `typeof`, `with`, … |
-| Contextual | `async`, `await`, `from`, `of`, `as`, `satisfies`, `override`, `get`, `set`, `type` (TS), `implements`, `using` |
-| TS-only (erase) | `interface`, `type`, `implements`, `private`, `readonly`, `declare`, `abstract`, `satisfies`, `keyof`, `infer` |
+| Reserved luôn | `class`, `const`, `function`, `return`, `throw`, `typeof`, `with`, … |
+| Strict-mode / ESM reserved | `let` (strict-mode reserved; hợp lệ ở sloppy JS), `await` (reserved trong ESM / `async`), `yield`, `implements` / `interface` / `package` / `private` / `protected` / `public` / `static` (strict future reserved) |
+| Contextual | `async`, `from`, `of`, `as`, `satisfies`, `override`, `get`, `set`, `accessor`, `type` (TS), `using` |
+| TS-only (erase) | `interface`, `type`, `implements`, `private`, `readonly`, `declare`, `abstract`, `satisfies`, `keyof`, `infer`, `in` / `out` (variance), `<const T>` |
 | Tránh | `with`, `var` (code mới), numeric `enum` + strip |
 
 ```ts
@@ -955,6 +1014,9 @@ Chi tiết attributes: [modules-packages.md](modules-packages.md).
 | `for (using of)` | dispose mỗi vòng | không `for...in`; LIFO từng phần tử |
 
 ```ts
+import type { User } from "./user.js";
+import data from "./cfg.json" with { type: "json" };
+
 const Color = { Red: "red" } as const;
 type Color = (typeof Color)[keyof typeof Color];
 
@@ -962,9 +1024,6 @@ type Color = (typeof Color)[keyof typeof Color];
   using stack = new DisposableStack();
   stack.defer(() => {});
 }
-
-import type { User } from "./user.js";
-import data from "./cfg.json" with { type: "json" };
 ```
 
 ---
@@ -975,13 +1034,13 @@ import data from "./cfg.json" with { type: "json" };
 |-----------|-------------------|
 | ES2015 | `let`/`const`/`class`/`import`/`export`/`yield` |
 | ES2017–18 | `async`/`await`; async generators |
-| ES2020–22 | TLA; `#private` |
-| ES2022 | `Object.hasOwn` (API, không keyword) |
-| ERM (JS + TS) | `using` / `await using` / `for (using of)` / `Disposable` / `DisposableStack` / `SuppressedError` |
-| TS 4.3+ / 4.9+ / 5.8+ | `override`; `satisfies`; `erasableSyntaxOnly` |
-| Node 26 | strip ổn định (chỉ erasable); ERM native (`using`, `DisposableStack`); **kiểm tra** API có Disposable chưa; Temporal không thuộc keyword |
+| ES2022 | Top-Level Await (TLA); `#private`; `static {}` block; `Object.hasOwn` (API) |
+| ES2025 | Import Attributes (`import … with { type: "json" }`) |
+| ES2026 | Explicit Resource Management (`using` / `await using` / `for (using of)` / `DisposableStack` / `SuppressedError`); `Error.isError` (API) |
+| TS 4.3–5.8 / TS 7.0 | `override` (4.3); `in`/`out` variance (4.7); `satisfies` & `accessor` (4.9); `<const T>` & `export type *` (5.0); `erasableSyntaxOnly` (5.8); TS 7.0 native Go compiler |
+| Node 26 Active LTS | V8 14.6+; type strip ổn định (chỉ erasable, không transform syntax như `enum`/parameter properties); ERM & `Error.isError` native; `FileHandle` (`fs.open`) đã native `[Symbol.asyncDispose]`; `import.meta.{main,dirname,filename,resolve}` |
 
-Baseline: **Node 26** + **TS 7**.
+Baseline: **Node 26 Active LTS** + **TS 7.0**.
 
 ---
 

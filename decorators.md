@@ -75,13 +75,13 @@ TypeScript emit decorator Stage 3 bằng helpers như `__esDecorate` / `__runIni
 ```json
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ES2025",
     "experimentalDecorators": false
   }
 }
 ```
 
-Từ TS 5.0+, decorator chuẩn được hỗ trợ khi **không** bật `experimentalDecorators`. Cần `target` đủ mới (thường ≥ ES2022) hoặc runtime/polyfill phù hợp. TS 7 giữ parity ngữ nghĩa với 6.x về decorator; headline là tốc độ compiler.
+Từ TS 5.0+, decorator chuẩn được hỗ trợ khi **không** bật `experimentalDecorators`. `"target": "ES2022"` là **mức tối thiểu** để emit Stage 3 decorator sạch (class fields/static blocks chuẩn); trên Node 26 nên dùng `"ES2025"` hoặc `"ESNext"`. TS 7 giữ parity ngữ nghĩa với 6.x về decorator; headline là tốc độ compiler.
 
 **Không** cần `emitDecoratorMetadata` cho Stage 3. Flag đó chỉ nuôi `design:type` / `design:paramtypes` **legacy**.
 
@@ -129,16 +129,47 @@ function sealed<C extends Class>(
   value: C,
   context: ClassDecoratorContext<C>,
 ) {
-  Object.seal(value);
-  Object.seal(value.prototype);
+  context.addInitializer(function (this: C) {
+    Object.seal(this);
+    Object.seal(this.prototype);
+  });
   return value;
 }
 
 @sealed
 class User {
-  constructor(public name: string) {}
+  static role = "member";
+  name: string;
+  constructor(name: string) {
+    this.name = name;
+  }
 }
 ```
+
+> **Pitfall:** Không gọi `Object.seal(value)` trực tiếp trong thân class decorator! Lúc class decorator đang apply, `static` fields vẫn **chưa** được định nghĩa — gọi `Object.seal(value)` sớm sẽ ném `TypeError: Cannot define property ..., object is not extensible` trên mọi class có `static` field. Đưa vào `context.addInitializer` đảm bảo seal chạy **sau** khi static fields khởi tạo xong.
+
+Thay thế class bằng subclass (`return class extends value`):
+
+```ts
+function withTimestamp<C extends new (...args: any[]) => object>(
+  value: C,
+  _context: ClassDecoratorContext<C>,
+) {
+  return class extends value {
+    createdAt = Date.now();
+  };
+}
+
+@withTimestamp
+class Order {
+  id: string;
+  constructor(id: string) {
+    this.id = id;
+  }
+}
+```
+
+**Vị trí decorator với `export`:** đặt trước **hoặc** sau `export` / `export default` đều hợp lệ (`@sealed export class A {}` hoặc `export @sealed class A {}`, tương tự `@sealed export default class {}` hoặc `export default @sealed class {}`), nhưng **không** đặt ở cả hai bên cùng lúc (`SyntaxError`).
 
 Factory (decorator có tham số):
 
@@ -182,7 +213,7 @@ class Cart {
 }
 ```
 
-`context.static` / `context.private` phân nhánh. Private method: `name` là `#foo` (string/symbol tùy khai).
+`context.static` / `context.private` phân nhánh. Private member (`#foo`): `context.name` **luôn là `string`** (ví dụ `"#foo"`), không bao giờ là `symbol`; chỉ public computed property mới có thể là `symbol`.
 
 **Không** mutate `value` in-place rồi return khác — return wrapper mới. Giữ `this` bằng `apply`/`call`.
 
@@ -228,7 +259,7 @@ class Product {
 // name === "WIDGET"
 ```
 
-Init wrapper chạy **khi instance (hoặc static field) khởi tạo**, sau các initializer gắn `addInitializer` theo thứ tự spec — §4–§5.
+Khi khởi tạo instance (hoặc static field): `addInitializer` của method/getter/setter chạy *trước* instance fields, còn `addInitializer` của chính **field / accessor** lại chạy **SAU** khi init wrapper của field đó đã gán giá trị xong (xem bảng lifecycle §4.1).
 
 Nhiều field decorator: evaluate LTR, apply RTL (onion) lên chuỗi init.
 
@@ -306,27 +337,65 @@ Return object có thể gồm `get`, `set`, `init` — thiếu key = giữ mặc
 
 ### 3.6 `context.access`
 
-Stage 3 cung cấp `context.access` (`get` / `set` / `has` tùy kind) để decorator đọc/ghi **không** hard-code tên private — hữu ích wrap field/accessor.
+Stage 3 cung cấp `context.access` (`has` / `get` / `set` tùy kind) để decorator hoặc registry bên ngoài đọc/ghi cả **`#private` field** hoặc `accessor` mà không phá đóng gói:
+
+```ts
+type StringFieldAccess<T> = {
+  has(obj: T): boolean;
+  get(obj: T): string;
+  set(obj: T, value: string): void;
+};
+
+const trimmed = new WeakMap<object, Map<string | symbol, StringFieldAccess<any>>>();
+
+function trimField<This extends object>(
+  _value: undefined,
+  context: ClassFieldDecoratorContext<This, string>,
+) {
+  context.addInitializer(function (this: This) {
+    let map = trimmed.get(this);
+    if (!map) {
+      map = new Map();
+      trimmed.set(this, map);
+    }
+    map.set(context.name, context.access);
+    if (context.access.has(this)) {
+      context.access.set(this, context.access.get(this).trim());
+    }
+  });
+}
+
+class Profile {
+  @trimField
+  #handle = "  alice  ";
+
+  get handle() {
+    return this.#handle;
+  }
+}
+// new Profile().handle === "alice" — kể cả đọc/ghi từ bên ngoài qua map.get("#handle")
+```
+
+Với method decorator bind `this` lên instance, nhớ chặn `context.private` vì không thể gán đè private method trên `this[name]`:
 
 ```ts
 function bound<This, A extends unknown[], R>(
   value: (this: This, ...a: A) => R,
-  context: ClassMethodDecoratorContext<This>,
+  context: ClassMethodDecoratorContext<This, (this: This, ...a: A) => R>,
 ) {
+  if (context.private) {
+    throw new TypeError("@bound cannot decorate private methods");
+  }
   const { name, addInitializer } = context;
   addInitializer(function (this: This) {
-    const fn = (this as Record<PropertyKey, unknown>)[name as PropertyKey];
-    if (typeof fn === "function") {
-      (this as Record<PropertyKey, unknown>)[name as PropertyKey] = fn.bind(this);
-    }
+    (this as Record<PropertyKey, unknown>)[name] = value.bind(this);
   });
-  return value;
 }
 ```
 
 (Pattern bind-on-construct; cân nhắc arrow field / bind trong ctor — [functions-methods.md](functions-methods.md).)
 
-Luôn kiểm `context.kind` trước khi giả định `access.set` tồn tại.
+Luôn kiểm `context.kind` trước khi giả định `access.set` tồn tại (`method` và `getter` chỉ có `has`/`get`; `setter` chỉ có `has`/`set`; `field` và `accessor` có đủ `has`/`get`/`set`).
 
 ### 3.7 Static vs instance, private
 
@@ -342,17 +411,32 @@ Không decorate `constructor` như method — class decorator bao constructor.
 
 ```ts
 function retry(n: number) {
-  return function (value: Function, _ctx: ClassMethodDecoratorContext) {
-    return function (this: object, ...args: unknown[]) {
-      void n;
-      return value.apply(this, args);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new RangeError("retry count must be an integer >= 1");
+  }
+  return function <This, A extends unknown[], R>(
+    value: (this: This, ...args: A) => Promise<R>,
+    _ctx: ClassMethodDecoratorContext<This, (this: This, ...args: A) => Promise<R>>,
+  ) {
+    return async function (this: This, ...args: A): Promise<R> {
+      let last: unknown;
+      for (let i = 0; i < n; i++) {
+        try {
+          return await value.apply(this, args);
+        } catch (err) {
+          last = err;
+        }
+      }
+      throw last;
     };
   };
 }
 
 class Jobs {
   @retry(3)
-  run() {}
+  async run() {
+    return "ok";
+  }
 }
 ```
 
@@ -381,11 +465,17 @@ Hai pha **khác nhau**:
 2. **Apply** hàm decorator (nhận value+context, trả wrapper): **phải → trái** (gần thành viên trước — b rồi a) — onion / middleware.
 
 ```ts
-function a(value: Function, _ctx: ClassMethodDecoratorContext) {
+function a<This, Args extends unknown[], Ret>(
+  value: (this: This, ...args: Args) => Ret,
+  _ctx: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Ret>,
+) {
   console.log("apply a");
   return value;
 }
-function b(value: Function, _ctx: ClassMethodDecoratorContext) {
+function b<This, Args extends unknown[], Ret>(
+  value: (this: This, ...args: Args) => Ret,
+  _ctx: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Ret>,
+) {
   console.log("apply b");
   return value;
 }
@@ -403,9 +493,12 @@ Factory:
 ```ts
 function log(label: string) {
   console.log("eval", label);
-  return function (value: Function, _ctx: ClassMethodDecoratorContext) {
+  return function <This, Args extends unknown[], Ret>(
+    _value: (this: This, ...args: Args) => Ret,
+    _ctx: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Ret>,
+  ) {
     console.log("apply", label);
-    return value;
+    // trả void (không return Function thô để tránh lỗi TS1270)
   };
 }
 
@@ -418,9 +511,22 @@ class T {
 
 ### 4.1 Thứ tự trên class
 
-Tách ba thời điểm: evaluate expression, apply decorator, chạy initializer. Expression decorator class được evaluate trước expression của member; member còn xen kẽ computed property names theo source. Member decorators được apply trước class decorators. Trong một stack, apply từ dưới lên.
+Bảng lifecycle Stage 3 đầy đủ (tách pha **định nghĩa class** và pha **khởi tạo `new`**):
 
-Initializer instance chạy khi `new`; initializer static/class chạy khi định nghĩa class. Vị trí cụ thể phụ thuộc kind (method, field, accessor), nên kiểm bằng một trace nhỏ khi logic cần thứ tự chính xác. Không gộp thành quy tắc ‘instance trước static’ cho mọi bước.
+| Pha | Bước | Điều gì chạy |
+|-----|------|--------------|
+| **Định nghĩa class** | 1 | Evaluate decorator expressions (class decorators trước, rồi member decorators xen kẽ computed property names theo thứ tự source) |
+| | 2 | Apply member decorators (mỗi stack từ dưới lên / phải → trái) |
+| | 3 | Apply class decorators (từ dưới lên; có thể trả subclass thay thế) |
+| | 4 | Chạy `addInitializer` của **static method / getter / setter** (`this` = constructor) |
+| | 5 | Khởi tạo từng **static field / accessor** theo thứ tự khai báo: init wrapper → gán giá trị → chạy `addInitializer` của chính field / accessor đó |
+| | 6 | Chạy `addInitializer` của **class decorator** (`this` = constructor cuối cùng) |
+| **Khởi tạo `new`** | 7 | (Nếu `extends`) chạy `super()` |
+| | 8 | Chạy `addInitializer` của **instance method / getter / setter** (`this` = instance) |
+| | 9 | Khởi tạo từng **instance field / accessor** theo thứ tự khai báo: init wrapper → gán giá trị → chạy `addInitializer` của chính field / accessor đó |
+| | 10 | Chạy thân `constructor` |
+
+Lưu ý bước 8 vs 9: `addInitializer` của method/getter/setter chạy **trước** instance fields, còn `addInitializer` của **field/accessor** chạy **sau** khi init wrapper của chính field đó đã gán xong. Không gộp thành quy tắc “instance trước static” cho mọi bước.
 
 ---
 
@@ -447,23 +553,26 @@ Nhiều decorator trên class/members khác nhau tuân quy tắc initializer ins
 - Member **static** / class decorator: lúc class definition hoàn tất; `this` = constructor.
 
 ```ts
-const routes = new WeakMap<object, string>();
+const liveInstances = new WeakSet<object>();
 
-function route(path: string) {
-  return function <C extends abstract new (...args: any[]) => any>(
-    value: C,
-    context: ClassDecoratorContext<C>,
-  ) {
-    context.addInitializer(function (this: C) {
-      routes.set(this, path);
-    });
-    return value;
-  };
+function trackInstance<This extends object, A extends unknown[], R>(
+  _value: (this: This, ...args: A) => R,
+  context: ClassMethodDecoratorContext<This, (this: This, ...args: A) => R>,
+) {
+  context.addInitializer(function (this: This) {
+    liveInstances.add(this); // chạy mỗi lần `new` với `this` = instance
+  });
 }
 
-@route("/users")
-class UsersController {}
+class WorkerClient {
+  @trackInstance
+  ping() {
+    return "pong";
+  }
+}
 ```
+
+(Ví dụ static registry bằng class decorator + `WeakMap`: xem §6.4.)
 
 Init wrapper field (return function) **khác** `addInitializer`: wrapper **biến đổi giá trị lưu**; initializer **side-effect** không nhất thiết đổi value.
 
@@ -501,18 +610,33 @@ Gọi `addInitializer` **ngoài** decorator apply (sau khi class đã xong) → 
 TC39: object metadata **dùng chung trên class**, gắn `context.metadata` (và `Symbol.metadata` trên constructor khi runtime hỗ trợ).
 
 ```ts
-function meta(key: string, val: unknown) {
+function addRole(role: string) {
   return function (_: unknown, context: DecoratorContext) {
-    const m = context.metadata;
-    if (m) (m as Record<string, unknown>)[key] = val;
+    // Type trap: TS gõ context.metadata là non-nullable DecoratorMetadataObject,
+    // nhưng runtime không có Symbol.metadata (chưa polyfill) sẽ là undefined!
+    const meta = context.metadata as Record<string, unknown> | undefined;
+    if (!meta) return;
+
+    // Copy-on-write: subclass kế thừa Object.create(Base[Symbol.metadata]).
+    // Mutate mảng kế thừa trực tiếp sẽ làm bẩn metadata của Base!
+    const own = Object.hasOwn(meta, "roles")
+      ? (meta.roles as string[])
+      : [...((meta.roles as string[] | undefined) ?? [])];
+    own.push(role);
+    meta.roles = own;
   };
 }
 
-@meta("role", "admin")
-class Admin {}
+@addRole("user")
+class BaseAccount {}
+
+@addRole("admin")
+class AdminAccount extends BaseAccount {}
 ```
 
-Đọc sau: `Admin[Symbol.metadata]` nếu environment expose — **theo dõi** TS/Node minor (proposal metadata tách decorator). Nhiều runtime/DI **vẫn** chưa dựa vào đây.
+Đọc sau: `AdminAccount[Symbol.metadata]` nếu environment expose — **theo dõi** TS/Node minor (proposal metadata tách decorator). Nhiều runtime/DI **vẫn** chưa dựa vào đây.
+
+> **Type trap & kế thừa prototype:** TypeScript khai báo `context.metadata` là non-nullable (`DecoratorMetadataObject`), nhưng ở runtime khi chưa có `Symbol.metadata` (chưa polyfill) helper `__esDecorate` sẽ truyền `undefined`. Ngoài ra, metadata của subclass được tạo qua `Object.create(Base[Symbol.metadata])` — luôn kiểm `Object.hasOwn` và copy-on-write trước khi ghi mảng/object lồng để không làm bẩn base class.
 
 Hỗ trợ runtime/TS cần kiểm tra phiên bản; nhiều DI phổ biến **vẫn** legacy.
 
@@ -542,7 +666,10 @@ function Injectable(): ClassDecorator {
 
 @Injectable()
 class UserService {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 }
 ```
 
@@ -653,7 +780,7 @@ Repo chạy strip cần lint/kiểm tra cú pháp riêng để loại decorator,
 
 ### 8.3 `context.metadata` vs `Symbol.metadata`
 
-TypeScript tạo metadata khi runtime có `Symbol.metadata`; polyfill phải load trước khi class được evaluate. Metadata của subclass có thể kế thừa từ base: phân biệt own/inherited key khi đọc. Registry `WeakMap` với token tường minh giúp tránh phụ thuộc proposal metadata.
+TypeScript gõ `context.metadata` là non-nullable (`DecoratorMetadataObject`), nhưng helper chỉ tạo object metadata khi runtime đã có `Symbol.metadata` — nếu chưa polyfill (và polyfill phải load *trước* khi class evaluate), giá trị thực tế là `undefined`. Metadata của subclass kế thừa từ base qua prototype (`Object.create(Base[Symbol.metadata])`): luôn phân biệt own/inherited bằng `Object.hasOwn` và copy-on-write khi cập nhật mảng/object để không làm bẩn base class. Registry `WeakMap` với token tường minh giúp tránh phụ thuộc proposal metadata.
 
 ### 8.4 Metadata không phải runtime validation
 
@@ -685,8 +812,11 @@ export const add = withLog((a: number, b: number) => a + b);
 Decorator **không** “mạnh hơn” HOF — chúng là HOF + thời điểm apply (class def). Nếu không có class, decorator là gánh.
 
 ```ts
-const withRetry = (n: number) =>
-  <A extends unknown[], R>(fn: (...a: A) => Promise<R>) =>
+const withRetry = (n: number) => {
+  if (!Number.isInteger(n) || n < 1) {
+    throw new RangeError("retry count must be an integer >= 1");
+  }
+  return <A extends unknown[], R>(fn: (...a: A) => Promise<R>) =>
     async (...a: A): Promise<R> => {
       let last: unknown;
       for (let i = 0; i < n; i++) {
@@ -698,6 +828,7 @@ const withRetry = (n: number) =>
       }
       throw last;
     };
+};
 
 export const load = withRetry(3)(async (id: string) => fetch(id));
 ```
@@ -714,7 +845,10 @@ const compose =
   (x: T) =>
     fns.reduceRight((v, f) => f(v), x);
 
-const load = compose(
+const baseLoad = async (id: string) => fetch(id);
+
+// Truyền <typeof baseLoad> để TS 7 strict không suy luận T thành unknown khi gặp generic HOF
+const loadWithLog = compose<typeof baseLoad>(
   withLog,
   withRetry(3),
 )(baseLoad);
@@ -814,8 +948,8 @@ function uppercase(_v: undefined, _c: ClassFieldDecoratorContext) {
 const withLog = <A extends unknown[], R>(fn: (...a: A) => R) =>
   (...a: A) => (console.log(fn.name, a), fn(...a));
 
-// tsconfig Stage 3 (emit)
-// { "experimentalDecorators": false, "target": "ES2022" }
+// tsconfig Stage 3 (emit): ES2022 là mức tối thiểu; Node 26 dùng ES2025 / ESNext
+// { "experimentalDecorators": false, "target": "ES2025" }
 
 // tsconfig legacy Nest-like
 // { "experimentalDecorators": true, "emitDecoratorMetadata": true }

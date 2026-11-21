@@ -46,7 +46,7 @@
   - [13.2 Thứ tự reference & `prepend` (đừng)](#132-thứ-tự-reference--prepend-đừng)
 - [14. `tsconfig.build.json` split](#14-tsconfigbuildjson-split)
   - [14.1 `tsconfig.eslint.json`](#141-tsconfigeslintjson)
-  - [14.2 `rootDir` computed vs khai](#142-rootdir-computed-vs-khai)
+  - [14.2 `rootDir` mặc định `.` vs khai tường minh](#142-rootdir-mặc-định--vs-khai-tường-minh)
   - [14.3 `noEmit` trên CLI vs file](#143-noemit-trên-cli-vs-file)
 - [15. Best practices](#15-best-practices)
 - [16. Checklist](#16-checklist)
@@ -73,8 +73,8 @@ Nhiều file: `tsconfig.json` (base/editor), `tsconfig.build.json` (emit), `tsco
 ```json
 {
   "compilerOptions": {
-    "target": "ES2024",
-    "lib": ["ES2024"],
+    "target": "ES2025",
+    "lib": ["ES2025"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "rootDir": "src",
@@ -82,11 +82,9 @@ Nhiều file: `tsconfig.json` (base/editor), `tsconfig.build.json` (emit), `tsco
     "strict": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "noImplicitOverride": true,
-    "types": ["node"],
-    "rewriteRelativeImportExtensions": true
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"],
   "exclude": ["dist", "node_modules"]
@@ -95,10 +93,11 @@ Nhiều file: `tsconfig.json` (base/editor), `tsconfig.build.json` (emit), `tsco
 
 Điều chỉnh theo workflow:
 
-- **Chỉ typecheck + Node strip / tsx:** `"noEmit": true` (+ có thể `erasableSyntaxOnly`).
-- **Library publish:** `declaration: true`, `declarationMap`, có thể `composite`.
-
-`rewriteRelativeImportExtensions`: cho phép viết `from "./foo.ts"` và emit thành `.js` — hữu ích một số setup; với Node thuần cổ điển vẫn hay viết `./foo.js` trong nguồn `.ts`.
+- **Chỉ typecheck + Node strip / tsx:** `"noEmit": true`, `"erasableSyntaxOnly": true`.
+- **Pipeline strip + emit cùng nguồn `.ts`:** thêm `"rewriteRelativeImportExtensions": true` để viết `from "./foo.ts"` chạy trực tiếp trên Node strip và `tsc` tự đổi thành `./foo.js` khi emit (với pipeline `tsc` emit thuần, convention cổ điển là viết `./foo.js` trong nguồn `.ts`).
+- **Dùng `Temporal` (global trên Node 26):** đổi `"lib": ["ES2025", "ESNext.Temporal"]` (đã có sẵn trong TS 6/7).
+- **Library publish:** `declaration: true`, `declarationMap`, có thể `composite` và `isolatedDeclarations`.
+- Trên TS 7, `esModuleInterop` luôn mặc định `true` (không cần khai thêm; đặt `false` là lỗi).
 
 Base cộng đồng: `"extends": "@tsconfig/node26/tsconfig.json"` rồi override.
 
@@ -113,10 +112,13 @@ TS 7 (và 6.0 language defaults) **cứng** hơn 5.x:
 | Option / hành vi | TS 7 |
 |---|---|
 | `strict` | Mặc định **`true`** |
+| `target` mặc định | **`ES2025`** (khi không khai báo) |
 | `moduleResolution: "node"` / `node10` / `classic` | **Error** (removed) |
-| `target: es5` (và vài target cổ) | **Error** |
+| `target: es5` (và target cổ) | **Error** (removed) |
 | `esModuleInterop: false` / `alwaysStrict: false` | **Error** (chỉ còn `true`) |
+| `baseUrl` | **Error** (removed — dùng đường dẫn tương đối trong `paths`) |
 | `module` `amd` / `umd` / `system` / `none` | Loại khỏi đường Node hiện đại |
+| Các tùy chọn bị **gỡ bỏ hoàn toàn** trong TS 7.0 | `outFile`, `downlevelIteration`, `prepend`, `importsNotUsedAsValues`, `preserveValueImports`, `charset`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noImplicitUseStrict` |
 | Ngữ nghĩa ngôn ngữ | Gần parity **6.0** |
 | Compiler | Native Go; tốc độ phụ thuộc project/hardware, đo bằng workload thật |
 | Programmatic API | **7.0 chưa ship API**; API mới được dự kiến cho 7.1, cần kiểm tool/version thực tế |
@@ -129,7 +131,8 @@ Migrate:
     "strict": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "target": "ES2024"
+    "target": "ES2025",
+    "types": ["node"]
   }
 }
 ```
@@ -142,9 +145,25 @@ TS 7 loại `baseUrl`: bỏ option và chuyển giá trị `paths` thành đư�
 
 ### 3.1 Mặc định cần ghim khi migration
 
-TS 7 mặc định `module: esnext`, `strict: true`, `noUncheckedSideEffectImports: true`, `rootDir: "./"` và `types: []`. Khai `types: ["node"]` cho Node globals; test globals cần liệt kê riêng hoặc import. `rootDir` quyết định cấu trúc emit, không giới hạn tập file như `include`. Ghim target/lib theo runtime được support thay vì để nâng compiler âm thầm đổi output. [TS 6 migration](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html), [TS 7 release](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/).
+TS 6/7 mặc định `target: "ES2025"`, `module: "esnext"`, `strict: true`, `noUncheckedSideEffectImports: true`, `libReplacement: false`, `rootDir: "."` (thư mục chứa `tsconfig.json`) và `types: []`.
+
+- Khai tường minh `"types": ["node"]` cho Node globals (bỏ `types` sẽ **không** tự load bất kỳ `@types/*` nào); test globals cần liệt kê riêng hoặc import.
+- `libReplacement: false` (mặc định TS 6/7) tắt cơ chế tự thay `lib` bằng package `@typescript/lib-*` trong `node_modules` — giúp tăng tốc và giảm bất ngờ khi resolve lib.
+- `rootDir` quyết định cấu trúc emit, không giới hạn tập file như `include`.
+- Nếu đi qua bước đệm **TS 6.0** trước khi lên TS 7.0, có thể tạm dùng `"ignoreDeprecations": "6.0"` để giảm ồn trong lúc dọn dần các option sắp bị gỡ (lưu ý TS 7.0 chuyển thẳng thành hard error, không còn bỏ qua được).
+- Ghim `target`/`lib` theo runtime được support thay vì để nâng compiler âm thầm đổi output. [TS 6 migration](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html), [TS 7 release](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/).
 
 ### 3.2 CLI native và tool cần compiler API
+
+**Cờ song song CLI của TS 7.0 (Go compiler):**
+
+| Cờ CLI | Ý nghĩa |
+|---|---|
+| `--checkers <n>` | Số type-checker song song mỗi project (mặc định **`4`**) |
+| `--builders <n>` | Số project chạy đồng thời trong `tsc -b` |
+| `--singleThreaded` | Tắt đa luồng (hữu ích trên container RAM thấp hoặc debug) |
+
+> Lưu ý tiêu thụ bộ nhớ: RAM tăng gần theo **`--builders × --checkers`**; trên CI có memory cap, giới hạn số luồng thay vì tăng đồng thời cả hai.
 
 Tool import `typescript` (linter/codegen/framework compiler) cần API tương thích, không chỉ binary `tsc`. Ví dụ bridge theo hướng dẫn TS 7:
 
@@ -165,8 +184,9 @@ Alias native cung cấp `tsc`, compatibility package cung cấp API TS 6 và `ts
 
 | Giá trị | Khi dùng |
 |---|---|
-| `NodeNext` | **Khuyến nghị** app/lib Node hiện đại |
-| `Node16` | Neo luật Node 16; thường chọn `NodeNext` |
+| `NodeNext` | **Khuyến nghị** app/lib Node hiện đại (theo dõi hành vi Node mới nhất) |
+| `Node20` / `Node18` | Neo chính xác luật module của Node 20 (gồm `require(esm)` ở Node 20+) hoặc Node 18 — ổn định hơn `NodeNext` nếu muốn không bị đổi behavior khi nâng TS |
+| `Node16` | Neo luật Node 16; ưu tiên `Node20` hoặc `NodeNext` |
 | `ESNext` + `bundler` | Emit cho bundler |
 | `CommonJS` | Legacy CJS only |
 | `"node"` / `node10` / `classic` | **Lỗi trên TS 7** |
@@ -216,14 +236,16 @@ Package:
 }
 ```
 
-**Thiếu** `"types"` → `NodeNext` có thể không tìm `.d.ts` cạnh `main`. Sửa:
+**Thiếu** `"types"` → `NodeNext` có thể không tìm `.d.ts` cạnh `main`. Với dual-package, lồng `"types"` vào bên trong **cả hai** nhánh `"import"` và `"require"` (đừng đặt `"types"` ở top-level trước `"require"`, vì nhánh `"types"` ngoài sẽ khớp trước và khiến `"require.types"` trở thành unreachable!):
 
 ```json
 {
   "exports": {
     ".": {
-      "types": "./esm/index.d.ts",
-      "import": "./esm/index.js",
+      "import": {
+        "types": "./esm/index.d.ts",
+        "default": "./esm/index.js"
+      },
       "require": {
         "types": "./cjs/index.d.cts",
         "default": "./cjs/index.js"
@@ -233,15 +255,9 @@ Package:
 }
 ```
 
-`customConditions` không thay `"types"` đầu. `traceResolution` log “Matched 'types' condition”.
+`customConditions` không thay `"types"` đứng đầu trong mỗi nhánh. `traceResolution` log “Matched 'types' condition”.
 
 File `.d.cts` cho CJS types (`export =` **cấm** nếu erasable trên **nguồn**; `.d.cts` emit từ `.cts`). Dual: `index.d.ts` ESM, `index.d.cts` CJS. `typesVersions` **không** cứu khi có `exports`.
-
-`disableSourceOfProjectReferenceRedirect` ảnh hưởng eslint-type-aware monorepo — thống nhất với editor.
-
-`parserOptions.projectService` (typescript-eslint): tự tìm tsconfig — vẫn cần `include` đủ. `EXPERIMENTAL_useProjectService` tên cũ — theo docs plugin **đúng bản**.
-
-> **Callout:** Một `tsconfig` vừa `noEmit` vừa quên `build` `-p` khác → ship nhầm / không có `dist`. Hai file, hai script, CI chạy cả hai.
 
 ---
 
@@ -255,9 +271,9 @@ Ba nút **khác nhau**:
 | `lib` | **Typings** built-in (`Promise`, `Temporal` nếu có trong lib, `Array`) | Không đổi emit |
 | `skipLibCheck` | **Bỏ** typecheck `.d.ts` trong `node_modules` | Không bỏ check **code bạn** |
 
-- Node 26 hiểu ES2024+ khá đầy đủ → `target` **`ES2024`** hoặc **`ESNext`**. TS 7: **`es5` error**.
-- `lib` thường **khớp** `target` (`["ES2024"]`). `lib` thấp hơn `target` → thiếu type iterator mới; `lib` có DOM trên server → `document` “tồn tại” giả — **đừng** trừ khi share browser.
-- Temporal: theo dõi `lib` / `@types/node` — có thể cần ambient nếu global chưa có trong types. Node 26 runtime có Temporal; types có thể trễ.
+- Node 26 hiểu ES2025+ đầy đủ → `target` **`ES2025`** (mặc định của TS 6/7) hoặc **`ESNext`**. TS 7: **`es5` error**.
+- `lib` thường **khớp** `target` (`["ES2025"]`). `lib` thấp hơn `target` → thiếu type iterator/Set methods mới; `lib` có DOM trên server → `document` “tồn tại” giả — **đừng** trừ khi share browser.
+- **Temporal:** Types đã có sẵn trong **TS 6/7** qua `"lib": ["ES2025", "ESNext.Temporal"]` — khớp trực tiếp với global `Temporal` mặc định của Node 26.
 - `jsx` chỉ khi React/JSX (`react-jsx`). API Node thuần: không `jsx`.
 
 `skipLibCheck: true` (khuyến nghị app): `.d.ts` dependency xung đột `@types` không chặn bạn. **Không** che lỗi trong `src`. Lib **publish** `.d.ts` của mình vẫn bị check khi `declaration` — đó là code bạn.
@@ -269,19 +285,17 @@ Ba nút **khác nhau**:
 ```json
 {
   "compilerOptions": {
-    "target": "ES2024",
-    "lib": ["ES2024"]
+    "target": "ES2025",
+    "lib": ["ES2025", "ESNext.Temporal"]
   }
 }
 ```
 
-Thêm `"DOM"` chỉ khi file chạy browser/edge. `lib: ["ESNext"]` + `target: ES2024` → type API **mới hơn** emit — có thể gọi hàm runtime Node 26 chưa có nếu lib quá đà. Khớp **lib ≤ runtime**.
+Thêm `"DOM"` chỉ khi file chạy browser/edge. `lib: ["ESNext"]` + `target: ES2025` → type API **mới hơn** emit — có thể gọi hàm runtime Node 26 chưa có nếu lib quá đà. Khớp **lib ≤ runtime**.
 
-`@types/node` **bổ sung** `Buffer`, `process`, modules `node:*` — không thay `lib` cho `Promise`/`Array`.
+`@types/node` **bổ sung** `Buffer`, `process`, modules `node:*` — không thay `lib` cho `Promise`/`Array`/`Temporal`.
 
-Thiếu `Temporal` trong types: ambient `declare const Temporal: typeof import("temporal-polyfill")` **hoặc** chờ `@types/node` — đừng `any`.
-
-`downlevelIteration` / `importHelpers` (`tslib`): TS 7 + `target` cao **ít** cần. `es5` đã cấm.
+`downlevelIteration` đã bị **gỡ bỏ hoàn toàn** trên TS 7.0 (cùng với `target: ES5`). `importHelpers` (`tslib`) cũng hiếm khi cần khi `target` cao (`ES2025`).
 
 ### 5.2 `skipLibCheck` vs `maxNodeModuleJsDepth`
 
@@ -322,7 +336,9 @@ Trên codebase migrate, đôi khi tạm tắt `strictPropertyInitialization` ho�
 
 ### 6.2 IsolatedDeclarations / declaration emit (tóm tắt)
 
-Khi publish `.d.ts` và muốn emit nhanh/an toàn hơn, theo dõi option kiểu `isolatedDeclarations` (TS 5.5+) — yêu cầu type annotation đủ trên export để generate declarations không cần inference toàn chương trình. Hữu ích monorepo lớn; có thể ồn trên codebase cũ — bật có chủ đích.
+Khi publish `.d.ts` hoặc chạy monorepo lớn, **`isolatedDeclarations: true`** (TS 5.5+) yêu cầu mọi export có type annotation đủ rõ để sinh `.d.ts` độc lập từng file mà không cần suy diễn kiểu toàn chương trình.
+
+Trên **TS 7 (Go compiler)**, `isolatedDeclarations` mở khóa khả năng **song song hóa emit `.d.ts`** theo từng file và cho phép các project phụ thuộc trong `tsc -b` bắt đầu typecheck sớm hơn mà không phải chờ hoàn tất typecheck của package cha (cũng tương thích tốt với các công cụ emit declaration độc lập như oxc/rolldown). Có thể ồn trên codebase cũ — bật có chủ đích theo từng package.
 
 Không bắt buộc cho app nội bộ chỉ `noEmit` + strip.
 
@@ -331,10 +347,11 @@ Không bắt buộc cho app nội bộ chỉ `noEmit` + strip.
 | Thông báo (ý) | Sửa |
 |---|---|
 | `moduleResolution=node10` removed | `"moduleResolution": "NodeNext"` (Node) hoặc `"bundler"` |
-| `target=ES5` removed | `"target": "ES2024"` / `ES2015+` |
+| `target=ES5` removed | `"target": "ES2025"` / `ES2015+` |
 | `esModuleInterop=false` removed | Bỏ flag (luôn true) |
 | `strict` bật, `null` lan | Sửa code; tạm `strictNullChecks` trong migrate từng package |
-| `baseUrl` / `paths` rewrite | `"./src/*"`; runtime vẫn `#imports` |
+| `baseUrl` removed | Xóa `baseUrl`; chuyển `paths` sang đường dẫn tương đối `"./src/*"` (runtime vẫn `#imports`) |
+| `types: []` mặc định làm thiếu `process`/`Buffer` | Thêm `"types": ["node"]` tường minh |
 | Plugin ESLint không nhận TS 7 | `@typescript/typescript6` bridge / chờ plugin |
 
 `npx tsc -v` **phải** trùng `node_modules/typescript`. Editor “Use Workspace Version”. CI `pnpm exec tsc -v`.
@@ -342,7 +359,7 @@ Không bắt buộc cho app nội bộ chỉ `noEmit` + strip.
 ### 6.4 `files`, `include`, `exclude`, `extends`
 
 - `include` mặc định `**/*` nếu thiếu — kéo nhầm `scripts/`, `dist/`.
-- `exclude` mặc định `node_modules`, `bower_components`, `jspm_packages`, `outDir`. **Không** exclude `dist` nếu `outDir` đã là `dist` (vẫn nên ghi rõ).
+- `exclude` mặc định `node_modules`, `bower_components`, `jspm_packages`, `outDir`. Không cần `exclude` `dist` nếu `outDir` đã là `dist` (vẫn có thể ghi rõ để dễ đọc).
 - File **nằm trong** `references` khác không compile hai lần nếu solution `files: []`.
 - `extends` array (TS 5+) — merge option; `include` của file **hiện tại** thắng, không concat thần kỳ.
 - `compilerOptions.types` trên base + con: con **thay** mảng, không merge.
@@ -371,7 +388,7 @@ Cho `from "./a.ts"` khi `noEmit` / bundler. Node strip **có thể** load `.ts` 
 
 `allowArbitraryExtensions` (import `.css` types) — bundler, không Node thuần.
 
-`noUncheckedSideEffectImports` (dòng mới): `import "./polyfill.js"` phải resolve. Bật khi có.
+`noUncheckedSideEffectImports`: mặc định **`true`** trên TS 6/7 — mọi `import "./polyfill.js"` phải resolve được file thật (đồng bộ §3.1).
 
 ### 6.7 `moduleDetection` & `forceConsistentCasingInFileNames`
 
@@ -604,9 +621,9 @@ pnpm add -D typescript@^7 @types/node@^26
 
 Major `@types/node` khớp major Node (**26** → `@types/node@^26`). App Node thực tế **luôn** nên có.
 
-`types: ["node"]` **không** load `@types/foo` khác tự động — thêm vào mảng hoặc bỏ `types` để load hết `@types/*` (ồn). Test: `"types": ["node"]` + import `node:test`.
+Trên **TS 6/7**, `types` mặc định là **`[]`** (khác TS 5.x trước đây): **bỏ `types` sẽ KHÔNG load bất kỳ `@types/*` nào**. Bắt buộc ghi tường minh `"types": ["node"]` (và thêm package khác vào mảng nếu cần globals từ `@types/foo`). Test: `"types": ["node"]` + import `node:test`.
 
-`--noEmit` vẫn cần types để check `fetch`, `Buffer`, `Temporal` (nếu có trong bản types).
+`--noEmit` vẫn cần `"types": ["node"]` cho `fetch`/`Buffer`/`process`, và `"lib": ["ES2025", "ESNext.Temporal"]` cho global `Temporal`.
 
 ---
 
@@ -615,11 +632,12 @@ Major `@types/node` khớp major Node (**26** → `@types/node@^26`). App Node t
 ```json
 {
   "compilerOptions": {
-    "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    "paths": { "@/*": ["./src/*"] }
   }
 }
 ```
+
+*(Không khai `"baseUrl": "."` — `baseUrl` đã bị gỡ và là hard error trên TS 7.0; dùng đường dẫn tương đối `./src/*` trực tiếp trong `paths`.)*
 
 `paths` **chỉ** typecheck / editor (và bundler nếu cấu hình song song). **Node không đọc `tsconfig`**. `node dist/index.js` với `import "@/foo.js"` → `ERR_MODULE_NOT_FOUND`.
 
@@ -651,7 +669,7 @@ Checklist khi muốn alias:
 
 Đừng `NODE_PATH`. Đừng `tsconfig-paths/register` trên server prod.
 
-TS 7: `baseUrl` có thể bị hạn chế; `paths` relative `"./src/*"`. Dù editor OK — **vẫn** không phải runtime Node.
+TS 7.0 đã **gỡ bỏ hoàn toàn** `baseUrl` (hard error); `paths` luôn viết tương đối `"./src/*"`. Dù editor và `tsc` OK — `paths` **vẫn** không phải runtime Node.
 
 > **Callout:** Alias `@/` copy từ Vite vào service Node là chân classic. Sửa: `#lib/` hoặc relative. Đừng thêm `tsconfig-paths` register trên prod trừ khi chấp nhận loader.
 
@@ -718,11 +736,11 @@ tsc -b -w
 
 ### 13.2 Thứ tự reference & `prepend` (đừng)
 
-`references`: `path` tới folder/`tsconfig`. `prepend` **cũ** (concat emit) — **không** dùng cho Node ESM. Mỗi package `outDir` riêng.
+`references`: `path` tới folder/`tsconfig`. Tùy chọn `prepend` (concat `outFile` cũ) đã bị **gỡ bỏ hoàn toàn trên TS 7.0** — mỗi package phải có `outDir` riêng.
 
 Circular reference → `tsc -b` error. Giống cycle module: tách `types` package.
 
-`disableSourceOfProjectReferenceRedirect`: editor dùng `.d.ts` thay `.ts` nguồn package kia — chậm hơn DX, gần prod. Mặc định TS nhảy source — tiện, có thể “xanh editor, đỏ dist” nếu `exports` lệch.
+`disableSourceOfProjectReferenceRedirect`: editor và ESLint type-aware dùng `.d.ts` thay `.ts` nguồn package kia — chậm hơn DX nhưng gần prod hơn (thống nhất giữa editor và ESLint). Mặc định TS nhảy thẳng sang source `.ts` — tiện, nhưng có thể “xanh editor, đỏ dist” nếu `exports` lệch.
 
 `tsc -b --force` bỏ qua incremental khi nghi bẩn. CI sạch: cache restore **đúng** key (`tsconfig` + lockfile + src).
 
@@ -756,17 +774,16 @@ Editor + test cần `include` rộng; emit **không** gồm spec / script.
     "rootDir": "src",
     "outDir": "dist",
     "declaration": true,
-    "sourceMap": true,
-    "erasableSyntaxOnly": false
+    "sourceMap": true
   },
   "include": ["src/**/*.ts"],
   "exclude": ["src/**/*.test.ts"]
 }
 ```
 
-`extends` **không** merge `include` — **khai lại** `include`/`exclude`. `noEmit: false` ghi đè base.
+`extends` **không** merge `include` — **khai lại** `include`/`exclude`. `noEmit: false` ghi đè base. Giữ nguyên `erasableSyntaxOnly` đồng nhất giữa base và build (không tắt riêng ở `tsconfig.build.json`).
 
-`erasableSyntaxOnly` trên base (strip/dev) có thể **false** trên build nếu emit enum — **tốt hơn** không dùng enum cả hai.
+> **Callout:** Dùng chung một `tsconfig` có `noEmit: true` rồi quên truyền `-p tsconfig.build.json` lúc build → ship nhầm hoặc thiếu `dist`. Tách hai file, hai script rõ ràng và chạy cả hai trên CI.
 
 Scripts:
 
@@ -779,7 +796,7 @@ Scripts:
 }
 ```
 
-ESLint `parserOptions.project`: trỏ `tsconfig.json` (có test) hoặc `tsconfig.eslint.json` `include` đúng file lint — tránh “file not in project”.
+ESLint `parserOptions.projectService` (hoặc `project`): trỏ `tsconfig.json` (có test) hoặc `tsconfig.eslint.json` `include` đúng file lint — tránh “file not in project”.
 
 Library: `tsconfig.build.json` + `composite` nếu nằm workspace `references`.
 
@@ -788,16 +805,19 @@ Library: `tsconfig.build.json` + `composite` nếu nằm workspace `references`.
 ```json
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "noEmit": true },
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true
+  },
   "include": ["src/**/*.ts", "test/**/*.ts", "eslint.config.js"]
 }
 ```
 
-Typed lint **cần** file nằm trong project. `allowJs` nếu lint `eslint.config.js`. Không trỏ `tsconfig.build.json` (thiếu test) rồi lint test — “file not in project”.
+Typed lint **cần** file nằm trong project và `"allowJs": true` để khớp với `eslint.config.js`. Với `typescript-eslint` mới, `parserOptions.projectService: true` tự tìm `tsconfig` gần nhất nhưng vẫn yêu cầu `include` phủ đủ file (hoặc cấu hình `allowDefaultProject`). Không trỏ `tsconfig.build.json` (thiếu test) rồi lint test — “file not in project”.
 
-### 14.2 `rootDir` computed vs khai
+### 14.2 `rootDir` mặc định `.` vs khai tường minh
 
-Nếu không set `rootDir`, TS lấy common root của `include` — thêm `test/foo.ts` đẩy `dist/src/index.js` (thêm tầng `src`). **Luôn** `rootDir` + `include` khớp trên file emit.
+Trên **TS 6/7**, nếu không khai `rootDir`, mặc định là **`"."`** (thư mục chứa `tsconfig.json`), **không còn** tự tính common root của các file trong `include` như TS 5.x. Kết quả: với `src/index.ts`, emit sẽ sinh ra `dist/src/index.js` thay vì `dist/index.js` nếu quên đặt `"rootDir": "src"`. **Luôn** khai `rootDir` khớp với `include` trên file emit.
 
 `composite` **đòi hỏi** `rootDir` rõ ràng (cùng `declaration`). Sai rootDir → `.d.ts` path lệch `exports`.
 
@@ -892,42 +912,17 @@ node src/index.ts
 
 ## 18. Version notes
 
-| Nền | Liên quan |
+| Mốc | Thay đổi đáng chú ý |
 |---|---|
-| TS 5+ | `verbatimModuleSyntax`, Stage 3 decorators |
-| TS 5.5+ | `isolatedDeclarations` (theo dõi) |
-| TS 5.8+ | `erasableSyntaxOnly` |
-| **TS 6–7** | `strict` default; cấm `node10` / `es5`; compiler Go (7) |
-| **TS 7.0** | CLI native, chưa ship API; flags parallel có stability riêng |
-| Node 22.6+ | type stripping experimental |
-| **Node 26** | strip ổn định; không transform-types |
-| `@types/node` | major khớp Node |
-| `rewriteRelativeImportExtensions` | `.ts` specifier → emit `.js` |
-| `customConditions` | khớp `node --conditions` nếu dùng |
+| TS 5.0+ | `verbatimModuleSyntax`, Stage 3 decorators, `extends` dạng mảng |
+| TS 5.5+ | `isolatedDeclarations`, `noUncheckedSideEffectImports` |
+| TS 5.8+ | `erasableSyntaxOnly`, `rewriteRelativeImportExtensions` |
+| **TS 6.0** | Mặc định mới: `target: "ES2025"`, `strict: true`, `types: []`, `rootDir: "."`, `noUncheckedSideEffectImports: true`, `libReplacement: false`; có sẵn `ESNext.Temporal` trong `lib`; deprecate `baseUrl`, `node10`, `es5`, `downlevelIteration`, `outFile`, `prepend`, … (bước đệm `"ignoreDeprecations": "6.0"`); `module: "Node20"` / `"Node18"` |
+| **TS 7.0** | Native Go compiler + LSP; CLI song song (`--checkers` default 4, `--builders`, `--singleThreaded`); **gỡ bỏ hoàn toàn** `baseUrl`, `outFile`, `downlevelIteration`, `prepend`, `importsNotUsedAsValues`, `preserveValueImports`, `charset`, `keyofStringsOnly`, `suppressExcessPropertyErrors`, `suppressImplicitAnyIndexErrors`, `noImplicitUseStrict`, `target: es5`, `moduleResolution: node/node10/classic`, `esModuleInterop: false`; **chưa ship programmatic API** (tool API dùng bridge `@typescript/typescript6`) |
+| Node 22.6+ → 24 | Type stripping từ experimental → ổn định dần |
+| **Node 26 Active LTS (2026-10-28)** | Type stripping ổn định mặc định; gỡ `--experimental-transform-types`; global `Temporal` mặc định; khớp `@types/node@^26` |
 
-`verbatimModuleSyntax` + `erasableSyntaxOnly` = strip. `paths` ≠ runtime.
-
-`files`/`include`/`exclude` kế thừa nếu con không khai lại; mảng ở con thay thế mảng base. `tsc -b --clean` khi cache bẩn; `tsc --showConfig` để kiểm config thực tế.
-
-`types: ["node"]` hạn chế auto `@types/*`. `declaration` + `files: ["dist"]` khớp path `exports`.
-
-`module` vs `moduleResolution` cặp `NodeNext`. Không `DOM` lib trên server. `skipLibCheck: true` app. `noImplicitOverride` class. `forceConsistentCasingInFileNames`.
-
-Editor dùng TypeScript 7 qua tích hợp LSP/native của editor; kiểm version diagnostics riêng với CLI. `allowImportingTsExtensions` dùng với noEmit/emitDeclarationOnly hoặc `rewriteRelativeImportExtensions`; `resolvePackageJsonExports` giữ bật.
-
-`emitDeclarationOnly` khi JS do bundler. `sourceMap` prod debug. `tsconfig.eslint.json` include test + config JS.
-
-`rootDir` + `include` khớp để `dist/` không thêm tầng. `composite` bắt `declaration`. `disableSourceOfProjectReferenceRedirect` gần prod types.
-
-`listEmittedFiles` so tarball. `pretty: false` CI. `explainFiles` khi file lạ vào program. `assumeChangesOnlyAffectDirectDependencies` watch cẩn thận.
-
-`jsx` chỉ React. Temporal types theo `@types/node`/lib. `useUnknownInCatchVariables` trong `strict`. `exactOptionalPropertyTypes` tùy chọn.
-
-`noFallthroughCasesInSwitch`. `isolatedDeclarations` lib lớn. `tsBuildInfoFile` đặt `.tsbuildinfo`. `extends` array TS 5+ không concat `include`.
-
-`maxNodeModuleJsDepth` tránh. Dual app: tsconfig server vs DOM tách.
-
-Baseline: **Node 26** + **TS 7**.
+Baseline: **Node 26 Active LTS** + **TypeScript 7.0**.
 
 ---
 

@@ -15,6 +15,7 @@ Baseline: **Node.js 26** (ESM-first), **TypeScript 7**. Node **24** LTS cùng h�
   - [2.1 Export / import](#21-export--import)
   - [2.2 Default vs named — ESM thuần](#22-default-vs-named--esm-thuần)
   - [2.3 Dynamic `import()` & top-level await](#23-dynamic-import--top-level-await)
+  - [2.4 Source phase & deferred imports](#24-source-phase--deferred-imports)
 - [3. CommonJS — `require` / `module.exports`](#3-commonjs--require--moduleexports)
 - [4. `"type"` và đuôi file](#4-type-và-đuôi-file)
 - [5. Interop ESM ↔ CJS](#5-interop-esm--cjs)
@@ -110,7 +111,7 @@ import "./polyfill.js"; // side-effect
 |---|---|---|
 | Relative | `./app.js`, `../lib/x.js` | File hệ thống; **bắt buộc đuôi** |
 | Bare | `fastify`, `@acme/sdk` | `node_modules` + `exports` |
-| Subpath | `@acme/sdk/utils` | Chỉ khi `exports` khai `" ./utils"` |
+| Subpath | `@acme/sdk/utils` | Chỉ khi `exports` khai `"./utils"` |
 | Self | `"name"` trong chính package | `exports["."]` |
 | Builtin | `node:fs/promises` | Core; luôn prefix `node:` |
 | `#imports` | `#lib/db.js` | `package.json` `"imports"` |
@@ -157,6 +158,11 @@ const pkg = ns.default ?? ns;
 
 TLA trong module graph: mọi importer ESM **await** evaluation. `require()` module đó trên Node 26 → `ERR_REQUIRE_ASYNC_MODULE` (không phải lúc nào cũng `ERR_REQUIRE_ESM` — §5.3).
 
+### 2.4 Source phase & deferred imports
+
+- **Source Phase Imports** (`import source mod from "./mod.wasm"` hoặc `await import.source("./mod.wasm")`): tách bước load/compile khỏi bước instantiate/evaluate — với WebAssembly trả về `WebAssembly.Module` đã biên dịch để tái sử dụng hoặc truyền sang `worker_threads` mà chưa chạy init.
+- **Deferred Module Evaluation** (`import defer * as ns from "./heavy.js"`): load và link module graph trước nhưng **hoãn evaluate** thân module (chỉ dùng với namespace import trên graph không có TLA) cho tới lần đầu truy cập property trên `ns` (TC39 Stage 3 — kiểm tra flag/minor trước khi dùng rộng).
+
 ---
 
 ## 3. CommonJS — `require` / `module.exports`
@@ -184,7 +190,7 @@ const __dirname = path.dirname(__filename);
 
 Trên Node 20.11+ / **26**: `import.meta.dirname` và `import.meta.filename` — §12.
 
-`require.main === module` nhận biết “file đang chạy là entry” (CJS). ESM: so `process.argv[1]` với `import.meta.filename` (đã `path.resolve`) — xem [main-function.md](main-function.md).
+`require.main === module` nhận biết “file đang chạy là entry” (CJS). Trên Node 26, ESM có **`import.meta.main`** (boolean chuẩn, không bị lệch symlink như cách so `process.argv[1]` với `import.meta.filename`) — xem §12 và [main-function.md](main-function.md).
 
 ---
 
@@ -214,6 +220,12 @@ Dự án mới: `"type": "module"`; `.cjs` chỉ khi tool bắt buộc.
 
 TS emit `NodeNext`: `.ts` + `"type":"module"` → ESM `.js`; `.cts` → CJS `.cjs`; `.mts` → ESM `.mjs`. Khớp đuôi nguồn với format, đừng mix lung tung trong một folder.
 
+**Quy tắc Node 26 native type stripping** (mặc định bật; đã gỡ `--experimental-transform-types`):
+
+- Relative import khi chạy trực tiếp bằng `node` **bắt buộc** ghi đuôi `.ts` / `.mts` / `.cts` (không tự đoán extension).
+- Node **không** strip types cho file bên trong `node_modules` — package publish vẫn phải emit `.js` + `.d.ts`.
+- Chỉ strip cú pháp erasable (không hỗ trợ `enum`, `namespace` có runtime code, parameter properties, decorator — xem [tsconfig.md](tsconfig.md)).
+
 ---
 
 ## 5. Interop ESM ↔ CJS
@@ -230,10 +242,10 @@ import cjs from "lodash";
 const { debounce } = cjs; // an toàn hơn khi nghi ngờ
 ```
 
-Node tạo **synthetic named exports** từ `module.exports` nếu là plain object enumerable. Fail / lệch khi:
+Node tạo **synthetic named exports** bằng **static lexical analysis (`cjs-module-lexer`)** trên source CJS *trước khi* evaluate (không phải duyệt enumerable property lúc runtime). Fail / lệch khi:
 
-- `module.exports = function` / class (named không phải property tĩnh).
-- Export qua getter / non-enumerable.
+- Export gán động (`Object.assign(module.exports, ...)`, vòng lặp, `module.exports[k] = ...`) khiến lexer không nhận diện tĩnh được.
+- `module.exports = function` / class hoặc re-export qua helper động không khớp pattern tĩnh của `cjs-module-lexer`.
 - Dual package: ESM `import` đi nhánh `import`, không phải object CJS bạn nghĩ.
 - `__esModule` + `.default` lồng (babel interop) — có thể `pkg.default.default`.
 
@@ -271,14 +283,14 @@ const require = createRequire(import.meta.filename); // Node 20.11+
 require.resolve("./legacy.cjs");
 ```
 
-`createRequire` gắn `module.paths` như file CJS tại vị trí đó — `require("dep")` đi `node_modules` **của package chứa module**, không theo `process.cwd()` (CLI `npx`/global). Custom `require` **không** chạy ESM loader hooks (`module.register`) — docs `node:module`; mock `import` không phủ `createRequire`.
+`createRequire` gắn `module.paths` như file CJS tại vị trí đó — `require("dep")` đi `node_modules` **của package chứa module**, không theo `process.cwd()` (CLI `npx`/global). Lưu ý: async loader hooks cũ `module.register()` (đã deprecated **`[DEP0205]`** trên Node 26) **không** intercept `require()`/`createRequire()`; hãy dùng sync hooks **`module.registerHooks()`**, vốn intercept được **cả ESM lẫn `require()` / `createRequire()`** — xem §12.1.
 
 JSON sync:
 
 ```ts
 const require = createRequire(import.meta.url);
 type Cfg = { port: number };
-const cfg = require("./config.json") as Cfg; // không frozen như JSON module
+const cfg = require("./config.json") as Cfg; // object mutable, cached trong require.cache
 ```
 
 Addon `.node` và một số bundler output CJS chỉ `require` được — đây là lý do giữ `createRequire` trong app ESM, không phải “cấm ESM”.
@@ -300,7 +312,7 @@ Lịch sử: CJS `require("./file.mjs")` ném **`ERR_REQUIRE_ESM`**. Nhiều blo
 **Node 26** (ổn định từ dòng 20.19 / 22.12): `require()` **được** load ESM nếu:
 
 1. Graph **không** có top-level `await` (kể cả dependency);
-2. File nhận diện ESM (`.mjs`, hoặc `.js` + `"type":"module"`, hoặc syntax ESM khi không `"type":"commonjs"`).
+2. File nhận diện ESM (`.mjs`, hoặc `.js` + `"type":"module"`). Với `.js` thiếu `"type"`, `require()` thử parse như CJS trước; chỉ khi gặp `SyntaxError` do cú pháp ESM (`import`/`export`) mới fallback sang load ESM (syntax detection).
 
 Kết quả: **namespace object** — default ở `.default`, giống `await import()` nhưng sync.
 
@@ -328,19 +340,14 @@ CJS `const logger = require("./logger.js")` nhận instance, không phải names
 
 `--no-require-module` tắt `require(esm)` (debug / policy) → lại gần hành vi cũ `ERR_REQUIRE_ESM`. `--trace-require-module` lần load. **Không** dựa flag experimental đã gỡ; baseline 26: feature ổn định nhưng **API public** library vẫn nên ESM `import` trước.
 
-Phát hiện hỗ trợ (nếu còn dual-publish cho Node rất cũ — hầu hết đã EOL):
+Kiểm tra runtime có bật `require(esm)` hay không bằng public API **`process.features.require_module`** (không sniff private API):
 
 ```js
-let supported = true;
-try {
-  require("module").Module._resolveFilename = require("module").Module._resolveFilename;
-} catch {
-  /* ignore */
-}
-// Thực dụng hơn: document engines.node >= 20.19 || >= 22.12 || 24/26
+const canRequireEsm = Boolean(process.features.require_module);
+// false nếu chạy với --no-require-module hoặc trên Node quá cũ
 ```
 
-Đừng sniff private API. `engines` + changelog đủ.
+Với library publish, vẫn nên khai báo rõ `engines.node` (ví dụ `>=20.19 || >=22.12 || >=24`).
 
 > **Callout:** `require(esm)` **không** phải đường chính cho app mới. App ESM: `import` + `createRequire` khi cần sync CJS. Library: ESM-only hoặc facade CJS mỏng. Đừng TLA trên barrel mà CJS còn `require`.
 
@@ -411,12 +418,12 @@ CJS `require.cache` **không** chia slot với ESM module map. `createRequire` l
 | Chiến lược | Mô tả |
 |---|---|
 | **ESM-only** | Chỉ `import` trong `exports`; CJS dùng `import()` hoặc `require(esm)` sync |
-| **CJS facade mỏng** | `.cjs` `module.exports = require("./index.js")` (sync ESM) hoặc re-export một state |
-| **Một file cho mọi condition** | `import`/`require`/`default` cùng path |
+| **ESM wrapper bọc CJS core** | Nếu cần tương thích Node quá cũ (< 20.19): core `.cjs`, wrapper `.js` re-export từ `.cjs` để giữ một state |
+| **Một file cho mọi condition** | `import`/`require`/`default` cùng path (hoặc `module-sync`) |
 | **`exports` khớp `main`** | Không để `main`/`module` lệch |
 | Document | Tránh require+import cùng pkg nếu dual file |
 
-> **Callout:** Node gọi đây **dual package hazard**. Library mới trên Node 26: ưu tiên **ESM-only**. Nếu dual, `.cjs` **không** nhân đôi business logic.
+> **Callout:** Node gọi đây **dual package hazard**. Library mới trên Node 26: ưu tiên **ESM-only**. Nếu dual, không nhân đôi business logic ở hai artifact.
 
 ```json
 {
@@ -424,23 +431,31 @@ CJS `require.cache` **không** chia slot với ESM module map. `createRequire` l
   "type": "module",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs",
-      "default": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   }
 }
 ```
 
-`index.cjs` nên facade mỏng — không nhân đôi business + singleton:
+Tách `"types"` lồng trong từng nhánh `"import"` (`.d.ts`) và `"require"` (`.d.cts`) để tránh lỗi TypeScript *"Masquerading as ESM"* khi consumer CJS đọc declaration của package `"type": "module"` (đồng bộ §8.2).
+
+Lưu ý về facade: viết `module.exports = require("./index.js")` trong `.cjs` **không** giúp tương thích Node < 20.19 và là **thừa** trên Node 26 (vì `require()` đã load trực tiếp ESM không TLA) — chỉ cần khi muốn unwrap `.default` cho CJS consumer (hoặc dùng `export { client as "module.exports" }` ngay trong ESM). Nếu bắt buộc tương thích Node rất cũ chưa có `require(esm)` mà vẫn giữ một identity duy nhất, hãy dùng mô hình ngược lại — **CJS core + ESM wrapper mỏng**:
 
 ```js
-// dist/index.cjs — facade: một identity
-module.exports = require("./index.js");
+// dist/index.js — ESM wrapper mỏng bọc CJS core: một identity duy nhất
+import core from "./core.cjs";
+export const { Client, createClient } = core;
+export default core;
 ```
 
-Chỉ an toàn nếu `index.js` ESM **không TLA**. Có TLA → facade phải `async` hoặc bỏ dual.
+Còn nếu chỉ hỗ trợ Node 20.19+ / 22.12+ / 24 / 26 và không có TLA, ship một bản ESM duy nhất (kèm `"module-sync"` nếu cần) — không cần dual build.
 
 ### 6.4 Kiểm tra identity của dual package
 
@@ -456,7 +471,7 @@ if (esm.Client !== cjs.Client && esm.Client !== cjs) {
 }
 ```
 
-Hazard **không** sửa bằng `instanceof` polyfill. Sửa graph: một file, hoặc facade `module.exports = require(esm)`.
+Hazard **không** sửa bằng `instanceof` polyfill. Sửa graph: một file ESM duy nhất, hoặc ESM wrapper mỏng bọc CJS core.
 
 Bundler (esbuild/webpack) “prebundle” CJS trong lúc app ESM import cùng package từ `node_modules` → **ba** identity (bundle copy + ESM + CJS). Externalize `pkg` trong bundle server, hoặc ESM-only.
 
@@ -501,7 +516,7 @@ Self-reference: trong package `@acme/sdk`, `import "@acme/sdk"` resolve qua `exp
 ```json
 {
   "imports": {
-    "#lib/*": "./src/lib/*.js",
+    "#lib/*.js": "./src/lib/*.js",
     "#config": "./src/config.js"
   }
 }
@@ -511,6 +526,8 @@ Self-reference: trong package `@acme/sdk`, `import "@acme/sdk"` resolve qua `exp
 import { db } from "#lib/db.js";
 import config from "#config";
 ```
+
+Lưu ý wildcard pattern: nếu khai `"#lib/*": "./src/lib/*.js"` thì phải import `"#lib/db"` (không thêm `.js`, tránh resolve thành `./src/lib/db.js.js`); dùng `"#lib/*.js": "./src/lib/*.js"` nhất quán với quy ước đuôi `.js` của `NodeNext`.
 
 **Runtime Node hiểu `#imports`** — khác `tsconfig.paths` (chỉ typecheck trừ bundler/loader).
 
@@ -556,11 +573,12 @@ Node implement (từ cụ thể → chung khi **khai**):
 | `import` | ESM `import` / `import()` | Mutually exclusive với `require` |
 | `require` | `require()` / `createRequire` | Mutually exclusive với `import` |
 | `module-sync` | `import` **và** `require` | ESM **không TLA**; `require` TLA → `ERR_REQUIRE_ASYNC_MODULE` |
+| `node-addons` | Node runtime | Nhánh cho native C++ addon (`.node`) |
 | `node` | Node runtime | Nhánh Node vs browser |
 | `default` | Fallback | **Luôn có, luôn cuối** |
 | `browser` / `development` / `production` | Tool / env | Tùy ecosystem; `development` ⊥ `production` |
 
-`require()` (khi bật require-module, mặc định Node 26) match conditions khoảng `["node", "require", "module-sync"]`. ESM `import` khoảng `["node", "import"]` (+ `default`). Đừng giả định bundler set `node`.
+`require()` (khi bật require-module, mặc định Node 26) match conditions `["node", "require", "module-sync"]` (+ `"node-addons"`, `"default"`). ESM `import` match `["node", "import", "module-sync"]` (+ `"node-addons"`, `"default"`). Có thể bật thêm custom condition khi chạy bằng flag `--conditions=<name>` / `-C <name>`. Đừng giả định bundler set `node`.
 
 ### 8.2 Thứ tự key — ví dụ đúng / sai
 
@@ -615,13 +633,14 @@ Khi một file ESM **không TLA** phục vụ cả `import` và `require(esm)`:
     ".": {
       "types": "./dist/index.d.ts",
       "module-sync": "./dist/index.js",
+      "import": "./dist/index.js",
       "default": "./dist/index.cjs"
     }
   }
 }
 ```
 
-Node mới: `import`/`require` lấy ESM sync. Node cũ không hiểu `module-sync` → `default` CJS. Vẫn có hazard nếu hai file khác identity — test singleton.
+Node 26: cả `import` và `require` đều match `module-sync` → lấy ESM sync. Thêm `"import": "./dist/index.js"` trước `"default"` để bundler hoặc Node cũ chưa hiểu `module-sync` vẫn lấy ESM thay vì rơi nhầm xuống CJS. Vẫn có hazard nếu consumer vừa dùng nhánh ESM vừa dùng nhánh CJS trên runtime cũ — test singleton.
 
 ---
 
@@ -714,8 +733,15 @@ import { createHash } from "node:crypto";
 ```
 
 - Tránh conflict npm trùng tên; **luôn** `node:` trong code mới.
+- **`node:`-only builtins:** một số module hiện đại như `node:test`, `node:sqlite`, `node:sea` **bắt buộc** có prefix `node:` — bỏ prefix (`import "sqlite"`) sẽ đi tìm `node_modules` / throw `ERR_MODULE_NOT_FOUND`.
 - Subpath: `node:fs/promises`, `node:stream/promises`, `node:timers/promises`, `node:dns/promises`.
-- `node:test`, `node:assert/strict`, `node:util` — built-in, không cần dependency.
+- Kiểm tra runtime bằng **`module.isBuiltin(specifier)`** (trả `true` cho `"fs"`, `"node:fs"`, `"node:test"`, nhưng `false` cho `"test"`).
+
+```ts
+import { isBuiltin } from "node:module";
+isBuiltin("node:sqlite"); // true
+isBuiltin("sqlite");      // false
+```
 
 ```bash
 node -e "console.log(require('node:module').builtinModules)"
@@ -730,14 +756,14 @@ const mod = await import("./config.json", { with: { type: "json" } });
 
 - Dùng **`with`** (không dùng `assert` cũ — đã thay trong spec).
 - Attribute bắt buộc với JSON module trên ESM; thiếu → lỗi.
-- Default export = giá trị parse; object bị **frozen** (đừng mutate như config writable).
-- Thống nhất JSON qua `with` **hoặc** `createRequire` — đừng trộn lung tung trong cùng app (`require` JSON không frozen cùng kiểu).
+- Default export là **object JS mutable bình thường** (`Object.isFrozen(data) === false`), **không** bị `Object.freeze()`, và được **cache singleton theo URL** — mutate trực tiếp sẽ ảnh hưởng mọi importer khác; hãy tự `Object.freeze()` hoặc clone (`structuredClone(data)`) nếu cần bất biến.
+- Thống nhất JSON qua `with` **hoặc** `createRequire` — đừng trộn hai lối trong cùng app vì ESM module cache và `require.cache` giữ hai bản object độc lập.
 
 | JSON | ESM `with` | `createRequire` |
 |---|---|---|
 | Sync | không (static import evaluate theo graph) | **có** |
 | Tree / TLA | static import OK | sync boot |
-| Mutability | frozen | object thường |
+| Mutability | **mutable** (cached singleton theo URL — tự freeze/clone) | **mutable** (cached trong `require.cache`) |
 
 > **Callout:** Import attributes không phải chỗ gắn MIME tùy ý. Node 26: JSON là use-case chính (`type: "json"`). CSS/other: theo dõi docs đúng minor — đừng bịa attribute.
 
@@ -821,19 +847,19 @@ const __dirname = path.dirname(__filename);
 // Node 20.11+ / 26
 const dir = import.meta.dirname;
 const file = import.meta.filename;
+const isEntry = import.meta.main; // boolean chuẩn trên Node 26 (thay require.main === module)
+const resolvedUrl = import.meta.resolve("./config.json"); // file:// URL string (sync)
 ```
 
 | API | Kiểu | Ghi chú |
 |---|---|---|
 | `import.meta.url` | `file://` URL string | Chuẩn ESM; mọi nơi |
 | `fileURLToPath(import.meta.url)` | path OS | Windows drive/UNC đúng |
-| `import.meta.filename` | path OS | Tiện; cần Node đủ mới |
+| `import.meta.filename` | path OS | Tiện; Node 20.11+ |
 | `import.meta.dirname` | path OS | Tiện; tương đương `path.dirname(filename)` |
+| `import.meta.main` | `boolean` | `true` nếu module là entry point; không lệch symlink |
+| `import.meta.resolve(specifier)` | `file://` URL string | Resolve đồng bộ theo thuật toán ESM từ module hiện tại |
 | `pathToFileURL(absPath)` | `URL` | Đưa path vào `import()` / `new URL` |
-
-`createRequire` gắn `module.paths` / resolve như file đó là CJS tại vị trí tương ứng. `createRequire(import.meta.url)("some-dep")` tìm `node_modules` từ thư mục module — không từ CWD. Hữu ích khi CLI chạy global/`npx` mà CWD là chỗ khác.
-
-`require` từ `createRequire` **không** đi qua ESM loader hooks giống `import()` (hooks đăng ký `module.register` **không** áp lên custom require — docs `node:module`). Đừng giả định mock hook phủ cả hai.
 
 ```ts
 const cfgUrl = new URL("./config.json", import.meta.url);
@@ -852,11 +878,38 @@ Windows: `fileURLToPath` ra `C:\…`; `pathToFileURL` encode space/`#`. UNC `\\s
 
 ### 12.1 `node:module` hooks: sync vs async
 
-`registerHooks` (thêm ở 22.15.0/23.5.0, RC từ 24.13.1/25.4.0) chạy hook đồng bộ trong thread ứng dụng; `register` dùng hook async trên thread riêng và được deprecated từ Node 26. Không chuyển hướng loader production sang API deprecated. Đăng ký trước graph cần intercept; static import đã được load trước body đăng ký nên thường cần bootstrap rồi dynamic import. Hooks ảnh hưởng resolution/load, không thay typecheck hoặc sandbox. [Module hooks](https://nodejs.org/api/module.html#customization-hooks).
+`module.registerHooks({ resolve, load })` chạy hook đồng bộ trên main thread và intercept được **cả ESM `import` lẫn CJS `require()` / `createRequire()`**. Ngược lại, `module.register()` (async hooks trên worker thread riêng) đã deprecated **`[DEP0205]`** trên Node 26 và không phủ `require()`. Đăng ký hooks trước graph cần intercept (dùng `--import` hoặc bootstrap rồi dynamic `import()`). Hooks ảnh hưởng resolution/load, không thay typecheck hoặc sandbox. [Module hooks](https://nodejs.org/api/module.html#customization-hooks).
+
+```ts
+import { registerHooks } from "node:module";
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "virtual:env") {
+      return { url: "virtual:env", shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  },
+  load(url, context, nextLoad) {
+    if (url === "virtual:env") {
+      return { format: "module", source: 'export const env = "prod";', shortCircuit: true };
+    }
+    return nextLoad(url, context);
+  },
+});
+```
 
 ### 12.2 Compile cache khác module instance cache
 
-`enableCompileCache`/`NODE_COMPILE_CACHE` lưu compiled code để giảm chi phí parse/compile giữa lần chạy; không serialize exports, singleton hay state nghiệp vụ. Lần cold có thể chậm hơn và cache khác Node version. Worker cần enable/truyền env phù hợp; đóng/flush theo docs trước khi spawn consumer cần cache. Tắt bằng `NODE_DISABLE_COMPILE_CACHE=1` khi đo coverage cần chính xác. [Compile cache](https://nodejs.org/api/module.html#module-compile-cache).
+`enableCompileCache()` / `NODE_COMPILE_CACHE` lưu V8 bytecode đã biên dịch lên đĩa để giảm chi phí parse/compile giữa các lần chạy; không serialize exports, singleton hay state nghiệp vụ. Gọi `flushCompileCache()` khi cần ép ghi cache xuống đĩa trước khi thoát sớm hoặc spawn child process dùng lại cache. Tắt bằng `NODE_DISABLE_COMPILE_CACHE=1` khi đo coverage cần chính xác. [Compile cache](https://nodejs.org/api/module.html#module-compile-cache).
+
+```ts
+import { enableCompileCache, flushCompileCache } from "node:module";
+
+enableCompileCache(); // mặc định dùng thư mục tạm hệ thống hoặc truyền path tường minh
+// ... chạy ứng dụng ...
+flushCompileCache();
+```
 
 ---
 
@@ -935,7 +988,7 @@ npm pack --dry-run
 
 Mọi path trong `exports` / `bin` / `main` phải xuất hiện. Thiếu `.d.ts` → TS consumer đỏ; thiếu `.js` → runtime đỏ.
 
-`exports["./package.json"]` cho tool đọc version từ `import.meta.resolve` / `createRequire(...("./package.json"))` khi encapsulation chặn `pkg/package.json`. Không export `package.json` thì deep import đó fail — cố ý hoặc phải mở.
+`exports["./package.json"]` cho tool đọc version từ `import.meta.resolve` / `createRequire(...)("./package.json")` khi encapsulation chặn `pkg/package.json`. Không export `package.json` thì deep import đó fail — cố ý hoặc phải mở.
 
 ---
 
@@ -997,13 +1050,17 @@ const __dirname = import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.
   "type": "module",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs",
-      "default": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
-  "imports": { "#lib/*": "./dist/lib/*.js" }
+  "imports": { "#lib/*.js": "./dist/lib/*.js" }
 }
 ```
 
@@ -1024,14 +1081,15 @@ const __dirname = import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.
 
 | Dòng | Ghi chú |
 |---|---|
-| **Node 26** + **TS 7** | ESM-first; `NodeNext`; TS 7 từ chối `moduleResolution` cổ |
+| **Node 26** + **TS 7** | ESM-first; `NodeNext`; TS 7 từ chối `moduleResolution` cổ; native type stripping ổn định (đã gỡ `--experimental-transform-types`) |
 | Node 24 LTS | Cùng hướng `exports` / ESM; `require(esm)` đã ổn định trên dòng 24 mới |
-| `require(esm)` | Sync ESM không TLA; TLA → `ERR_REQUIRE_ASYNC_MODULE`; cũ: `ERR_REQUIRE_ESM` |
-| `exports` / `imports` | Ổn định; thứ tự key; `module-sync`; conditional `types` |
+| `require(esm)` | Sync ESM không TLA; TLA → `ERR_REQUIRE_ASYNC_MODULE`; kiểm bằng `process.features.require_module` |
+| `exports` / `imports` | Ổn định; thứ tự key; `module-sync`, `node-addons`, `--conditions`/`-C`; conditional `types` lồng trong `import`/`require` |
 | `typesVersions` | **Bỏ qua** khi TS đọc `exports` |
-| Import attributes `with` | Thay `assert`; JSON modules frozen |
-| `node:` | Khuyến nghị bắt buộc style mới |
-| `import.meta.dirname` / `filename` | Node 20.11+; fallback `fileURLToPath` |
+| Import attributes `with` | Thay `assert`; JSON modules **mutable** (cached singleton, không tự `Object.freeze`) |
+| `node:` | Khuyến nghị bắt buộc style mới; `node:test`, `node:sqlite`, `node:sea` bắt buộc prefix; `module.isBuiltin()` |
+| `import.meta.*` | `dirname`/`filename` (Node 20.11+), `resolve()` sync, `import.meta.main` (Node 26) |
+| Module hooks | Dùng `module.registerHooks()` (sync, phủ ESM+CJS); `module.register()` deprecated `[DEP0205]` |
 | Dual package hazard | Vẫn đúng khi hai artifact — thiết kế có ý thức |
 
 ---

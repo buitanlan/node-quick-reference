@@ -1,6 +1,6 @@
 # Tập hợp & Generics trong JavaScript / TypeScript
 
-Tham chiếu thực dụng cho cấu trúc dữ liệu built-in và generics / utility types của TypeScript khi làm việc với collections. Baseline: **ES2024+ / Node.js 26**, **TypeScript 7**.
+Tham chiếu thực dụng cho cấu trúc dữ liệu built-in và generics / utility types của TypeScript khi làm việc với collections. Baseline: **ES2025/2026 · Node.js 26 Active LTS ("Lithium", V8 14.6+)**, **TypeScript 7.0**.
 
 Iterator / LINQ-like sâu hơn → [iterables-linq.md](iterables-linq.md). Type-level siêu nâng cao → [typesystem.md](typesystem.md). Hàm generic / variance callback → [functions-callbacks.md](functions-callbacks.md).
 
@@ -39,8 +39,9 @@ Iterator / LINQ-like sâu hơn → [iterables-linq.md](iterables-linq.md). Type-
   - [6.3 Node `Buffer`](#63-node-buffer)
   - [6.4 Pitfalls](#64-pitfalls)
   - [6.5 TypedArray vs `Array` methods](#65-typedarray-vs-array-methods)
-  - [6.6 Transfer](#66-transfer)
+  - [6.6 Transfer, Resizable `ArrayBuffer` & Growable `SharedArrayBuffer`](#66-transfer-resizable-arraybuffer--growable-sharedarraybuffer)
   - [6.7 Encoding `Buffer`](#67-encoding-buffer)
+  - [6.8 `Uint8Array` Base64 & Hex (ES2026 / Node 26)](#68-uint8array-base64--hex-es2026--node-26)
 - [7. Utility types cho collections](#7-utility-types-cho-collections)
   - [7.1 `Readonly` / `Partial` + excess property](#71-readonly--partial--excess-property)
   - [7.2 `Omit` / `Pick` pitfalls](#72-omit--pick-pitfalls)
@@ -154,9 +155,12 @@ Array.from({ length: 5 }, (_, i) => i);
 | `forEach` / `map` / `filter` | **bỏ hole** (`map` giữ hole) | gọi callback với `undefined` |
 | `for...of` / spread | `undefined` cho hole | `undefined` |
 | `Object.keys` | bỏ hole | gồm `"1"` |
-| `JSON.stringify` | hole → `null` | `null` cho `undefined`? — `undefined` trong array → `null` |
+| `JSON.stringify` | hole → `null` | `undefined` trong array → `null` |
 
 `map` trên sparse: **giữ hole** (callback không chạy). `filter` bỏ hole. `Array.from(sparse)` materialize hole thành `undefined`.
+
+- `at(-1)` trên mảng rỗng trả `undefined` (không mutate, khác `pop()`).
+- `includes` dùng SameValueZero (`NaN` tìm được; object theo reference). Tìm dãy con byte → `Buffer.prototype.indexOf` (Array không có subsequence search built-in).
 
 > **Tránh** sparse / `delete arr[i]`. Key thưa → `Map`. `new Array(n)` không fill = n holes.
 
@@ -180,7 +184,7 @@ Mặc định `sort()` convert `ToString` — **không** số học:
 | Tin “unstable” | ES2019+ **stable** — equal keys giữ thứ tự; vẫn đừng dựa nếu polyfill cũ |
 
 ```ts
-const collator = new Intl.Collator("vi");
+const collator = new Intl.Collator("vi"); // cache instance ngoài comparator — tạo mới mỗi lần so rất chậm
 names.toSorted((a, b) => collator.compare(a, b));
 ```
 
@@ -217,7 +221,9 @@ w.fill(0, 1, 3);    // fill [start, end)
 
 `fill` với object: **một** reference. `length = 0` xóa hết (dense). Tăng `length` tạo hole. Gán `arr[arr.length] = x` = `push` semantics.
 
-`splice` xóa giữa: O(n) dồn. Hàng đợi đầu mảng → `shift` O(n); dùng index cursor hoặc cấu trúc khác.
+`splice` xóa giữa: O(n) dồn. Hàng đợi đầu mảng → `shift` O(n); dùng index cursor hoặc cấu trúc khác. `unshift` nhiều arg tốn O(n+k) — xây mảng ngược bằng `push` rồi `reverse()` thường nhanh hơn `unshift` trong vòng lặp.
+
+Tránh `arr.push(...huge)` / `push.apply(arr, huge)` với mảng hàng trăm nghìn phần tử (vượt giới hạn call stack arguments) — duyệt `for...of` và `push` từng phần tử.
 
 ### 1.6 Shallow copy — chọn API
 
@@ -226,7 +232,7 @@ w.fill(0, 1, 3);    // fill [start, end)
 | `[...a]` | shallow | hole → `undefined` | Cần iterable |
 | `a.slice()` | shallow | **giữ hole** | |
 | `Array.from(a)` | shallow | hole → `undefined` | |
-| `structuredClone(a)` | **deep** (hạn chế) | — | Không function; Buffer/Date OK |
+| `structuredClone(a)` | **deep** (hạn chế) | — | Không function; `Date` OK; **`Buffer` bị biến thành `Uint8Array` thuần** (`Buffer.isBuffer === false`) |
 | `a.concat()` | shallow | giữ hole | |
 
 Shared nested object: copy shallow rồi mutate child → đụng gốc. Deep: `structuredClone` (Node) hoặc schema tay.
@@ -282,7 +288,7 @@ new Map([[+0, "z"]]).get(-0); // "z"
 | `Object.is` (SameValue) | giống | **khác** |
 | SameValueZero (`Map`/`Set`/`includes`) | giống | giống |
 
-Không có “custom equals”. Composite key: stringify có chủ đích hoặc `Map` lồng / tuple intern.
+Không có “custom equals”. Composite key: stringify có chủ đích hoặc `Map` lồng / tuple intern. Khi debug số âm 0: `Map` coi `-0` và `+0` là một key (khác `Object.is(k, -0)`).
 
 ### 2.2 Object ↔ Map
 
@@ -292,7 +298,7 @@ const map = new Map(Object.entries(obj));
 const back = Object.fromEntries(map);
 ```
 
-`Object.entries` chỉ lấy enumerable own **string** keys — không lấy symbol / non-enumerable. `Object.fromEntries` ép key `ToString` — `Map<number, V>` → JSON keys string.
+`Object.entries` chỉ lấy enumerable own **string** keys — không lấy symbol / non-enumerable. `Object.fromEntries` dùng `ToPropertyKey` (giữ nguyên `Symbol` key; các key khác như `number` bị ép thành string).
 
 ### 2.3 `getOrInsert` / `getOrInsertComputed` (Node 26)
 
@@ -301,7 +307,7 @@ V8 14.6 / Node 26: upsert. Tránh pattern `if (!m.has(k)) m.set(k, …)` (hai lo
 ```ts
 const counts = new Map<string, number>();
 
-counts.getOrInsert("a", 0);  // 0 — insert nếu thiếu
+counts.getOrInsert("a", 0);  // 0 — insert nếu thiếu (primitive rẻ, dùng getOrInsert OK)
 counts.getOrInsert("a", 99); // 0 — đã có, không ghi đè
 
 counts.getOrInsertComputed("b", (key) => key.length); // 1
@@ -309,21 +315,20 @@ counts.getOrInsertComputed("b", () => 999);           // 1 — không gọi lạ
 
 const wm = new WeakMap<object, string[]>();
 const obj = {};
-wm.getOrInsert(obj, []);
-wm.getOrInsertComputed(obj, () => ["lazy"]);
+wm.getOrInsertComputed(obj, () => ["lazy"]); // tránh alloc [] thừa khi key đã tồn tại
 ```
 
-- `getOrInsert(key, defaultValue)` — trả value hiện có hoặc set rồi trả. `defaultValue` **luôn** đánh giá (eager) — kể cả khi key đã có.
-- `getOrInsertComputed(key, callback)` — chỉ gọi `callback(key)` khi key **chưa** có (lazy init / cache).
+- `getOrInsert(key, defaultValue)` — trả value hiện có hoặc set rồi trả. `defaultValue` **luôn** đánh giá (eager) — kể cả khi key đã có, nên chỉ dùng cho primitive/hằng rẻ; với object/array luôn dùng `getOrInsertComputed`.
+- `getOrInsertComputed(key, callback)` — chỉ gọi `callback(key)` khi key **chưa** có (lazy init / cache). Callback là **đồng bộ** — nếu trả `Promise`, map sẽ lưu chính `Promise` đó (pattern in-flight dedup; xem memoize ở [functions-callbacks.md](functions-callbacks.md)).
 
 ```ts
-// Multimap
-map.getOrInsert(key, [] as string[]).push(value);
+// Multimap — dùng getOrInsertComputed để không cấp phát mảng [] rác mỗi lần gọi
+map.getOrInsertComputed(key, () => [] as string[]).push(value);
 ```
 
 `get(k) ?? def` **sai** khi `undefined` là value hợp lệ; `has` + `getOrInsert` đúng. Không ghi đè value hiện có (khác `set`).
 
-`WeakMap` cùng cặp method — key object (hoặc non-registered symbol theo spec hiện hành).
+`WeakMap` cùng cặp method — key object hoặc non-registered `Symbol` (§4.1).
 
 ### 2.4 Clone, JSON, `structuredClone`
 
@@ -350,7 +355,7 @@ Composite: `const key = `${userId}:${role}`` trên `Map<string, V>` hoặc tuple
 const intern = new Map<string, { userId: string; role: string }>();
 function keyOf(userId: string, role: string) {
   const k = `${userId}\0${role}`;
-  return intern.getOrInsert(k, { userId, role });
+  return intern.getOrInsertComputed(k, () => ({ userId, role }));
 }
 ```
 
@@ -374,7 +379,7 @@ const unique = [...new Set(["a", "b", "a"])]; // ["a", "b"]
 - Thứ tự: insertion order.
 - Unique list từ array: `[...new Set(arr)]` — O(n), mất lần trùng (giữ lần đầu).
 
-`add` trả `this`. Iterate: `for (const x of s)` — `keys()`/`values()` cùng phần tử (Set-as-map-like).
+`add` trả `this`. Iterate: `for (const x of s)` — `keys()`/`values()` cùng phần tử (Set-as-map-like). `JSON.stringify(set)` trả `"{}"` — luôn chuyển sang mảng `[...set]` trước khi serialize (`new Set(JSON.parse(json))` để round-trip).
 
 ### 3.1 Set operations (ES2025 / Node 26)
 
@@ -403,7 +408,7 @@ Các method tạo tập kết quả **không mutate** `a`; các predicate trả 
 | `isSupersetOf` | A ⊇ B | đảo subset |
 | `isDisjointFrom` | A ∩ B = ∅ | `![...a].some(x => b.has(x))` |
 
-Chọn Set nhỏ hơn khi `intersection` tay (lặp set nhỏ, `has` set lớn). Baseline Node 26: dùng native.
+Chọn Set nhỏ hơn khi `intersection` tay (lặp set nhỏ, `has` set lớn). Baseline Node 26: dùng native (`union` độ phức tạp điển hình O(|A|+|B|); chain dài như `a.union(b).intersection(c)` cấp phát Set trung gian — đo nếu N lớn).
 
 ```ts
 function except<T>(xs: Iterable<T>, blocked: Set<T>): T[] {
@@ -433,11 +438,14 @@ Giống Map: `add` trong `for...of` có thể thăm phần tử mới. Pattern �
 ## 4. WeakMap, WeakSet, WeakRef & FinalizationRegistry
 
 ```ts
-const wm = new WeakMap<object, string>();
-const ws = new WeakSet<object>();
+const wm = new WeakMap<WeakKey, string>();
+const ws = new WeakSet<WeakKey>();
 
 let obj: object | null = { n: 1 };
+const localSym = Symbol("token"); // ES2023+: non-registered symbol hợp lệ làm WeakKey
 wm.set(obj, "meta");
+wm.set(localSym, "sym-meta");
+// wm.set(Symbol.for("global"), "x"); // TypeError: registered symbol không được làm WeakKey
 ws.add(obj);
 
 obj = null; // entry có thể được GC — Weak* không giữ object sống
@@ -447,7 +455,7 @@ obj = null; // entry có thể được GC — Weak* không giữ object sống
 
 | | `Map` / `Set` | `WeakMap` / `WeakSet` |
 |---|---|---|
-| Key | Bất kỳ | **Chỉ object** (không primitive; symbol: xem spec/engine — đừng nhét string) |
+| Key | Bất kỳ | **Object hoặc non-registered `Symbol`** (ES2023+; `Symbol.for(...)` bị từ chối — TS built-in type: `WeakKey`) |
 | Iterable / `.size` | Có | **Không** — không duyệt được |
 | Giữ key sống? | Có (strong ref) | **Không** (weak) |
 | Use-case | Dictionary / unique set | Metadata side-table, cache gắn instance |
@@ -531,7 +539,9 @@ Pattern này **không** thay Redis/LRU với `maxSize`. Chỉ khi object lớn +
 `WeakSet` chỉ `add`/`has`/`delete` — đánh dấu “đã thăm” graph mà không giữ node. DFS:
 
 ```ts
-function walk(root: Node, seen = new WeakSet<Node>()) {
+type TreeNode = { children: TreeNode[] };
+
+function walk(root: TreeNode, seen = new WeakSet<TreeNode>()) {
   if (seen.has(root)) return;
   seen.add(root);
   for (const c of root.children) walk(c, seen);
@@ -618,11 +628,11 @@ view.setUint32(0, 0x12345678, true); // littleEndian
 | Type | Bytes / element |
 |---|---|
 | `Int8Array` / `Uint8Array` / `Uint8ClampedArray` | 1 |
-| `Int16Array` / `Uint16Array` | 2 |
+| `Int16Array` / `Uint16Array` / `Float16Array` (ES2025 / Node 26) | 2 |
 | `Int32Array` / `Uint32Array` / `Float32Array` | 4 |
 | `Float64Array` / `BigInt64Array` / `BigUint64Array` | 8 |
 
-Dùng khi: binary protocol, crypto, image, WASM, I/O buffer. `DataView` khi cần endian / offset linh hoạt.
+Dùng khi: binary protocol, crypto, image, AI/ML tensor (`Float16Array`), WASM, I/O buffer. `DataView` khi cần endian / offset linh hoạt (hỗ trợ cả `getFloat16` / `setFloat16` từ ES2025 / Node 26). `ArrayBuffer.isView(x)` trả `true` cho mọi TypedArray và `DataView` — **không** cho `ArrayBuffer` trần.
 
 ### 6.2 Endian & views
 
@@ -692,15 +702,24 @@ TypedArray có nhiều method giống Array (`map`, `filter`, `slice`, `subarray
 | `Array.isArray` | true | false |
 | `concat` | Có | Không giống Array; dùng `set` + offset |
 
-`buf.set(other, offset)` copy bytes. Resizable `ArrayBuffer` (maxByteLength) — API mới; đừng giả mọi buffer resizable.
+`buf.set(other, offset)` copy bytes. `Float64Array.sort()` / `Uint8Array.sort()` mặc định so sánh **theo số** (khác `Array#sort` so chuỗi): `-0` đứng trước `+0`, `NaN` đứng sau mọi số ([CompareTypedArrayElements](https://tc39.es/ecma262/multipage/indexed-collections.html#sec-comparetypedarrayelements)).
 
 `Uint8ClampedArray`: gán ngoài 0..255 clamp — canvas. Crypto: `Uint8Array`.
 
-### 6.6 Transfer
+### 6.6 Transfer, Resizable `ArrayBuffer` & Growable `SharedArrayBuffer`
 
-`arrayBuffer.transfer()` / `transferToFixedLength()` (ES2024, Node hiện đại): chuyển ownership, source **detached** (`byteLength === 0`). Worker `postMessage(buf, [buf])` tương tự. Sau detach, view ném. Zero-copy pipeline: transfer, đừng copy rồi quên.
+- **Transfer (ES2024 / Node 22+–26):** `arrayBuffer.transfer()` / `transferToFixedLength()` chuyển ownership không copy; buffer nguồn bị **detached** (`byteLength === 0`). Worker `postMessage(buf, [buf])` tương tự. Sau detach, TypedArray view có `view.length === 0` và đọc `view[0]` trả `undefined` (còn `DataView` hoặc một số method như `.set()`/`.subarray()` trên buffer detached sẽ ném `TypeError`).
+- **`Buffer` pool:** `Buffer.allocUnsafe()` nhỏ có thể cắt từ slab pool chung — **không** transfer `buf.buffer` nếu còn view khác chia sẻ cùng `ArrayBuffer`.
+- **Resizable `ArrayBuffer` & Growable `SharedArrayBuffer` (ES2024 / Node 20+–26):**
 
-`Buffer` pool: `allocUnsafe` nhỏ có thể từ pool — **không** transfer giả định độc lập nếu còn alias.
+```ts
+const ab = new ArrayBuffer(8, { maxByteLength: 64 });
+const view = new Uint8Array(ab); // length-tracking view
+ab.resize(32);                   // có thể tăng hoặc co (0..maxByteLength); view.length === 32
+
+const sab = new SharedArrayBuffer(8, { maxByteLength: 64 });
+sab.grow(32);                    // CHỈ tăng (monotonic, không co được để an toàn multi-thread)
+```
 
 ### 6.7 Encoding `Buffer`
 
@@ -715,9 +734,27 @@ TypedArray có nhiều method giống Array (`map`, `filter`, `slice`, `subarray
 
 `Buffer.byteLength(str, enc)` ≠ `str.length` (UTF-16 units). Cắt string theo byte budget: encode rồi `subarray`, hoặc library grapheme.
 
-So sánh: `buf.equals(other)` constant-ish theo length; `===` so sánh **reference**.
+> **Cảnh báo bảo mật — so sánh byte:** `buf.equals(other)` dùng `memcmp` (early-exit, **KHÔNG constant-time**); `===` chỉ so sánh **reference**. Khi so sánh secret, HMAC, chữ ký hay token, bắt buộc dùng **`crypto.timingSafeEqual(a, b)`** (kiểm `a.byteLength === b.byteLength` trước vì lệch độ dài sẽ ném `RangeError`). `Buffer.compare(a, b)` / `buf.compare` so sánh lexicographic theo byte (không theo locale).
 
 `buf.toJSON()` → `{ type: "Buffer", data: [...] }` — payload lớn. Log: `hex` slice.
+
+### 6.8 `Uint8Array` Base64 & Hex (ES2026 / Node 26)
+
+V8 14.6 / Node 26 bổ sung trực tiếp các method chuyển đổi Base64 & Hex chuẩn ECMAScript lên `Uint8Array` — chạy đồng nhất giữa Node và trình duyệt mà không cần `node:buffer`:
+
+```ts
+const bytes = Uint8Array.fromBase64("SGVsbG8=");
+bytes.toBase64();                            // "SGVsbG8="
+bytes.toBase64({ alphabet: "base64url", omitPadding: true }); // "SGVsbG8"
+
+const hexBytes = Uint8Array.fromHex("deadbeef");
+hexBytes.toHex();                            // "deadbeef"
+
+// Ghi trực tiếp vào buffer có sẵn (tránh cấp phát mới):
+const dst = new Uint8Array(16);
+const { read, written } = dst.setFromBase64("SGVsbG8=");
+dst.setFromHex("cafe");
+```
 
 ---
 
@@ -764,7 +801,8 @@ Cả hai **shallow**: `Partial<{ a: { n: number } }>` vẫn `a.n` bắt buộc n
 
 ```ts
 type Patch = Partial<User>;
-const literal: Patch = { id: "1", extra: true }; // excess `extra` — lỗi trên fresh literal
+// @ts-expect-error excess property `extra` bị chặn trên fresh literal
+const literal: Patch = { id: "1", extra: true };
 const widened = { id: "1", extra: true };
 const ok: Patch = widened; // excess **không** bắt — đã widen
 ```
@@ -785,7 +823,7 @@ Readonly property trên object không tạo tính bất biến runtime và TS v�
 
 `Record<string, V>` + known keys: index signature cho phép thêm field — **không** exhaustive. Prefer union key `Record<Role, V>`.
 
-`NonNullable<T>` = `Exclude<T, null | undefined>` — không loại `void`. Optional `?` vẫn `T | undefined` tùy flag.
+`NonNullable<T>` (từ TS 4.8+) là `T & {}` (loại `null | undefined`, giữ nguyên các kiểu khác). Optional `?` vẫn có thể là `T | undefined` tùy `exactOptionalPropertyTypes`.
 
 ---
 
@@ -796,7 +834,10 @@ function identity<T>(value: T): T {
   return value;
 }
 class Box<T> {
-  constructor(public value: T) {}
+  value: T;
+  constructor(value: T) {
+    this.value = value;
+  }
 }
 function first<T>(xs: readonly T[]): T | undefined {
   return xs[0];
@@ -818,14 +859,14 @@ function groupBy<T, K extends PropertyKey>(
 ): Map<K, T[]> {
   const m = new Map<K, T[]>();
   for (const x of xs) {
-    m.getOrInsert(keyFn(x), []).push(x);
+    m.getOrInsertComputed(keyFn(x), () => []).push(x);
   }
   return m;
 }
 ```
 
 - Input: prefer `readonly T[]` (chấp nhận mutable lẫn readonly).
-- `Map`/`Set` **invariant** — `Map<string, Dog>` không gán `Map<string, Animal>` (push `Cat` qua wide map).
+- Trong TS, `Map<K, V>` và `Set<T>` **covariant trên value/element** (unsound giống `Array<T>`) do method bivariance — `Map<string, Dog>` gán được vào `Map<string, Animal>`; dùng `ReadonlyMap`/`ReadonlySet` cho consumer chỉ đọc, hoặc tự bọc / dùng `in out` khi cần invariant thật (§8.5).
 - `Object.groupBy` / `Map.groupBy` → [iterables-linq.md](iterables-linq.md).
 
 ### 8.1 Constraints + variance
@@ -833,16 +874,32 @@ function groupBy<T, K extends PropertyKey>(
 | Container | Variance TS (thực dụng) | Hệ quả |
 |---|---|---|
 | `Array<T>` | **covariant** (unsound) | `Dog[]` gán `Animal[]` — `push(cat)` runtime lỗ |
-| `readonly T[]` | an toàn hơn cho **đọc** | Prefer input |
-| `Map<K,V>` / `Set<T>` | **invariant** | Không gán hẹp/rộng lung tung |
-| `Promise<T>` | covariant value | `Promise<Dog>` ~ `Promise<Animal>` đọc |
+| `readonly T[]` | covariant (an toàn cho **đọc**) | Prefer cho input |
+| `Map<K,V>` / `Set<T>` | **covariant** trên value/element (unsound do method bivariance) | `Map<string, Dog>` gán được `Map<string, Animal>`; dùng `ReadonlyMap`/`ReadonlySet` cho input chỉ đọc |
+| `Promise<T>` | covariant value | `Promise<Dog>` gán `Promise<Animal>` |
 | Function `(x: T) => U` | contra `T`, co `U` | [functions-callbacks.md](functions-callbacks.md) §8 |
 
-`T extends U` = constraint (T phải gán được vào U), **không** phải runtime check. `K extends keyof T` + indexed access `T[K]` — pattern pluck/prop.
+`T extends U` = constraint (`T` phải gán được vào `U`), **không** phải runtime check. `K extends keyof T` + indexed access `T[K]` — pattern pluck/prop.
 
-`in` / `out` trên generic class (TS 4.7+): thư viện container; app điển hình không cần. `const` type params: infer literal union từ tuple input.
+**Variance annotations (`in` / `out` — TS 4.7+) & `NoInfer<T>` (TS 5.4+ / 7.0):**
 
-Đừng `T extends any` / default `any`. Prefer `unknown` + thu hẹp.
+```ts
+interface Producer<out T> { get(): T }             // covariant
+interface Consumer<in T> { accept(v: T): void }    // contravariant
+interface Cell<in out T> { get(): T; set(v: T): void } // invariant — chặn alias rộng
+
+// NoInfer<T>: chặn fallback làm widen T thành union rộng hơn items
+function pickOrDefault<T extends string>(
+  items: readonly T[],
+  fallback: NoInfer<T>,
+): T {
+  return items[0] ?? fallback;
+}
+pickOrDefault(["red", "blue"], "red"); // OK — T là "red" | "blue"
+// pickOrDefault(["red", "blue"], "green"); // lỗi TS — không bị suy thành "red" | "blue" | "green"
+```
+
+`const` type params (`<const T>`): infer literal/readonly từ input. Đừng `T extends any` / default `any`; prefer `unknown` + thu hẹp.
 
 ### 8.2 Branded / nominal keys
 
@@ -870,6 +927,7 @@ Brand chỉ TS — runtime vẫn string. `Map` equality vẫn SameValueZero trê
 const table = {
   admin: ["*"],
   user: ["read"],
+  guest: [],
 } as const satisfies Record<Role, readonly string[]>;
 ```
 
@@ -922,7 +980,7 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type RequiredKeys<T> = { [K in keyof T]-?: T[K] };
 ```
 
-`Mutable<Readonly<User>>` không deep. `-?` biến optional thành required — khác `Required<T>` (cũng mapped). Key remapping `as` → [typesystem.md](typesystem.md).
+`Mutable<Readonly<User>>` không deep. `-?` gỡ modifier optional — đây chính là cách thư viện chuẩn định nghĩa `Required<T>`. Key remapping `as` → [typesystem.md](typesystem.md).
 
 `keyof` `string[]` gồm number + `"length"` + methods — `Pick` array hiếm khi đúng; dùng tuple / `T[number]`.
 
@@ -962,7 +1020,7 @@ type Head<T extends readonly unknown[]> = T extends readonly [infer H, ...unknow
 type PairList<T> = Array<[T, T]>;
 ```
 
-`as const` trên `[[1, "a"], [2, "b"]]` → readonly tuple of tuples — `Map` ctor nhận `Iterable<[K,V]>` (readonly OK).
+`as const` trên `[[1, "a"], [2, "b"]]` → readonly tuple of tuples — `Map` ctor nhận `Iterable<readonly [K, V]>` (nên mảng tuple `as const` truyền trực tiếp được).
 
 `readonly [string, number]` không gán `[string, number]` (mutate index). Spread `[...tuple]` → Array widen.
 
@@ -1002,7 +1060,7 @@ function* take<T>(xs: Iterable<T>, n: number) {
 
 ```ts
 const g = Object.groupBy(people, (p) => p.city);
-// Record<string, Person[]> — prototype object thường
+// TS: Partial<Record<string, Person[]>> — runtime: null-prototype object (Object.create(null))
 const gm = Map.groupBy(people, (p) => p.city);
 // Map<string, Person[]>
 ```
@@ -1064,15 +1122,15 @@ Hidden class: gán field cùng thứ tự trên object-as-record. Dictionary đ�
 |---|---|---|---|
 | `Map`/`Set` | mất / `{}` | giữ | không (shallow ref) |
 | `Date` | string | `Date` | ref |
-| `Buffer`/`Uint8Array` | object/`{}` tùy | copy bytes | view/ref |
+| `Buffer` / `Uint8Array` | `{ type: "Buffer", data }` / object chỉ số | copy bytes (**`Buffer` thành `Uint8Array` thuần**) | `[...u8]` là `number[]` copy; `u8.slice()` là `Uint8Array` copy (chỉ `Buffer#slice` legacy mới là view) |
 | function | bỏ / lỗi | **ném** | ref |
 | cycle | ném | giữ | ref cycle |
 
-Clone DTO JSON-safe: JSON. Clone `Map` + `Date`: `structuredClone`. Copy mảng object: spread **không** deep.
+Clone DTO JSON-safe: JSON. Clone `Map` + `Date`: `structuredClone` (global sẵn trên Node, dùng cùng thuật toán với Worker/`postMessage`). Copy mảng object: spread **không** deep.
 
 ### 12.3 Index `number` vs string trên Array
 
-`arr[0]` và `arr["0"]` cùng element. `arr[-1]` **không** `at(-1)` — tạo property `"-1"` (không length). Sparse `length` lớn + một index cuối = tốn metadata, không phải packed.
+`arr[0]` và `arr["0"]` cùng element. `arr[-1]` **không** phải `at(-1)` — tạo property `"-1"` (không đổi `length`). Tương tự `arr[1.2]` tạo property `"1.2"`, không phải element 1 — luôn kiểm `Number.isInteger(i)` khi index đến từ tính toán/input. Sparse `length` lớn + một index cuối = tốn metadata, không phải packed.
 
 ---
 
@@ -1084,7 +1142,7 @@ Clone DTO JSON-safe: JSON. Clone `Map` + `Date`: `structuredClone`. Copy mảng 
 4. Metadata theo đời object → `WeakMap` / `WeakSet`. Cleanup bắt buộc **không** phải FR/WeakRef.
 5. Unique + lookup nhanh → `Set` (+ algebra native); đừng `includes` trong vòng nóng.
 6. Binary I/O → `Uint8Array` / `Buffer`; endian qua `DataView` / `read*LE`; tránh `allocUnsafe` lộ dữ liệu.
-7. Generic: `K extends keyof T`, constraint tối thiểu; Array covariant unsound — đừng `push` qua wide alias. `Map`/`Set` invariant.
+7. Generic: `K extends keyof T`, constraint tối thiểu; `Array`, `Map`, `Set` đều covariant (unsound khi mutate qua alias rộng) — dùng `readonly T[]` / `ReadonlyMap` / `ReadonlySet` cho input chỉ đọc (hoặc `in out` trên container tự viết).
 8. Utility: `Partial`/`Pick`/`Omit`/`Record` cho DTO; shallow + excess chỉ fresh literal; I/O cần schema.
 9. Tránh sparse array và O(n²) nested scan. Cache: `getOrInsertComputed` (Node 26).
 10. Type-level phức tạp → tách type alias có tên; ultra-advanced → [typesystem.md](typesystem.md).
@@ -1104,7 +1162,7 @@ Clone DTO JSON-safe: JSON. Clone `Map` + `Date`: `structuredClone`. Copy mảng 
 □ Weak* chỉ khi cần weak lifetime; không duyệt; không FR cho I/O
 □ Buffer: alloc vs allocUnsafe; view vs copy; endian
 □ API input dùng readonly T[] / Iterable khi phù hợp
-□ Generic constraint tối thiểu; không any; Map invariant
+□ Generic constraint tối thiểu; không any; hiểu Array/Map/Set covariant (dùng Readonly* cho input)
 □ Partial/Readonly hiểu là shallow; excess không chặn widened
 □ JSON Map qua Object.fromEntries / entries
 □ Set algebra native (union/intersection/…) khi Node 26
@@ -1157,46 +1215,16 @@ type Dir = (typeof dirs)[number];
 | ES2015 | `Map`, `Set`, `WeakMap`, `WeakSet`, TypedArray |
 | ES2021 | `WeakRef`, `FinalizationRegistry` |
 | ES2022 | `at`, `Object.hasOwn`, … |
-| ES2023 | `toSorted`, `toReversed`, `toSpliced`, `with`, `findLast*` |
-| ES2024 | `Object.groupBy`, `Map.groupBy` (khi có trên runtime) |
-| ES2025 | Set methods: `union`, `intersection`, `difference`, … |
-| Node Buffer | `Uint8Array` subclass; `alloc` / `allocUnsafe` |
-| Node 26 (baseline) | Set ops + `Map`/`WeakMap` `getOrInsert` / `getOrInsertComputed` (V8 14.6 upsert) |
-| TypeScript 7 | generics, conditional, `infer`, mapped, `const` type params, `in`/`out` |
+| ES2023 | `toSorted`, `toReversed`, `toSpliced`, `with`, `findLast*`, non-registered `Symbol` làm `WeakKey` |
+| ES2024 | `Object.groupBy`, `Map.groupBy`, `ArrayBuffer.prototype.transfer()`, resizable `ArrayBuffer` / growable `SharedArrayBuffer` |
+| ES2025 | Set methods (`union`, `intersection`, `difference`, …), `Float16Array` & `DataView.{get,set}Float16` |
+| ES2026 / Node 26 (baseline) | `Map`/`WeakMap` `getOrInsert` / `getOrInsertComputed`, `Uint8Array` Base64 & Hex (`fromBase64`/`toBase64`/`fromHex`/`toHex`), V8 14.6+ |
+| Node `Buffer` | `Uint8Array` subclass; `alloc` / `allocUnsafe` / `timingSafeEqual` (từ `node:crypto`) |
+| TypeScript 7.0 | generics, conditional, `infer`, mapped, `const` type params, `in`/`out`, `NoInfer<T>` (TS 5.4+) |
 
-Baseline repo: **Node 26** + **TS 7** — dùng các API trên thoải mái; thư viện public hỗ trợ Node cũ hơn thì feature-detect hoặc document minimum version.
-
-`Object.groupBy` / `Map.groupBy` có từ ES2024 trên V8 trước 14.6 — Node 22+ thường đã có. `getOrInsert*` và `Iterator.concat` là điểm nhấn **Node 26 / V8 14.6**. Set algebra: ES2025, có trên Node 26.
-
-`WeakRef` / `FinalizationRegistry`: ES2021, có lâu trên Node; **không** thay `using`. `ArrayBuffer.transfer`: kiểm `typeof buf.transfer === "function"` nếu lib hỗ trợ engine cũ hơn Node 22+.
-
-`Map.prototype.getOrInsertComputed` callback **đồng bộ**. Trả Promise nhét Promise vào map — không phải async cache. Async: `get` + `set` Promise in-flight (xem memoize ở [functions-callbacks.md](functions-callbacks.md)).
-
-SameValueZero: `-0` và `0` một key — `Object.is` phân biệt nhưng Map không. Hiển thị key: `Object.is(k, -0)` khi debug số.
-
-`JSON.stringify` trên `Set` → `{}`. Luôn `[...set]` hoặc `Object.fromEntries([...set].map(x => [x, true]))` nếu cần object. Round-trip: `new Set(JSON.parse(arrJson))`.
-
-`localStorage` / structured clone window không thuộc Node server — `structuredClone` global trên Node đủ cho worker/`postMessage`.
-
-`Intl.Collator` cached instance — tạo một lần, dùng trong `toSorted`. Tạo collator mỗi cmp = chậm.
-
-`Array.prototype.sort` stable ES2019 — Node 26 ổn định. Polyfill cũ có thể không.
-
-`push.apply(arr, huge)` / `arr.push(...huge)` cùng limit `apply` — chunk `for` + `push`. TypedArray length cố định: copy sang buffer lớn hơn, không `push`.
-
-`includes` SameValueZero trên Array — `NaN` tìm được; object theo reference. Subarray search: không có `indexOf` subsequence built-in — vòng / `Buffer.indexOf` cho bytes.
-
-`at(-1)` trên mảng rỗng → `undefined`. `pop` cũng `undefined` nhưng **mutate**. Peek cuối: `at(-1)`.
-
-`unshift` nhiều arg O(n+k). Xây mảng ngược `push` rồi `reverse` thường nhanh hơn `unshift` vòng.
+Baseline repo: **Node 26 Active LTS (V8 14.6+)** + **TS 7.0** — dùng các API trên trực tiếp; thư viện public hỗ trợ Node cũ hơn nên feature-detect (vd `typeof buf.transfer === "function"`, `typeof Map.prototype.getOrInsertComputed === "function"`) hoặc ghi rõ `engines.node`.
 
 ---
-
-
-`Set.prototype.union` độ phức tạp O(|A|+|B|) điển hình; không mutate. Chain `a.union(b).intersection(c)` alloc trung gian — N lớn đo hoặc một vòng.
-
----
-
 
 ## 17. Tài liệu liên quan
 
@@ -1208,16 +1236,4 @@ SameValueZero: `-0` và `0` một key — `Object.is` phân biệt nhưng Map kh
 - [Lập trình bất đồng bộ](async.md) — `map(async)` + `Promise.all`
 - [Worker Threads & Child Process](threading.md) — SharedArrayBuffer / Atomics
 - [Phát biểu](statements.md) — `using` thay FinalizationRegistry cho resource
-
-`ArrayBuffer.isView(x)` true cho TypedArray và DataView — **không** cho `ArrayBuffer` trần. Phân nhánh binary input: `Buffer.isBuffer` / `isView` / `Array.isArray` (số) riêng.
-
-`Number.isInteger(i)` trước khi dùng index; `arr[1.2]` ToString `"1.2"` — property lạ, không element 1.
-
-`Float64Array.sort()` mặc định so sánh số: `-0` trước `+0`, `NaN` sau mọi số; thứ tự này được quy định. `Uint8Array.sort()` sắp 0..255. Comparator tự viết phải có thứ tự nhất quán. [CompareTypedArrayElements](https://tc39.es/ecma262/multipage/indexed-collections.html#sec-comparetypedarrayelements).
-
-`Buffer.compare(a, b)` / `buf.compare` lexicographic bytes — không locale.
-
----
-
-
 - [Type tests cho public generics](testing.md)

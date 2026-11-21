@@ -1,24 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import http from "node:http";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { resolve, relative, isAbsolute, sep, dirname } from "node:path";
+import { resolve, relative, isAbsolute, sep, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import process from "node:process";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const markdown = (file) => readFileSync(resolve(root, file), "utf8").replace(/\r\n/g, "\n");
 
-function codeUnder(file, heading) {
+function codeUnder(file, heading, blockIndex = 0) {
   const text = markdown(file);
   const start = text.indexOf(heading + "\n");
   assert.ok(start >= 0, `missing ${heading} in ${file}`);
   const section = text.slice(start).split(/\n#{2,3} /)[0];
-  const block = section.match(/^```(?:ts|js)\n([\s\S]*?)^```/m);
-  assert.ok(block, `missing code under ${heading}`);
-  return stripTypeScriptTypes(block[1]); // Syntax stripping only, not typechecking.
+  const blocks = [...section.matchAll(/^```(?:ts|js)\n([\s\S]*?)^```/gm)];
+  assert.ok(blocks[blockIndex], `missing code block #${blockIndex} under ${heading}`);
+  return stripTypeScriptTypes(blocks[blockIndex][1]); // Syntax stripping only, not typechecking.
 }
 
 const poolCode = codeUnder("async.md", "### 9.2 `mapPool`");
@@ -125,18 +127,147 @@ const resolveInside = new Function("resolve", "relative", "isAbsolute", "sep", p
 test("documented boundary guards preserve valid values and reject malformed inputs", () => {
   assert.deepEqual(parsePage({ limit: 1 }), { limit: 1 });
   assert.deepEqual(parsePage({ limit: 100 }), { limit: 100 });
-  for (const value of [null, [], {}, { limit: "10" }, { limit: 0 }, { limit: 101 }, { limit: NaN }, Object.create({ limit: 5 })]) {
+  const nullProto = Object.assign(Object.create(null), { limit: 25 });
+  assert.deepEqual(parsePage(nullProto), { limit: 25 });
+
+  let getterCalled = false;
+  const withGetter = Object.defineProperty({}, "limit", {
+    enumerable: true,
+    get() {
+      getterCalled = true;
+      return 10;
+    },
+  });
+  assert.throws(() => parsePage(withGetter));
+  assert.equal(getterCalled, false, "parsePage must not invoke own getters");
+
+  for (const value of [
+    null,
+    [],
+    {},
+    new Date(),
+    Object.assign(new Date(), { limit: 10 }),
+    { limit: "10" },
+    { limit: 0 },
+    { limit: 101 },
+    { limit: NaN },
+    Object.create({ limit: 5 }),
+  ]) {
     assert.throws(() => parsePage(value));
   }
+
   const base = resolve(root, "uploads");
   assert.equal(resolveInside(base, "file.txt"), resolve(base, "file.txt"));
-  assert.throws(() => resolveInside(base, "../uploads-evil/file.txt"));
-  assert.throws(() => resolveInside(base, resolve(root, "outside.txt")));
+  assert.equal(resolveInside(base, "nested/report.pdf"), resolve(base, "nested/report.pdf"));
+  for (const badPath of [
+    "",
+    ".",
+    "a/..",
+    "../uploads-evil/file.txt",
+    resolve(root, "outside.txt"),
+    resolve(base, "file.txt"),
+    "file.txt\0.jpg",
+    "file.txt::$DATA",
+    "file.txt:stream",
+    "secret.txt.",
+    "secret.txt ",
+    "CON",
+    "nul.txt",
+    "sub/COM1.log",
+  ]) {
+    assert.throws(() => resolveInside(base, badPath), `expected rejection for ${JSON.stringify(badPath)}`);
+  }
 });
 
-// Execute the three standalone JS test examples from testing.md as separate modules.
+const walkErrorsCode = codeUnder("exceptions.md", "### 5.3 Duyệt đệ quy — `errors` rồi `cause`");
+const { walkErrors, findCode, flattenMessages } = new Function(
+  walkErrorsCode + "\nreturn { walkErrors, findCode, flattenMessages };",
+)();
+
+test("documented walkErrors traverses SuppressedError, AggregateError and circular causes", () => {
+  const rootCause = Object.assign(new Error("db down"), { code: "ECONNREFUSED" });
+  const workErr = new Error("work failed", { cause: rootCause });
+  const disposeErr = Object.assign(new Error("dispose failed"), { code: "EDISPOSE" });
+  const suppressed = new SuppressedError(disposeErr, workErr, "suppressed");
+  const agg = new AggregateError([suppressed], "batch failed");
+  rootCause.cause = agg; // Circular reference must terminate.
+
+  assert.equal(findCode(agg, "EDISPOSE"), true);
+  assert.equal(findCode(agg, "ECONNREFUSED"), true);
+  assert.equal(findCode(agg, "ENOENT"), false);
+
+  const messages = flattenMessages(suppressed);
+  assert.ok(messages.some((m) => m.includes("dispose failed")));
+  assert.ok(messages.some((m) => m.includes("work failed")));
+  assert.ok(messages.some((m) => m.includes("db down")));
+  assert.ok([...walkErrors(agg)].length >= 4);
+});
+
+const throttleCode = codeUnder("functions-callbacks.md", "### 7.4 Debounce / throttle (sketch)");
+const throttle = new Function(throttleCode + "\nreturn throttle;")();
+
+test("documented throttle enforces cooldown after trailing call and respects AbortSignal", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ac = new AbortController();
+  const seen = [];
+  const fn = throttle((v) => seen.push(v), 100, ac.signal);
+
+  fn("a"); // Leading executes immediately
+  fn("b"); // Queued
+  fn("c"); // Replaces trailing
+  assert.deepEqual(seen, ["a"]);
+
+  t.mock.timers.tick(100); // Trailing "c" fires AND starts new 100ms cooldown
+  assert.deepEqual(seen, ["a", "c"]);
+
+  fn("d"); // Must wait for cooldown from "c", NOT fire immediately
+  assert.deepEqual(seen, ["a", "c"]);
+
+  t.mock.timers.tick(50);
+  assert.deepEqual(seen, ["a", "c"]);
+
+  t.mock.timers.tick(50);
+  assert.deepEqual(seen, ["a", "c", "d"]);
+
+  fn("e"); // Queued during cooldown from "d"
+  ac.abort();
+  t.mock.timers.tick(200);
+  assert.deepEqual(seen, ["a", "c", "d"]);
+});
+
+const walkCode = codeUnder("functions-methods.md", "### 12.2 Recursive stack");
+const walk = new Function(walkCode + "\nreturn walk;")();
+
+test("documented iterative walk terminates on cyclic graphs", () => {
+  const a = { children: [] };
+  const b = { children: [a] };
+  a.children.push(b);
+  assert.doesNotThrow(() => walk(a));
+});
+
+const reportCode = codeUnder("diagnostics.md", "### 6.2 Diagnostic Reports: CLI flags, `process.report.writeReport()` & bảo mật")
+  .replace(/^import .*?;\s*/gm, "")
+  .replace(/^export function /m, "function ");
+const writeSafeDiagnosticReport = new Function("mkdirSync", "dirname", "process", reportCode + "\nreturn writeSafeDiagnosticReport;")(
+  mkdirSync,
+  dirname,
+  process,
+);
+
+test("documented writeSafeDiagnosticReport creates nested directory and strips env", (t) => {
+  const dir = join(tmpdir(), `node-ref-report-${process.pid}-${Date.now()}`);
+  const target = join(dir, "nested", "incident.json");
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }));
+
+  const written = writeSafeDiagnosticReport(target);
+  assert.ok(existsSync(written));
+  const payload = JSON.parse(readFileSync(written, "utf8"));
+  assert.equal(payload.environmentVariables, undefined);
+});
+
+// Execute all standalone JS test examples from testing.md as separate modules.
 let example = 0;
 for (const block of markdown("testing.md").matchAll(/^```js\n([\s\S]*?)^```/gm)) {
   await import(`data:text/javascript,${encodeURIComponent(block[1])}#example-${++example}`);
 }
-assert.equal(example, 3);
+assert.equal(example, 5);

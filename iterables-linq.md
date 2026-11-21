@@ -2,7 +2,7 @@
 
 JavaScript không có LINQ như C#, nhưng **iterable protocol** + **Array methods** (`map`/`filter`/`reduce`/`flatMap`…) phủ hầu hết nhu cầu truy vấn in-memory. Trên **Node.js 26** (V8 **14.6**), **Iterator helpers** (lazy `map`/`filter`/`take`/…) và **`Iterator.concat()`** đã có sẵn; **`Iterator.from()`** bọc iterable thành iterator mang helpers.
 
-> Baseline: **Node 26** + **TS 7**. Async iteration / stream: [async.md](async.md) · [nodejs-apis.md](nodejs-apis.md). Predicate/callback: [functions-callbacks.md](functions-callbacks.md). Collections: [collections-generics.md](collections-generics.md). Hủy: [abort-context.md](abort-context.md).
+> Baseline: **Node.js 26 Active LTS ("Lithium", V8 14.6+)** + **TypeScript 7.0**. Async iteration / stream: [async.md](async.md) · [nodejs-apis.md](nodejs-apis.md). Predicate/callback: [functions-callbacks.md](functions-callbacks.md). Collections: [collections-generics.md](collections-generics.md). Hủy: [abort-context.md](abort-context.md).
 
 Không document `Iterator.zip` / `chunks` / `windows` / async-iterator-helpers như baseline — chúng **không** nằm trong highlight V8 14.6 của Node 26 (`Iterator.concat` + Map upsert). Feature-detect trước khi dùng API mới hơn.
 
@@ -14,7 +14,7 @@ Không document `Iterator.zip` / `chunks` / `windows` / async-iterator-helpers n
   - [1.1 Iterable](#11-iterable)
   - [1.2 Iterator — `next` / `return` / `throw`](#12-iterator--next--return--throw)
   - [1.3 Typing (TS)](#13-typing-ts)
-  - [1.4 `using` đóng iterator](#14-using-đóng-iterator)
+  - [1.4 `using` / `await using` đóng iterator](#14-using--await-using-đóng-iterator)
 - [2. `for...of` & built-in iterables](#2-forof--built-in-iterables)
   - [2.1 `Array.from` vs spread](#21-arrayfrom-vs-spread)
 - [3. Generators như producer](#3-generators-như-producer)
@@ -50,30 +50,17 @@ Không document `Iterator.zip` / `chunks` / `windows` / async-iterator-helpers n
   - [7.6 Backpressure async iterator](#76-backpressure-async-iterator)
   - [7.7 `fetch` body / Node stream](#77-fetch-body--node-stream)
   - [7.8 Lỗi `next()` reject](#78-lỗi-next-reject)
+  - [7.9 Node.js `Readable` stream helpers (thay thế async iterator helpers)](#79-nodejs-readable-stream-helpers-thay-thế-async-iterator-helpers)
 - [8. Lazy pipelines & custom iterables](#8-lazy-pipelines--custom-iterables)
-  - [8.1 Generator pipeline (portable)](#81-generator-pipeline-portable)
+  - [8.1 Generator pipeline (portable) & `yield*` compose](#81-generator-pipeline-portable--yield-compose)
   - [8.2 Reusable vs one-shot — pitfalls](#82-reusable-vs-one-shot--pitfalls)
-  - [8.3 `yield*` compose](#83-yield-compose)
-  - [8.4 Zip / cửa sổ (khi Array không đủ)](#84-zip--cửa-sổ-khi-array-không-đủ)
-  - [8.5 Custom iterable — checklist bẫy](#85-custom-iterable--checklist-bẫy)
-  - [8.6 String, `arguments`, TypedArray](#86-string-arguments-typedarray)
-  - [8.7 Push vs pull (tóm tắt)](#87-push-vs-pull-tóm-tắt)
-  - [8.8 `Iterator.from` semantics](#88-iteratorfrom-semantics)
-  - [8.9 Materialize checklist](#89-materialize-checklist)
-  - [8.10 `reduce` trên iterator vs Array](#810-reduce-trên-iterator-vs-array)
-  - [8.11 Infinite + `take` + `forEach`](#811-infinite--take--foreach)
-  - [8.12 TypeScript: `Iterable` vs `ArrayLike`](#812-typescript-iterable-vs-arraylike)
-  - [8.13 Node `Readable.from(iterable)`](#813-node-readablefromiterable)
-  - [8.14 `yield` giá trị lớn](#814-yield-giá-trị-lớn)
-  - [8.15 So sánh `forEach` Array vs iterator](#815-so-sánh-foreach-array-vs-iterator)
-  - [8.16 `break` không chạy `finally` của **outer** nếu…](#816-break-không-chạy-finally-của-outer-nếu)
-  - [8.17 `Map`/`Set` keys iterator + helpers](#817-mapset-keys-iterator--helpers)
-  - [8.18 `for await` + `AbortSignal.any`](#818-for-await--abortsignalany)
-  - [8.19 Debug lazy pipeline](#819-debug-lazy-pipeline)
-  - [8.20 `using` + `for...of`](#820-using--forof)
-  - [8.21 Spread vs `concat` vs `Iterator.concat`](#821-spread-vs-concat-vs-iteratorconcat)
-  - [8.22 `done` và value completion](#822-done-và-value-completion)
-  - [8.23 `Array.from` mapFn và `thisArg`](#823-arrayfrom-mapfn-và-thisarg)
+  - [8.3 Zip & chunk (khi helper chưa phủ)](#83-zip--chunk-khi-helper-chưa-phủ)
+  - [8.4 Subclassing `Iterator` (ES2025) & custom iterable](#84-subclassing-iterator-es2025--custom-iterable)
+  - [8.5 `Iterator.from`, `Iterator.concat` & `Map`/`Set` helpers](#85-iteratorfrom-iteratorconcat--mapset-helpers)
+  - [8.6 `reduce`, `forEach`, `take`/`drop` & infinite sources](#86-reduce-foreach-takedrop--infinite-sources)
+  - [8.7 Materialize, `Array.from` & `Iterable` vs `ArrayLike`](#87-materialize-arrayfrom--iterable-vs-arraylike)
+  - [8.8 Push vs pull, `Readable.from` & buffer ownership](#88-push-vs-pull-readablefrom--buffer-ownership)
+  - [8.9 Cleanup: `using` + `yield`, `finally` & debug lazy pipeline](#89-cleanup-using--yield-finally--debug-lazy-pipeline)
 - [9. Khi **không** xây query DSL tùy biến](#9-khi-không-xây-query-dsl-tùy-biến)
   - [9.1 Exception: thư viện parser / compiler](#91-exception-thư-viện-parser--compiler)
   - [9.2 `for await` + JSON lines](#92-for-await--json-lines)
@@ -161,14 +148,31 @@ function once<T>(it: Iterator<T>) {
 |---|---|
 | `Iterable<T>` | Có `[Symbol.iterator](): Iterator<T>` |
 | `Iterator<T, TReturn, TNext>` | `next(TNext)` → `IteratorResult<T, TReturn>` |
-| `IterableIterator<T>` | Vừa iterable vừa iterator (`[Symbol.iterator]()` trả `this`) — generator |
-| `AsyncIterable<T>` / `AsyncIterator<T>` | `next()` → `Promise<IteratorResult<T>>` |
+| `IterableIterator<T>` | Vừa iterable vừa iterator (`[Symbol.iterator]()` trả `this`) |
+| `IteratorObject<T, TReturn, TNext>` | **TS 5.6+ / 7.0** — iterator kế thừa `Iterator.prototype`, có đủ helpers (`.map`/`.filter`/`.take`/…), `[Symbol.iterator]()` và `[Symbol.dispose]()` (kiểu trả về của `.values()`, `Iterator.from()`, generator built-in) |
+| `AsyncIterable<T>` / `AsyncIterator<T>` / `AsyncIteratorObject<T>` | `next()` → `Promise<IteratorResult<T>>` (`AsyncIteratorObject` kèm `[Symbol.asyncDispose]()`) |
 
-`Iterator<T>` **không** gán `Iterable<T>` trừ khi có `[Symbol.iterator]`. Built-in iterators (Array/Map/Set helpers trên Node 26) kế `Iterator.prototype` → iterable. Iterator tự viết tối thiểu chỉ `next` — **không** `for...of` được trừ khi thêm `[Symbol.iterator]() { return this; }` hoặc `Iterator.from`.
+`Iterator<T>` **không** gán `Iterable<T>` trừ khi có `[Symbol.iterator]`. Built-in iterators (Array/Map/Set/generator trên Node 26) trả `IteratorObject<T, BuiltinIteratorReturn, unknown>` kế thừa `Iterator.prototype` → vừa iterable vừa có helpers. Iterator tự viết tối thiểu chỉ có `next()` — **không** `for...of` được trừ khi thêm `[Symbol.iterator]() { return this; }`, kế thừa `class extends Iterator` (§8.4), hoặc bọc bằng `Iterator.from()`.
 
-### 1.4 `using` đóng iterator
+### 1.4 `using` / `await using` đóng iterator
 
-Iterator hiện đại có `[Symbol.dispose]` gọi `return()`. `using it = xs[Symbol.iterator]()` đóng khi hết block — [functions-methods.md](functions-methods.md) §11, [statements.md](statements.md#11-using-vs-tryfinally).
+Trên Node 26, cả `Iterator.prototype[Symbol.dispose]` (gọi `this.return?.()`) lẫn `AsyncIterator.prototype[Symbol.asyncDispose]` (gọi `await this.return?.()`) đều có sẵn:
+
+```ts
+// Sync iterator thủ công (khi không dùng for...of):
+{
+  using it = gen();
+  const first = it.next();
+} // rời block → tự gọi it.return?.()
+
+// Async iterator thủ công:
+{
+  await using ait = asyncGen();
+  const first = await ait.next();
+} // rời block → tự gọi await ait.return?.()
+```
+
+Chi tiết ERM: [functions-methods.md](functions-methods.md) §11, [statements.md](statements.md#11-using-vs-tryfinally).
 
 ---
 
@@ -343,7 +347,7 @@ const byCity = people.reduce<Record<string, Person[]>>((acc, p) => {
 
 | Pattern | Vấn đề | Thay |
 |---|---|---|
-| `reduce` xây `Map`/`object` phức tạp | Khó đọc, generic `acc` đau | `for` + `getOrInsert` |
+| `reduce` xây `Map`/`object` phức tạp | Khó đọc, generic `acc` đau | `for` + `getOrInsertComputed` |
 | Không seed, mảng rỗng | `TypeError` / `undefined` | Seed / early return |
 | `reduce` + `await` trong callback | **Không** tuần tự await — callback sync | `for...of` + `await` |
 | Nested `reduce` | Mini-golf | Tách hàm / vòng |
@@ -353,7 +357,7 @@ const byCity = people.reduce<Record<string, Person[]>>((acc, p) => {
 ```ts
 const byCity2 = new Map<string, Person[]>();
 for (const p of people) {
-  byCity2.getOrInsert(p.city, []).push(p);
+  byCity2.getOrInsertComputed(p.city, () => []).push(p);
 }
 ```
 
@@ -586,8 +590,7 @@ Ghi chú chính xác:
 
 ```ts
 function hasIteratorHelpers(): boolean {
-  const proto = Object.getPrototypeOf([][Symbol.iterator]());
-  return typeof (proto as { map?: unknown }).map === "function";
+  return typeof globalThis.Iterator?.prototype?.map === "function";
 }
 
 function hasIteratorConcat(): boolean {
@@ -604,7 +607,7 @@ it.next(); // 1
 a.next();  // 2 — không fork
 ```
 
-Song song hữu ích (không phải iterator sync helpers): `Array.fromAsync`, async iteration trên stream — xem §7. **Async iterator helpers** (map/filter trên async iterator prototype) **chưa** giả định đã ship đầy đủ như sync helpers trên mọi target — kiểm tra MDN/`node --version` trước khi dựa vào trong thư viện public; fallback async generator luôn an toàn.
+Song song hữu ích (không phải sync iterator helpers): `Array.fromAsync`, async iteration trên stream, và **Node.js `Readable` stream helpers** (`.map`/`.filter`/`.take`/`.toArray` kèm `{ concurrency }` — xem §7.9). **TC39 Async iterator helpers** trên `AsyncIterator.prototype` **chưa** phải baseline — dùng `Readable.from(...)` (Node 26) hoặc `async function*`.
 
 ### 6.1 Bảng helper ↔ Array (lazy vs eager)
 
@@ -646,9 +649,9 @@ src.map((n) => n * 2);           // iterator helper — chưa chạy fn
 
 `.some`/`.find` true sớm: gọi `return()` underlying — `finally` generator chạy. `.forEach` / `.reduce` / `.toArray` kéo đến hết (trừ throw).
 
-`.map` callback **không** nhận index như `Array#map` trên một số phiên bản helper — kiểm tra chữ ký (`(value) =>` vs `(value, index)`). Spec iterator map: chủ yếu `value`. Đừng copy `Array#map` `(v, i, arr)` — **không** có `arr`.
+Theo spec **ES2025 (V8 14.6 / Node 26)**, tất cả callback của Iterator Helpers **đều truyền tham số `counter`** (`0, 1, 2, ...`): `.map`, `.filter`, `.flatMap`, `.forEach`, `.some`, `.every`, `.find` nhận `(value, counter)`; `.reduce` nhận `(acc, value, counter)`. Khác với `Array` ở chỗ **không** có tham số `array` và **không** hỗ trợ `thisArg`.
 
-`.flatMap` callback trả iterable/iterator; array OK. Trả scalar không bọc → TypeError (khác `Array#flatMap` một số path). Bọc `[scalar]` nếu cần.
+> **Pitfall `.flatMap` từ chối string primitives:** Callback của `Iterator.prototype.flatMap` bắt buộc trả về một **object** implement iterable/iterator protocol (như array, `Set`, generator). Trả về **string primitive** (`"ab"`) sẽ ném `TypeError` (khác với `for...of` chấp nhận string) — nếu muốn tách ký tự, trả về `[...str]` hoặc `str[Symbol.iterator]()`. Trả scalar thường (như `number`) cũng ném `TypeError`; bọc `[scalar]` khi cần.
 
 ### 6.3 `Iterator.concat` chi tiết
 
@@ -714,10 +717,13 @@ Readable (web & Node hiện đại) async-iterable. `pipeline` vẫn cần khi t
 ### 7.4 Lỗi, `break` & AbortSignal
 
 ```ts
+import { createReadStream } from "node:fs";
+
 const ac = new AbortController();
 try {
-  const stream = Readable.toWeb(createReadStream(path, { signal: ac.signal }));
-  for await (const chunk of stream as AsyncIterable<Uint8Array>) {
+  // createReadStream trả Node Readable — đã là AsyncIterable trực tiếp
+  const stream = createReadStream(path, { signal: ac.signal });
+  for await (const chunk of stream) {
     if (shouldStop()) {
       ac.abort(); // hủy I/O — không chỉ break
       break;      // gọi return() iterator
@@ -743,15 +749,18 @@ Hủy hợp tác đầy đủ: [abort-context.md](abort-context.md). Đừng ch�
 ### 7.5 `Array.fromAsync`
 
 ```ts
-const pages = await Array.fromAsync(
-  urls.map(async (u) => {
-    const res = await fetch(u);
-    return res.text();
-  }),
-);
+// Tuần tự an toàn — mapFn chỉ khởi chạy từng phần tử một:
+const pages = await Array.fromAsync(urls, async (u) => {
+  const res = await fetch(u);
+  return res.text();
+});
+
+// TRÁNH: Array.fromAsync(urls.map(async (u) => ...))
+// urls.map() chạy tất cả fetch song song ngay, nhưng Array.fromAsync await TUẦN TỰ:
+// nếu Promise ở index sau reject trước khi fromAsync kịp await tới → UnhandledPromiseRejection!
 ```
 
-Hữu ích khi có async iterable / iterable of thenables. **Vẫn** kéo theo tốc độ consume tuần tự (không song song N request trừ khi input đã là Promise[] — `fromAsync` trên array of Promise await lần lượt **hoặc** theo implementation; với iterable of thenables nó await từng phần tử). Song song có giới hạn: `Promise.all` + pool — [async.md](async.md) §6.
+`Array.fromAsync` **luôn tiêu thụ và `await` tuần tự** từng phần tử. Dùng `Array.fromAsync(iterable, asyncMapFn)` cho chạy tuần tự (không tạo Promise treo), hoặc dùng `Promise.all` / bounded pool ([async.md](async.md) §6) / `Readable.from().map(..., { concurrency })` (§7.9) khi muốn chạy song song.
 
 File lớn: `for await` từng chunk, không `fromAsync` cả stream.
 
@@ -788,11 +797,37 @@ Top-level `for await` trong ESM module: hợp lệ (TLA) — [async.md](async.md
 
 Async `next()` reject: `for await` propagate lỗi, **không tự gọi `return()` trong nhánh này**. Iterator phải tự dọn tài nguyên khi producer lỗi, hoặc consumer dùng `try/finally` để đóng tường minh. Với sync generator yield Promise bị reject, `for await` cũng có thể bỏ qua `finally` của generator; dùng `for...of` + `await value` trong thân khi cần bảo đảm IteratorClose. Lỗi cleanup của vòng lặp thường theo completion rules, không tự tạo `SuppressedError` như ERM.
 
+### 7.9 Node.js `Readable` stream helpers (thay thế async iterator helpers)
+
+Dù TC39 async iterator helpers chưa phải baseline, **Node.js `Readable`** (từ Node 17.5+ / ổn định hoàn toàn trên Node 22–26) cung cấp sẵn bộ helper lazy bất đồng bộ (`.map()`, `.filter()`, `.flatMap()`, `.take()`, `.drop()`, `.forEach()`, `.some()`, `.every()`, `.find()`, `.reduce()`, `.toArray()`) kèm **bounded concurrency** và **`AbortSignal`**:
+
+```ts
+import { Readable } from "node:stream";
+
+const ac = new AbortController();
+
+const titles = await Readable.from(urls)
+  .map(
+    async (url: string, { signal }) => {
+      const res = await fetch(url, { signal });
+      return res.text();
+    },
+    { concurrency: 4, signal: ac.signal },
+  )
+  .filter((html) => html.length > 0)
+  .drop(1)
+  .take(5)
+  .toArray();
+```
+
+- Tự động tôn trọng backpressure và giới hạn tối đa `concurrency` tác vụ chạy song song (thay thế gọn cho tự viết worker pool).
+- Có thể áp dụng lên bất kỳ sync/async iterable nào qua `Readable.from(iterable)`.
+
 ---
 
 ## 8. Lazy pipelines & custom iterables
 
-### 8.1 Generator pipeline (portable)
+### 8.1 Generator pipeline (portable) & `yield*` compose
 
 ```ts
 function* filter<T>(xs: Iterable<T>, pred: (x: T) => boolean) {
@@ -811,16 +846,18 @@ function* take<T>(xs: Iterable<T>, n: number) {
   }
 }
 
-const lazy = take(
-  map(
-    filter(range(1, 1_000_000), (n) => n % 2 === 0),
-    (n) => n * n,
-  ),
-  5,
-);
+function* pipeline() {
+  yield* take(
+    map(
+      filter(range(1, 1_000_000), (n) => n % 2 === 0),
+      (n) => n * n,
+    ),
+    5,
+  );
+}
 ```
 
-Trên Node 26, ưu tiên iterator helpers native thay pipeline tự viết — trừ khi cần logic đặc thù / polyfill.
+Trên Node 26, ưu tiên iterator helpers native thay pipeline tự viết — trừ khi cần logic đặc thù hoặc hỗ trợ runtime cũ.
 
 ### 8.2 Reusable vs one-shot — pitfalls
 
@@ -854,36 +891,45 @@ const reusable = {
   },
 };
 [...reusable];
-[...reusable]; // [1,2,3] lại
+[...reusable]; // [1, 2, 3] lại
 ```
 
-API public: nhận `Iterable<T>` nếu caller có thể duyệt lại; document “one-shot” nếu nhận `Iterator` / generator / stream. `Iterable<T> | (() => Iterable<T>)` khi cần replay.
+API public: nhận `Iterable<T>` nếu caller có thể duyệt lại; document “one-shot” nếu nhận `Iterator` / generator / stream (`Iterable<T> | (() => Iterable<T>)` khi cần replay).
 
-Bẫy: `function make() { const g = gen(); return { [Symbol.iterator]: () => g }; }` — **giả** reusable, lần 2 rỗng. Mỗi `[Symbol.iterator]` phải tạo iterator mới.
+Bẫy: `function make() { const g = gen(); return { [Symbol.iterator]: () => g }; }` — **giả** reusable, lần 2 rỗng. Mỗi lần gọi `[Symbol.iterator]()` phải tạo iterator mới.
 
-### 8.3 `yield*` compose
-
-```ts
-function* pipeline() {
-  yield* take(map(range(1, 10), (x) => x * 2), 3);
-}
-```
-
-### 8.4 Zip / cửa sổ (khi Array không đủ)
+### 8.3 Zip & chunk (khi helper chưa phủ)
 
 ```ts
 function* zip<A, B>(a: Iterable<A>, b: Iterable<B>): Generator<[A, B]> {
   const ia = a[Symbol.iterator]();
   const ib = b[Symbol.iterator]();
-  while (true) {
-    const xa = ia.next();
-    const xb = ib.next();
-    if (xa.done || xb.done) return;
-    yield [xa.value, xb.value];
+  let aDone = false;
+  let bDone = false;
+  try {
+    while (true) {
+      const xa = ia.next();
+      if (xa.done) {
+        aDone = true;
+        return;
+      }
+      const xb = ib.next();
+      if (xb.done) {
+        bDone = true;
+        return;
+      }
+      yield [xa.value, xb.value];
+    }
+  } finally {
+    if (!aDone) ia.return?.();
+    if (!bDone) ib.return?.();
   }
 }
 
-function* chunk<T>(xs: Iterable<T>, size: number) {
+function* chunk<T>(xs: Iterable<T>, size: number): Generator<T[]> {
+  if (!Number.isInteger(size) || size < 1) {
+    throw new RangeError(`chunk size must be a positive integer, got ${size}`);
+  }
   let buf: T[] = [];
   for (const x of xs) {
     buf.push(x);
@@ -896,198 +942,132 @@ function* chunk<T>(xs: Iterable<T>, size: number) {
 }
 ```
 
-Trên Node 26, nhiều thao tác “map rồi take” nên dùng iterator helpers; chỉ tự viết khi helper không phủ (zip, cửa sổ trượt, stateful parse). **Không** gọi `Iterator.zip` như đã có sẵn trên baseline này.
+Trên Node 26, ưu tiên iterator helpers cho `map`/`filter`/`take`/`drop`/`concat`; chỉ tự viết generator cho thao tác chưa có sẵn (zip, cửa sổ trượt, chunk, stateful parse). Kiểm `xa.done` trước khi gọi `ib.next()` và đóng cả hai trong `finally` giúp tránh kéo thừa và tránh rò rỉ tài nguyên của inner generator. **Không** gọi `Iterator.zip` như đã có sẵn trên baseline này.
 
-`zip` nên `try/finally` gọi `ia.return?.()` / `ib.return?.()` khi một bên hết sớm — đóng inner generators.
+### 8.4 Subclassing `Iterator` (ES2025) & custom iterable
 
-### 8.5 Custom iterable — checklist bẫy
-
-- `next` luôn trả `{ value, done }` — thiếu `done` → vòng vô hạn.
-- `done: true` vẫn có `value` (completion) — `for-of` **bỏ** value đó.
-- Mutate collection vừa iterate Map/Set: hành vi live — dễ skip/double. Copy hoặc cấm mutate.
-- Throw từ `next`: `for-of` không gọi `return` trên một số path? Spec: abrupt completion vẫn cố `return` — implement `return` idempotent.
-- Dual protocol: vừa `next` vừa `[Symbol.iterator]` trả iterator **khác** → `for-of` vs `.next()` lệch. Proper: `[Symbol.iterator]() { return this; }` trên iterator.
-
-### 8.6 String, `arguments`, TypedArray
-
-`for (const ch of str)` — code point. Index `str[i]` — UTF-16 code unit (cắt surrogate). `Uint8Array` iterable **byte**. `arguments` iterable (strict vẫn vậy) — prefer rest.
+Từ **ES2025 / Node 26**, bạn có thể kế thừa trực tiếp built-in `Iterator` — chỉ cần implement `next()` (và tùy chọn `return()`), class tự động thừa hưởng `[Symbol.iterator]() { return this; }`, `[Symbol.dispose]()`, cùng toàn bộ helpers (`.map()`, `.filter()`, `.take()`, `.toArray()`, …):
 
 ```ts
-function f(...args: number[]) {
-  for (const x of args) {
-    /* … */
+class RangeIterator extends Iterator<number> {
+  #cur: number;
+  #end: number;
+
+  constructor(start: number, end: number) {
+    super(); // lưu ý: `new Iterator()` trực tiếp ném TypeError (abstract base)
+    this.#cur = start;
+    this.#end = end;
   }
+
+  override next(): IteratorResult<number, undefined> {
+    if (this.#cur >= this.#end) return { value: undefined, done: true };
+    return { value: this.#cur++, done: false };
+  }
+}
+
+new RangeIterator(0, 10)
+  .filter((n) => n % 2 === 0)
+  .take(3)
+  .toArray(); // [0, 2, 4]
+```
+
+**Checklist bẫy custom iterator & completion rules:**
+
+- `next()` luôn trả `{ value, done }` — thiếu `done` → vòng vô hạn.
+- **Completion value (`done: true`):** `function* g() { yield 1; return 99; }` trả `{ value: 99, done: true }`, nhưng **`for...of` bỏ qua giá trị khi `done: true`**. Muốn lấy `99`, gọi `.next()` thủ công hoặc `const r = yield* g()`.
+- **Throw từ `next()`:** Theo ECMA-262, khi `iterator.next()` tự throw, `for...of` **không** gọi `iterator.return()` (đồng bộ §7.8) — producer phải tự dọn tài nguyên trước khi throw. `return()` chỉ được gọi khi **thân vòng lặp** thoát sớm (`break` / `return` / `throw`). Luôn cài `return()` idempotent.
+- **Labeled `break` / `continue` & empty iterable:** `outer: for (const x of xs) { for (const y of ys) { if (cond) break outer; } }` gọi `return()` cho **cả hai** iterator (inner rồi outer). `continue` (kể cả trong `for await`) **không** gọi `return()` cho vòng hiện tại, nhưng `continue outer` sẽ đóng iterator vòng trong. Iterable rỗng (`Iterable<never>` / `[] as const`) hữu ích để test pipeline rỗng — `for...of` không vào body.
+- **Dual protocol:** Iterator tự viết phải có `[Symbol.iterator]() { return this; }` (đừng trả iterator mới khác cursor hiện tại). Mutate `Map`/`Set` đang duyệt có hành vi live — copy snapshot trước nếu xóa hàng loạt.
+
+### 8.5 `Iterator.from`, `Iterator.concat` & `Map`/`Set` helpers
+
+```ts
+Iterator.from([1, 2, 3]); // gọi [Symbol.iterator]() → iterator mới trên mảng
+Iterator.from({
+  next() {
+    return { done: true, value: undefined };
+  },
+}); // bọc iterator-like → proper IteratorObject có đủ helpers
+
+const m = new Map([
+  ["a", 1],
+  ["b", 2],
+]);
+m.values().filter((n) => n > 1).toArray();     // [2]
+Iterator.concat(m.keys(), ["c"]).toArray();    // ["a", "b", "c"]
+new Map(Iterator.concat(m, [["c", 3]]));       // nối entries lazy
+```
+
+- **`Iterator.from(obj)`:** Nếu `obj` là iterable, spec gọi `obj[Symbol.iterator]()`. Với **generator** hoặc **built-in iterator** (`arr.values()`, `map.keys()`), `[Symbol.iterator]()` trả lại **chính `this`**, nên `Iterator.from(it) === it` (không tạo iterator mới). Với `Array`/`Set`, nó tạo iterator mới; với iterator-like thuần (chỉ có `next()`), nó bọc bằng wrapper proper có đầy đủ helpers.
+- **Spread vs `concat` vs `Iterator.concat`:** `[...a, ...b]` materialize cả hai thành mảng mới; `a.concat(b)` chỉ cho `Array` và eager; `Iterator.concat(a, b)` lazy cho mọi iterable (thắng bộ nhớ khi `.take()` sớm; lưu ý nếu `a` vô hạn sẽ không bao giờ sang `b`).
+
+### 8.6 `reduce`, `forEach`, `take`/`drop` & infinite sources
+
+```ts
+([] as number[]).values().reduce((a, b) => a + b, 0); // 0
+// ([] as number[]).values().reduce((a, b) => a + b); // TypeError: Reduce of empty iterator with no initial value
+
+function* naturals() {
+  for (let i = 0; ; i++) yield i;
+}
+naturals().take(5).toArray(); // [0, 1, 2, 3, 4]
+// naturals().toArray(); // treo / OOM
+```
+
+- **`.reduce`:** Có hành vi `initialValue` optional **giống hệt** `Array#reduce` (bỏ qua seed thì phần tử đầu làm accumulator và callback chạy từ phần tử thứ hai với `counter = 1`; iterator rỗng không seed ném `TypeError`). Callback nhận `(acc, value, counter)` — không có `array` và `thisArg`.
+- **`.forEach`:** Consume toàn bộ nguồn, callback nhận `(value, counter)`, không `break` (trừ throw) và không `await` callback `async` — cần `break` hoặc `await` hãy dùng `for...of` / `.some()`.
+- **`.drop(n)` trên nguồn lớn:** Khởi tạo wrapper `.drop(1e12)` chỉ O(1), nhưng ngay lần `.next()` đầu tiên iterator vẫn phải kéo bỏ từng phần tử (**O(n)**, treo CPU — không có random-access seek). Không `.drop()` số cực lớn trừ khi nguồn hỗ trợ cắt trực tiếp (`Array#slice`).
+
+### 8.7 Materialize, `Array.from` & `Iterable` vs `ArrayLike`
+
+Trước khi gọi `[...iter]` / `.toArray()`, tự hỏi:
+1. Số phần tử có giới hạn không? (Vô hạn → OOM.)
+2. Có cần random access / `.length` / `.toSorted()` không? (Nếu có → bắt buộc mảng.)
+3. Chỉ duyệt một lần → giữ lazy; cần duyệt lại → mảng hoặc factory iterable; I/O stream → không materialize toàn bộ.
+
+```ts
+function asArr<T>(x: ArrayLike<T> | Iterable<T>): T[] {
+  return Array.from(x); // Array.from hỗ trợ trực tiếp union Iterable<T> | ArrayLike<T>
 }
 ```
 
-`NodeList` / DOM không thuộc Node server. `Buffer` iterable như `Uint8Array` (byte 0..255).
+- `Array.from(x, mapFn, thisArg)`: chấp nhận cả `ArrayLike<T>` (`{ length, [n]: T }`, không iterable) lẫn `Iterable<T>`; `Array.from({ length: n }, (_, i) => i)` tạo mảng dense (tránh `new Array(n).map` bỏ qua holes). Khác với iterator helper `.map` không có `thisArg`.
+- **String, `arguments`, TypedArray:** `for (const ch of str)` và `[...str]` duyệt theo **code point** (giữ nguyên surrogate pair, khác `str[i]` theo UTF-16 code unit). `Uint8Array` / `Buffer` iterable từng byte (`0..255`). `arguments` iterable nhưng luôn ưu tiên rest `...args`.
 
-### 8.7 Push vs pull (tóm tắt)
+### 8.8 Push vs pull, `Readable.from` & buffer ownership
 
 | Push | Pull |
 |---|---|
 | `EventEmitter` `data` | `for...of` / `next()` |
 | `Readable` `on("data")` | `for await` / `read()` |
-| Tốc độ producer | Tốc độ consumer |
+| Tốc độ do producer quyết định | Tốc độ do consumer quyết định |
 
-Backpressure push: `pause()`/`highWaterMark`. Pull: không gọi `next` / không `await` vòng tiếp. Trộn hai mô hình trên một nguồn → mất pause. Chi tiết stream: [nodejs-apis.md](nodejs-apis.md), [event-loop.md](event-loop.md).
+- Trộn `on("data")` với `for await` trên cùng stream sẽ phá cơ chế `pause()`/backpressure — xem [nodejs-apis.md](nodejs-apis.md), [event-loop.md](event-loop.md).
+- **`Readable.from(iterable)`:** Cầu nối từ pull sync/async iterable sang Node `Readable` stream (mặc định `objectMode: true`, `highWaterMark` đếm theo số object). Khi hủy nhiều nguồn đồng thời, kết hợp `AbortSignal.any([req.signal, AbortSignal.timeout(ms)])` cùng `for await` (và kiểm tra `readable.destroyed` nếu cần).
+- **`yield` buffer lớn:** `yield buf` truyền nguyên reference, không copy. Nếu producer tái sử dụng buffer nội bộ (hoặc `Buffer.allocUnsafe` pool) trong khi consumer còn giữ reference → data race; hãy copy trước khi yield nếu recycle.
 
-### 8.8 `Iterator.from` semantics
-
-```ts
-Iterator.from([1, 2, 3]); // lấy [Symbol.iterator]()
-Iterator.from({
-  next() {
-    return { done: true, value: undefined };
-  },
-}); // bọc iterator-like → proper Iterator (helpers)
-```
-
-Nếu object **vừa** iterable vừa iterator, `from` ưu tiên iterable protocol (`[Symbol.iterator]`) theo spec — tạo iterator **mới**, không reuse `next` sẵn. Đọc MDN khi wrap object lạ.
-
-`from` trên `Iterator` instance có thể trả chính nó (đã proper). Wrap hai lần không đổi hành vi hữu ích.
-
-### 8.9 Materialize checklist
-
-Trước `[...iter]` / `toArray()` hỏi:
-
-1. N có bound không? Infinite → OOM.
-2. Cần random access / `length` / sort? Bắt buộc mảng.
-3. Duyệt một lần? Giữ lazy.
-4. Cần replay? Mảng hoặc factory iterable.
-5. I/O? Đừng materialize stream.
-
-### 8.10 `reduce` trên iterator vs Array
-
-Iterator `.reduce` **không** có `initialValue` optional giống Array mọi trường hợp — iterator rỗng + không seed → `TypeError`. Luôn truyền seed khi nguồn có thể rỗng.
-
-Không `index`, không `array` tham số 3. Side-effect reducer: dùng `forEach` / `for...of` rõ ý.
-
-```ts
-[].values().reduce((a: number, b) => a + b, 0); // 0
-// [].values().reduce((a, b) => a + b); // TypeError
-```
-
-### 8.11 Infinite + `take` + `forEach`
-
-```ts
-function* naturals() {
-  for (let i = 0; ; i++) yield i;
-}
-naturals().take(5).toArray(); // [0,1,2,3,4]
-// naturals().toArray(); // treo / OOM
-```
-
-`.drop(1e12)` trên generator rẻ (bỏ 1e12 bước **vẫn O(n)** — không seek). Không drop hàng tỉ trừ khi nguồn random-access (Array `slice`).
-
-### 8.12 TypeScript: `Iterable` vs `ArrayLike`
-
-```ts
-function asArr<T>(x: ArrayLike<T> | Iterable<T>): T[] {
-  return Array.from(x as Iterable<T> & ArrayLike<T>);
-}
-```
-
-`ArrayLike` = `{ length: number; [n: number]: T }` — **không** iterable. Union: `Array.from` nhận cả hai overload. Generic khó — overload `from` như lib DOM.
-
-`IterableIterator` gán `Iterable` và `Iterator`. Trả generator từ public API: caller dễ exhaust — document hoặc trả `T[]`.
-
-### 8.13 Node `Readable.from(iterable)`
-
-Đẩy pull iterable vào stream (objectMode nếu không phải byte). Ngược: `Readable` async-iterable. Bridge khi API đòi stream vs `for await`. `highWaterMark` objectMode đếm **object**, không byte.
-
-### 8.14 `yield` giá trị lớn
-
-`yield buf` không copy — consumer giữ reference, producer reuse buffer → data race. Stream pattern: producer không ghi đè chunk đã yield cho đến khi `next` tiếp (hoặc copy). `Buffer.allocUnsafe` pool: **copy** trước khi yield nếu recycle.
-
-### 8.15 So sánh `forEach` Array vs iterator
-
-`Array#forEach` không break (trừ throw). Iterator `.forEach` consume hết. Cần `break` → `for...of` / `.some`. `forEach` + `async` không await — giống Array.
-
-Index: Array `forEach((v, i)`) có `i`; iterator helper **không** đảm bảo index — tự đếm nếu cần.
-
-### 8.16 `break` không chạy `finally` của **outer** nếu…
-
-`finally` generator chạy khi iterator đóng. `for-of` trong `try/finally` **ngoài** generator: `break` chạy `return()` gen **rồi** `finally` vòng ngoài. Hai tầng khác nhau. Thiếu `return` trên iterator tay: `finally` ngoài vẫn chạy, cleanup **trong** producer không.
-
-Test: `break` giữa `yield` có I/O — spy `dispose` / `close`.
-
-### 8.17 `Map`/`Set` keys iterator + helpers
-
-```ts
-const m = new Map([
-  ["a", 1],
-  ["b", 2],
-]);
-m.values()
-  .filter((n) => n > 1)
-  .toArray(); // [2]
-Iterator.concat(m.keys(), ["c"]).toArray(); // ["a", "b", "c"]
-```
-
-`m[Symbol.iterator]()` ≡ `m.entries()`. `Iterator.concat(m, otherMap)` nối entries — hữu ích `new Map(Iterator.concat(a, b))`.
-
-### 8.18 `for await` + `AbortSignal.any`
-
-Nhiều nguồn hủy: `AbortSignal.any([req.signal, timeout])` đưa vào `fetch` / `createReadStream`. Iterator `return()` **và** abort — đủ cặp. `AbortSignal.timeout(ms)` tạo signal một shot — [abort-context.md](abort-context.md).
-
-`for await` trên `Readable` đã destroy: ném / kết thúc tùy state — kiểm `readable.destroyed`.
-
-### 8.19 Debug lazy pipeline
-
-Log giữa chain: `.map((x) => { console.log(x); return x; })` trên iterator helper — vẫn lazy, log lúc consume. Eager Array: log ngay. Breakpoint `next` generator khó hơn `map` array — materialize tạm trong debug.
-
-### 8.20 `using` + `for...of`
+### 8.9 Cleanup: `using` + `yield`, `finally` & debug lazy pipeline
 
 ```ts
 function* files(paths: string[]) {
   for (const p of paths) {
     using f = openDisposable(p);
-    yield f;
-  } // dispose mỗi iteration — yield xong mới dispose? 
-  // CẨN: yield rồi hết block for → dispose TRƯỚC khi consumer dùng
+    yield f; // tạm dừng ngay tại đây — consumer trong for...of dùng f bình thường!
+  } // f chỉ bị dispose khi iterator resume sang bước tiếp theo (hoặc return())
 }
+
+// ĐÚNG: xử lý f ngay trong thân vòng lặp
+for (const f of files(paths)) {
+  readHeader(f);
+}
+
+// BẪY: giữ f lại sau vòng lặp — khi vòng đi tiếp, các f trước đó đã bị dispose!
+// const all = [...files(paths)];
 ```
 
-**Sai** nếu `using` cùng block với `yield` rồi consumer dùng sau resume. Resource phải sống đến `return()` iterator: `using` ở generator **body ngoài vòng yield** hoặc cleanup `finally` khi `return`. Xem [statements.md](statements.md) `using` + vòng.
-
-Đúng: mở trong consumer, hoặc async gen + `await using` theo chunk với lifetime khớp `yield`.
-
-### 8.21 Spread vs `concat` vs `Iterator.concat`
-
-`[...a, ...b]` materialize cả hai + mảng mới. `a.concat(b)` Array-only, eager. `Iterator.concat(a, b)` lazy, mọi iterable. Infinite `a`: concat không tới `b`. Memory: concat iterator thắng khi take sớm.
-
-`String` spread: `..."ab"` → `["a","b"]` code points. `Buffer` spread: numbers 0–255 (không chunk).
-
-### 8.22 `done` và value completion
-
-```ts
-function* g() {
-  yield 1;
-  return 99;
-}
-const it = g();
-it.next(); // { value: 1, done: false }
-it.next(); // { value: 99, done: true } — for-of bỏ 99
-```
-
-Cần completion value: không dùng `for-of`; gọi `next` tay hoặc `yield*` gán `const x = yield* g()`.
-
-### 8.23 `Array.from` mapFn và `thisArg`
-
-`Array.from(x, mapFn, thisArg)` — `thisArg` bind `this` của `mapFn` (không phải arrow). Iterator helper `.map` **không** có `thisArg` — đóng over / bind trước.
-
-`Array.from({ length: n }, (_, i) => i)` dense 0..n-1 — tránh `new Array(n).map` (holes, map bỏ hole).
-
-Empty iterable: `for...of` không vào body. `Iterator.concat()` rỗng. `[...emptyGen()]` → `[]`. Async: `for await` không vào body; `return()` vẫn có thể gọi khi `break` trước khi `next` — hiếm.
-
-`Iterable<never>` / `[] as const` hữu ích test pipeline rỗng.
-
-`break` labeled: `outer: for (const x of xs) { for (const y of ys) { if (cond) break outer; } }` — `return()` **cả hai** iterator (inner rồi outer) theo spec `for-of` lồng. Cleanup hai tầng.
-
-`continue` `for-of` **không** gọi `return()` — chỉ lần lặp tiếp. `return()` khi thoát vòng (hết / break / throw). `continue` labeled ra vòng ngoài: đóng iterator vòng trong.
-
-`for await` + `continue`: không `return()` async iterator — chỉ `next` tiếp. `break` mới đóng.
+- `yield f` tạm dừng generator **bên trong** block `for`, nên consumer trong `for...of` dùng `f` hoàn toàn hợp lệ, và nếu `break` sớm thì `for...of` gọi `return()` làm `f` vẫn được dispose đúng chuẩn. Bẫy thật chỉ xảy ra khi consumer **giữ reference `f` vượt quá một bước lặp** (ví dụ `[...files(paths)]` hoặc `cache.push(f)`).
+- **`break` và `finally` hai tầng:** `for...of` nằm trong `try/finally` ngoài generator: `break` chạy `iterator.return()` (kích hoạt `finally` trong generator) **rồi mới** chạy `finally` của vòng ngoài. Nếu iterator tự viết quên implement `return()`, cleanup bên trong producer sẽ bị bỏ qua.
+- **Debug lazy pipeline:** Chèn `.map((x) => { console.log(x); return x; })` giữa chain để quan sát từng phần tử tại đúng thời điểm kéo (khác `Array#map` log toàn bộ ngay lập tức), hoặc materialize tạm mảng nhỏ khi đặt breakpoint.
 
 ---
 
@@ -1212,20 +1192,16 @@ Iterator.concat(a, b, c)
 | ES2015 | iterators, `for...of`, generators |
 | ES2018 | async generators, `for await` |
 | ES2023 | `toSorted` / `toReversed` / `findLast`… |
-| ES2024 | `Object.groupBy` / `Map.groupBy` (theo engine) |
-| Iterator Helpers (TC39) | `.map`/`.filter`/`.take`/… trên iterator; `Iterator.from` |
-| **V8 14.6 / Node 26** | `Iterator.concat`; Map upsert (chương collections); helpers ổn định |
-| `Array.fromAsync` | Có trên baseline 26; không phải API fan-out |
-| **TS 7** | `Iterable`/`Iterator`/`AsyncIterable` trong lib |
+| ES2024 | `Object.groupBy` / `Map.groupBy`, `Array.fromAsync` |
+| ES2025 | Iterator Helpers (`.map`/`.filter`/`.take`/`.drop`/`.flatMap`/`.reduce`/…, mọi callback nhận `counter`), `Iterator.from`, subclassing `Iterator` |
+| **V8 14.6 / Node 26** | `Iterator.concat`, `[Symbol.dispose]` / `[Symbol.asyncDispose]` trên iterator, `Readable` stream helpers (`.map`/`.filter` + `{ concurrency }`) |
+| **TS 5.6+ / 7.0** | `IteratorObject<T, TReturn, TNext>`, `AsyncIteratorObject<T>`, `Iterable`/`Iterator`/`AsyncIterable` |
 
-Baseline: **Node 26** + **TS 7** — dùng iterator helpers + `Iterator.concat` / `Iterator.from` thoải mái trên baseline này.
+Baseline: **Node 26 Active LTS (V8 14.6+)** + **TS 7.0** — dùng iterator helpers, `Iterator.concat`, `Iterator.from`, và `Readable` stream helpers trực tiếp trên baseline này.
 
-Helpers `map`/`filter`/`take`… đã có trên Node 22+ (iterator helpers). `Iterator.concat` là điểm nhấn V8 14.6. `Array.fromAsync` có trên Node hiện đại — không nhầm với `Iterator.from` (sync).
-
-Async iterator helpers (`.map` trên `AsyncIterator.prototype`) — **không** baseline; fallback `async function*`.
+Async iterator helpers chuẩn TC39 trên `AsyncIterator.prototype` — **chưa** phải baseline; dùng `Readable.from(iterable).map(..., { concurrency })` (§7.9) hoặc `async function*`.
 
 ---
-
 
 ## 14. Tài liệu liên quan
 
@@ -1237,5 +1213,4 @@ Async iterator helpers (`.map` trên `AsyncIterator.prototype`) — **không** b
 - [AbortSignal & request context](abort-context.md)
 - [Event loop & concurrency model](event-loop.md) — pull vs push, không block
 - [Phát biểu](statements.md) — `for await`, `using`
-
 - [Stream/iterator cleanup tests](testing.md)

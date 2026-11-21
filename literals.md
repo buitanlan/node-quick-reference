@@ -1,6 +1,6 @@
 # Literal
 
-**Literal** là giá trị viết trực tiếp trong mã nguồn. JavaScript/TypeScript hỗ trợ literal cho số, `bigint`, chuỗi, boolean, `null`, regex, template, cũng như object/array literal. `undefined` là identifier của global binding, không phải literal. TypeScript bổ sung `as const`, literal types, và cầu nối với union hẹp. Baseline: **ES2024+ trên Node 26**, **TypeScript 7**.
+**Literal** là giá trị viết trực tiếp trong mã nguồn. JavaScript/TypeScript hỗ trợ literal cho số, `bigint`, chuỗi, boolean, `null`, regex, template, cũng như object/array literal. `undefined` là identifier của global binding, không phải literal. TypeScript bổ sung `as const`, literal types, và cầu nối với union hẹp. Baseline: **ES2025/ES2026 trên Node 26 Active LTS** (V8 14.6+), **TypeScript 7.0**.
 
 > Thời gian: chuỗi ngày (`"2026-07-29"`) nên parse qua **`Temporal.PlainDate.from(...)`** trên Node 26 khi cần lịch/timezone nghiêm — xem [nodejs-apis.md](nodejs-apis.md) §13. Không dùng `new Date(string)` làm nguồn sự thật. Temporal **không** có cú pháp literal riêng trong ngôn ngữ; ISO string + factory là cầu nối literals-adjacent.
 
@@ -24,6 +24,7 @@
   - [11.2 Sticky `y`](#112-sticky-y)
   - [11.3 Unicode `u` vs sets `v`](#113-unicode-u-vs-sets-v)
   - [11.4 Regex động: `RegExp.escape`](#114-regex-động-regexpescape)
+  - [11.5 Cú pháp RegExp hiện đại (ES2025 / Node 26)](#115-cú-pháp-regexp-hiện-đại-es2025--node-26)
 - [12. Object literals: shorthand, computed, `__proto__`](#12-object-literals-shorthand-computed-__proto__)
   - [12.1 Shorthand & computed keys](#121-shorthand--computed-keys)
   - [12.2 `__proto__` — ngữ nghĩa đặc biệt](#122-__proto__--ngữ-nghĩa-đặc-biệt)
@@ -31,6 +32,7 @@
 - [14. `as const` & bảng widen](#14-as-const--bảng-widen)
   - [14.1 Bảng widen](#141-bảng-widen)
 - [15. JSON vs JS literals](#15-json-vs-js-literals)
+  - [15.1 JSON source text access: `JSON.rawJSON` & `context.source`](#151-json-source-text-access-jsonrawjson--contextsource)
 - [16. Temporal (literals-adjacent)](#16-temporal-literals-adjacent)
 - [17. Bẫy thường gặp](#17-bẫy-thường-gặp)
 - [18. Best practices](#18-best-practices)
@@ -305,6 +307,11 @@ const s8 = "\u00A9";    // ©
 [..."😀"].length;      // 1
 "😀".codePointAt(0);   // 0x1F600
 "café".normalize("NFC") === "café";
+
+// Kiểm tra & sửa lone surrogate UTF-16 (ES2024+ / Node 26)
+const broken = "hi\uD800!";
+broken.isWellFormed(); // false — chứa lone high surrogate
+broken.toWellFormed(); // "hi\uFFFD!" — thay bằng U+FFFD (an toàn cho encodeURI / UTF-8 / FFI)
 ```
 
 **Bẫy chuỗi:**
@@ -312,7 +319,8 @@ const s8 = "\u00A9";    // ©
 | Bẫy | Chi tiết | Cách đúng |
 |-----|----------|-----------|
 | `.length` emoji | code unit | `Intl.Segmenter` / `[...str]` cho code point |
-| `\8` `\9` | không phải octal hợp lệ | `\u` / ký tự thật |
+| Lone surrogate (`\uD800`) | `encodeURI` ném `URIError`; lỗi chuyển sang UTF-8/FFI | `s.isWellFormed()` / `s.toWellFormed()` |
+| `\8` `\9` | **`SyntaxError`** trong ESM/strict mode và template literal (sloppy cũ hiểu là `"8"`/`"9"`) | viết `"8"` / `"9"` hoặc `\u` |
 | Legacy octal `\377` | cấm strict | `\xFF` / `\u00FF` |
 | So sánh locale bằng `>` | code unit | `Intl.Collator` |
 
@@ -379,7 +387,7 @@ const path = String.raw`C:\data\file.txt`; // backslash giữ nguyên
 - Các tham số sau: giá trị nội suy theo thứ tự, **không** nấu thành string trừ khi tag tự làm.
 - Dùng cho DSL, i18n, CSS-in-JS, sanitization — tag quyết định kiểu trả về (không bắt buộc `string`).
 - `String.raw` là tag built-in phổ biến nhất.
-- `tag`\`a\`` ≠ `tag("a")` ≠ `tag(\`a\`)`.
+- `` tag`a` `` ≠ `tag("a")` ≠ ``tag(`a`)``.
 
 ```ts
 function sql(strings: TemplateStringsArray, ...values: unknown[]) {
@@ -429,9 +437,9 @@ inspect`\uGGGG`;
 function identity(strings: TemplateStringsArray) {
   return strings;
 }
-const a = identity`x`;
-const b = identity`x`;
-// a === b thường true với cùng call site; khác site → khác array
+const f = () => identity`x`;
+f() === f();                 // true  — cùng một call site (engine cache cùng array)
+identity`x` === identity`x`; // false — hai dòng/biểu thức riêng là hai call site khác nhau
 ```
 
 `String.raw` chỉ “raw” **phần literal**; interpolations vẫn `ToString` bình thường — backslash trong *giá trị* không được bảo vệ:
@@ -482,11 +490,12 @@ function html(strings: TemplateStringsArray, ...vals: unknown[]) {
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;");
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
   return strings.reduce((out, s, i) => out + s + (i < vals.length ? esc(vals[i]) : ""), "");
 }
 
-html`<div>${user}</div>`; // interpolations được escape; strings từ nguồn tin cậy
+html`<div>${user}</div>`; // interpolations được escape (kể cả single-quoted attr); strings từ nguồn tin cậy
 ```
 
 - Phần *literal* của template đến từ source code (trusted); phần `${}` là untrusted trừ khi đã validate.
@@ -614,6 +623,13 @@ hex.test("é"); // false
 
 const lettersNotAscii = /[\p{Letter}--\p{ASCII}]/v;
 lettersNotAscii.test("Đ"); // true
+
+// Properties of strings & string literals trong class của /v
+const emoji = /^\p{RGI_Emoji}$/v;
+emoji.test("👨‍👩‍👧‍👦"); // true — khớp chuỗi emoji đa code point
+
+const digraph = /^[\q{ch|ng|tr}]$/v;
+digraph.test("ng"); // true
 ```
 
 - `v` là siêu tập có kỷ luật hơn `u` cho character class; pattern class cũ có thể **SyntaxError** dưới `v` (một số range/`[` lồng).
@@ -626,27 +642,54 @@ lettersNotAscii.test("Đ"); // true
 |-----|---------|-----------|
 | Tái dùng `/g` cùng instance | `lastIndex` lệch giữa lần `test`/`exec` | reset `lastIndex` hoặc tạo mới |
 | Module-level `/g` | state xuyên request | factory / không `g` / `matchAll` |
-| Literal trong loop nóng | thường OK (một instance) | đừng `new RegExp` mỗi iteration nếu pattern cố định |
-| User input → pattern | ReDoS / syntax error | escape; giới hạn; timeout; `u`/`v` |
+| Literal trong loop | từ ES5+, mỗi lần đánh giá tạo **instance mới** (`lastIndex` riêng) | tránh rò `lastIndex`; nếu pattern cố định không `g`/`y` trong hot loop thì hoist ra ngoài để giảm allocation |
+| User input → pattern | ReDoS / syntax error | `RegExp.escape`; giới hạn; timeout; `u`/`v` |
 | `/a/ === /a/` | `false` (object khác) | so sánh `.source` + `.flags` |
 | Sticky quên `lastIndex` | miss token | lexer cập nhật tường minh |
 | `/.../u` vs `/.../v` | class syntax khác | chọn một; test pattern |
 
-```ts
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-```
-
 ### 11.4 Regex động: `RegExp.escape`
 
-```js
+Trên **Node 26** (ES2025+), luôn ưu tiên **`RegExp.escape()`** built-in thay vì tự viết regex escape:
+
+```ts
 const input = "a+b (x)";
 const exact = new RegExp(`^${RegExp.escape(input)}$`, "u");
 console.log(exact.test(input)); // true; input được coi là literal text
 ```
 
-Node 26 có `RegExp.escape`; với runtime cũ kiểm API hoặc polyfill đúng spec. Nó xử lý cả leading character/punctuator/Unicode context, không chỉ thêm backslash cho vài metacharacter. Escape không giới hạn CPU của pattern tùy ý và không bảo vệ ReDoS nếu vẫn cho user chọn pattern. [API semantics](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/escape), [security](security.md).
+`RegExp.escape` xử lý chuẩn cả leading character/punctuator/Unicode context theo spec (khác với vài replace thủ công). Lưu ý: escape không giới hạn CPU của pattern tùy ý và không bảo vệ ReDoS nếu vẫn cho user nhập pattern tự do. [API semantics](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/escape), [security](security.md).
+
+Helper thủ công chỉ dùng làm **fallback legacy** cho môi trường cũ trước Node 24 / ES2025:
+
+```ts
+// Legacy fallback (chỉ dùng nếu phải hỗ trợ runtime trước Node 24 / ES2025)
+function escapeRegExpLegacy(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+```
+
+### 11.5 Cú pháp RegExp hiện đại (ES2025 / Node 26)
+
+- **Inline modifiers (`(?ims-ims:...)`):** bật/tắt flag `i`, `m`, `s` cục bộ cho riêng một nhóm thay vì toàn bộ biểu thức:
+
+```ts
+const auth = /^(?i:bearer) (?<token>[A-Za-z0-9._-]+)$/;
+auth.test("Bearer AbC"); // true — chỉ phần "bearer" không phân biệt hoa thường
+auth.test("bearer AbC"); // true
+
+const exactSuffix = /(?i:abc)DEF/;
+exactSuffix.test("AbCDEF"); // true
+exactSuffix.test("AbCdef"); // false — "DEF" vẫn phân biệt hoa thường
+```
+
+- **Duplicate named capturing groups** ở các nhánh thay thế (`|`) loại trừ lẫn nhau:
+
+```ts
+const ym = /^(?<y>\d{4})-(?<m>\d{2})|(?<m>\d{2})\/(?<y>\d{4})$/;
+ym.exec("2026-11")?.groups; // { y: "2026", m: "11" }
+ym.exec("11/2026")?.groups; // { y: "2026", m: "11" }
+```
 
 ---
 
@@ -703,13 +746,14 @@ const cfg = {
 
 Trong object literal, `__proto__: protoObj` (identifier hoặc string `"__proto__"` / `'__proto__'`) **gán [[Prototype]]**, không tạo own property tên `__proto__`:
 
-```ts
+```js
+// JS runtime (TS không suy luận thuộc tính kế thừa qua `__proto__` literal → lỗi TS2339 với `a.x`)
 const proto = { x: 1 };
 const a = { __proto__: proto, y: 2 };
 Object.getPrototypeOf(a) === proto; // true
 a.x; // 1 — kế thừa
-a.hasOwnProperty("y"); // true
-a.hasOwnProperty("x"); // false
+Object.hasOwn(a, "y"); // true
+Object.hasOwn(a, "x"); // false
 ```
 
 **Không** đặc biệt khi:
@@ -740,8 +784,9 @@ const c = { proto }; // shorthand tên `proto` — bình thường
 | Identity | `{} !== {}` | đừng deep-equal bằng `===` |
 | Spread `null`/`undefined` | no-op trên object | OK; array thì TypeError |
 
-```ts
-JSON.stringify({ a: 1, a: 2 }); // {"a":2} — duplicate trong nguồn
+```js
+// JS runtime (TS báo lỗi TS1117 khi trùng key trong cùng object literal)
+JSON.stringify({ a: 1, a: 2 }); // {"a":2} — key sau thắng
 ```
 
 ---
@@ -884,7 +929,7 @@ JSON là **định dạng dữ liệu**, không phải JavaScript. `JSON.parse` 
 | Hex/bin/oct `0xFF` | OK | **cấm** |
 | Separator `1_000` | OK | **cấm** |
 | `NaN` / `Infinity` | giá trị number | stringify → `null`; parse không nhận |
-| `__proto__: obj` | prototype đặc biệt | parse ra own key `"__proto__"` (tùy engine/reviver — **không** set [[Prototype]] như JS literal) |
+| `__proto__: obj` | prototype đặc biệt | **luôn** tạo own data property `"__proto__"` theo spec (`CreateDataProperty`) — không set `[[Prototype]]` |
 | Template / regex / Date | OK | không có; Date stringify → ISO string |
 
 ```ts
@@ -904,6 +949,34 @@ JSON.stringify({ t: Temporal.PlainDate.from("2026-07-29") });
 JSON.stringify({ id: 1n }, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
 JSON.parse('{"id":"1"}', (k, v) => (k === "id" ? BigInt(v as string) : v));
 ```
+
+### 15.1 JSON source text access: `JSON.rawJSON` & `context.source`
+
+Từ **ES2025 / Node 26**, có thể round-trip số 64-bit (`BigInt`) hoặc decimal chính xác dưới dạng **JSON number thật** mà không bị ép thành string hay mất độ chính xác IEEE-754:
+
+```ts
+const raw = '{"id":9007199254740993}';
+
+// Tham số thứ 3 của reviver cung cấp `context.source` (nguyên văn token JSON của primitive)
+const parsed = JSON.parse(raw, (key, value, context) => {
+  if (key === "id" && context.source !== undefined) {
+    return BigInt(context.source);
+  }
+  return value;
+});
+// parsed.id === 9007199254740993n (không bị tròn thành 9007199254740992)
+
+// `JSON.rawJSON()` chèn nguyên văn JSON primitive vào output của JSON.stringify
+const out = JSON.stringify(parsed, (_key, value) =>
+  typeof value === "bigint" ? JSON.rawJSON(value.toString()) : value,
+);
+// '{"id":9007199254740993}'
+
+JSON.isRawJSON(JSON.rawJSON("123")); // true
+```
+
+- `context.source` chỉ có mặt với **primitive** (số, chuỗi, boolean, `null`), không có trên object/array.
+- `JSON.rawJSON(text)` chỉ nhận chuỗi là một JSON primitive hợp lệ (ném `SyntaxError` nếu truyền object/array JSON hoặc token sai cú pháp).
 
 **Bẫy JSON:**
 
@@ -1057,12 +1130,13 @@ function tag(strings: TemplateStringsArray, ...vals: unknown[]) {
 | ES2020 | BigInt rộng rãi; `matchAll`; `??` (operators) |
 | ES2021 | numeric separators `_`; `||=` `&&=` `??=` |
 | ES2022+ | RegExp `/d` (indices); class fields (không phải literal thuần) |
-| ES2024 / V8 hiện đại | `/v` flag Unicode sets |
+| ES2024 | `/v` flag Unicode sets (`\q{...}`, `\p{RGI_Emoji}`); `String.prototype.isWellFormed()` / `toWellFormed()` |
+| ES2025 | `RegExp.escape()`, RegExp inline modifiers `(?i:...)`, duplicate named capturing groups, `JSON.rawJSON()` / `JSON.isRawJSON()` / reviver `context.source` |
 | TS 4.9+ | `satisfies` |
-| TS 5+ / 7 | `as const` + strip: tránh `enum` runtime; prefer const object |
-| Node 26 | **Temporal global**; type strip ổn định — literal JS giữ nguyên khi strip |
+| TS 5+ / 7.0 | `as const` + strip: tránh `enum` runtime; prefer const object; Go native compiler |
+| Node 26 Active LTS (V8 14.6+) | **Temporal global**; đủ ES2025/ES2026 RegExp & JSON source text; type strip ổn định — literal JS giữ nguyên khi strip |
 
-Baseline repo: **Node 26** + **TS 7**.
+Baseline repo: **Node 26 Active LTS** (V8 14.6+) + **TS 7.0**.
 
 ---
 
